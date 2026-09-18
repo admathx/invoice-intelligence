@@ -1,0 +1,40 @@
+# Phase gate thresholds. Tests and validation/*_report.py scripts read from this
+# file rather than hardcoding numbers, so tightening a threshold is a one-line diff
+# and any loosening is visible in code review.
+
+phase0:
+  max_loop_seconds: 30
+
+phase2_extraction:
+  line_item_accuracy_clean: 0.95
+  line_item_accuracy_noisy: 0.85
+  arithmetic_error_catch_rate: 0.90
+  max_cost_per_invoice_usd: 0.15
+  failed_arithmetic_reaching_extracted: 0  # hard zero, not tunable
+
+phase3_normalization:
+  pack_size_parser_pass_rate: 1.0  # hard 100%, not tunable
+  auto_match_rate: 0.90
+  auto_match_confidence_threshold: 0.92
+  review_queue_confidence_low: 0.80
+  review_queue_confidence_high: 0.92
+  false_match_rate_max: 0.01
+
+phase4_analytics:
+  creep:
+    lookback_recent_weeks: 4
+    lookback_baseline_weeks: 8
+    min_pct_change: 0.05
+    min_abs_change_usd: 0.25
+    min_observations_per_window: 3
+    recall_min: 0.95
+    false_positive_max: 0  # hard zero, not tunable
+  benchmark:
+    lookback_days: 90
+    min_distinct_tenants: 5  # hard rule, not tunable
+  negotiation:
+    top_n: 15
+
+phase5_dashboard:
+  # playwright e2e must complete with zero shell commands
+  review_queue_clear_target_seconds: 120  # 20 items, per demo line in spec

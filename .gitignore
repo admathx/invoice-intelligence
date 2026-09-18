@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+frontend/.env.local
+
+# Env / secrets
+.env
+*.env.local
+
+# Synthetic output (regeneratable, large)
+synthetic/out/*
+!synthetic/out/.gitkeep
+
+# Validation results (regeneratable)
+validation/results/*
+!validation/results/.gitkeep
+
+# Uploaded invoice originals (path varies by how the API process was started —
+# see PROGRESS.md environment notes)
+uploads/
+backend/uploads/
+inbox/*
+!inbox/.gitkeep
+
+# make up / make down process bookkeeping
+.run/
+logs/
+
+# OS
+.DS_Store
