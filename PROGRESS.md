@@ -156,7 +156,74 @@ upgrade head` twice — mixin-based `tenant_id` changed table DDL).
 
 ## Phase 2 — Real extraction
 
-Status: not started.
+Status: **built, pytest gate green; live extraction-report blocked on Anthropic
+account credit balance** (key is valid and correctly workspace-scoped, but
+`console.anthropic.com` → Plans & Billing shows insufficient credit — confirmed
+via a real 400 from the API, not a config issue on our end).
+
+- Built via `claude-api` skill throughout — checked pricing before hardcoding
+  it, and caught that `backend/requirements.txt` still pinned `anthropic==0.34.2`
+  (a pre-1.0 SDK, ~a year stale) before writing any integration code. Ran the
+  skill's own `/claude-api upgrade python` flow: since no code anywhere in the
+  repo imported `anthropic` yet, this was a clean version bump (0.34.2 → 1.7.0)
+  with no call sites to migrate.
+- `app/extract/prompt.py`: extraction instructions (verbatim-only, null over
+  guessed values, don't restart line numbers across pages). The JSON contract
+  itself is enforced by the API's structured-output feature, not prompted for.
+- `app/extract/client.py`: `AnthropicExtractorClient` uses `messages.create()`
+  with a manually-built `output_config.format` JSON schema (not the
+  `messages.parse()` convenience method) — traced through the SDK source
+  (`anthropic/lib/_parse/_response.py`, `resources/messages/messages.py`) and
+  confirmed `.parse()` raises `pydantic.ValidationError` on a schema mismatch
+  with **no access to the response it already received**, which would silently
+  lose that attempt's token usage. Since SPEC.md's conventions require logging
+  cost on every model call and Phase 2's cost gate is measured per-invoice,
+  losing usage data on the retry path (exactly when it's most likely to occur)
+  wasn't acceptable — `.create()` + manual `ExtractedInvoice.model_validate()`
+  guarantees `response.usage` on every attempt. Retries exactly once on a
+  validation failure (JSON parse or pydantic), per SPEC.md §5, then raises
+  `ExtractionFailedError`, caught by `process_invoice`'s existing handler and
+  routed to `failed` — no new failure path needed.
+- `app/extract/confidence.py`: arithmetic validation exactly per SPEC.md §5
+  (line qty×price≈extended within a cent, lines sum to subtotal, subtotal+tax≈
+  total) plus the `<0.85` per-line confidence and `distributor == "other"`
+  checks, producing `needs_review` vs `extracted`. This — not the model's
+  self-reported confidence — is what routes invoices, and it's what makes the
+  hard-zero "failed arithmetic reaching extracted" gate structurally true
+  rather than something to remember to enforce.
+- `get_extractor()` picks `AnthropicExtractorClient` when `ANTHROPIC_API_KEY` is
+  set, else the Phase 0 `FakeExtractorClient` — local dev and `pytest` never
+  need a key or spend anything. `backend/tests/test_extract.py` (17 tests, all
+  mocked) covers every arithmetic-routing branch, the retry-once contract (via
+  a stub `client.messages` returning queued fake responses), cost calculation,
+  and extractor selection.
+- `validation/extraction_report.py` (SPEC.md's `--sample 200` gate) is built
+  and its plumbing verified end-to-end with `--fake --sample 30` (zero cost) —
+  confirmed it correctly renders real synthetic PDFs (including the noisy/
+  rasterized subset), scores against ground truth, and computes the
+  arithmetic-validator's digit-corruption catch rate (measured 100% on the fake
+  payload's simple lines, as expected). **Not yet run for real** — that needs
+  credits, and even then `make validate` deliberately does NOT include it
+  (`make extraction-report SAMPLE=200` runs it standalone) since every run
+  spends real money and shouldn't happen implicitly as part of a routine gate
+  check.
+- Found and fixed a real, separate bug while restarting services to verify the
+  API key was actually being picked up: `backend/app/config.py`'s
+  `env_file=".env"` was a path relative to the process's cwd, and `make up`
+  starts the API/worker from the repo root (not `backend/`) — so
+  `backend/.env` was silently never read by anything started via `make up`.
+  Every other setting happened to default to the same value docker-compose
+  uses, so this was invisible until `ANTHROPIC_API_KEY` (whose default is
+  empty) exposed it. Same root cause as the `upload_dir` path inconsistency
+  flagged as a rough edge in Phase 0 — both are now absolute, anchored to
+  `backend/` via `Path(__file__)`, regardless of the starting process's cwd.
+  Confirmed the fix live: restarted `make up`, watched the worker correctly
+  attempt real extraction and fail gracefully on the billing error (invoice
+  → `failed`, no crash, no stuck state) rather than silently using the fake
+  extractor.
+- Spawned a background task (not yet landed) to write up the FastAPI +
+  `contextvars` thread-pool gotcha from the P0+P1 review fixes as a short doc
+  — unrelated to Phase 2 itself, just picking up where that thread left off.
 
 ## Phase 3 — Normalization
 

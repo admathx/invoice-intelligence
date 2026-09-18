@@ -7,12 +7,13 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS, SessionLocal, bind_tenant
-from app.extract.client import FakeExtractorClient
+from app.extract.client import AnthropicExtractorClient, get_extractor
+from app.extract.confidence import assess_extraction
 from app.ingest.render import render_pdf_to_pngs
 from app.models import Distributor, Invoice, InvoiceLineItem
 from app.models.enums import InvoiceStatus
 
-extractor = FakeExtractorClient()
+extractor = get_extractor()
 
 
 def _get_invoice_bypassing_tenant_scope(db, invoice_id: uuid.UUID) -> Invoice | None:
@@ -25,7 +26,11 @@ def _get_invoice_bypassing_tenant_scope(db, invoice_id: uuid.UUID) -> Invoice | 
 
 
 def process_invoice(invoice_id: str) -> None:
-    """RQ job: render -> extract -> persist. Runs the Phase 0 fake extractor."""
+    """RQ job: render -> extract -> persist -> route by arithmetic confidence.
+
+    Uses AnthropicExtractorClient when ANTHROPIC_API_KEY is set, otherwise the
+    deterministic FakeExtractorClient (see app.extract.client.get_extractor).
+    """
     db = SessionLocal()
     try:
         invoice = _get_invoice_bypassing_tenant_scope(db, uuid.UUID(invoice_id))
@@ -60,7 +65,9 @@ def process_invoice(invoice_id: str) -> None:
         invoice.subtotal = Decimal(extracted.subtotal)
         invoice.tax = Decimal(extracted.tax)
         invoice.total = Decimal(extracted.total)
-        invoice.extraction_model = "fake-phase0"
+        invoice.extraction_model = (
+            settings.extraction_model if isinstance(extractor, AnthropicExtractorClient) else "fake"
+        )
         invoice.extraction_cost_usd = Decimal(str(cost_usd))
         invoice.extracted_at = datetime.now(timezone.utc)
 
@@ -81,7 +88,11 @@ def process_invoice(invoice_id: str) -> None:
                 )
             )
 
-        invoice.status = InvoiceStatus.extracted
+        # SPEC.md §5: arithmetic validation is the confidence signal, not the
+        # model's own self-reported certainty. Any failure routes to needs_review
+        # rather than extracted — never silently ships a wrong number.
+        assessment = assess_extraction(extracted)
+        invoice.status = assessment.status
         db.commit()
     except Exception:
         db.rollback()

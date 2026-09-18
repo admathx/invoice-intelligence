@@ -12,6 +12,7 @@ from reportlab.pdfgen import canvas
 from sqlalchemy import text
 
 from app.db import SessionLocal, engine
+from app.extract.client import FakeExtractorClient
 from app.main import app
 from app.models import Tenant
 from app.models.enums import InvoiceStatus, VolumeTier
@@ -59,6 +60,11 @@ def test_upload_job_rows_api_read(tenant, other_tenant, monkeypatch):
     # running against the same Redis, it races this test's own synchronous call
     # to process_invoice below and double-processes the invoice.
     monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    # This is the Phase 0 walking-skeleton test: pin the deterministic fake
+    # extractor regardless of whether ANTHROPIC_API_KEY happens to be set in
+    # this environment, so the test doesn't spend real API budget or depend on
+    # live extraction quality.
+    monkeypatch.setattr("app.workers.tasks.extractor", FakeExtractorClient())
 
     client = TestClient(app)
 

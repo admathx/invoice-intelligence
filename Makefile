@@ -1,4 +1,4 @@
-.PHONY: up down migrate seed smoke test validate frontend-install frontend-dev
+.PHONY: up down migrate seed smoke test validate extraction-report frontend-install frontend-dev
 
 VENV := .venv/bin
 RUN_DIR := .run
@@ -42,6 +42,16 @@ validate:
 	@echo "--- Phase 1 gate ---"
 	cd backend && $(VENV)/pytest -q tests/test_synthetic.py
 	PYTHONPATH=backend backend/$(VENV)/python -m validation.corpus_report
+	@echo "--- Phase 2 gate (pytest only — extraction-report costs real API spend, run it separately) ---"
+	cd backend && $(VENV)/pytest -q tests/test_extract.py
+
+# Costs real money once ANTHROPIC_API_KEY is configured with credit — not part
+# of `make validate`. Defaults to a small sample; override with SAMPLE=200 to
+# match SPEC.md's Phase 2 gate exactly. Add FAKE=1 for a free dry run of the
+# reporting pipeline's mechanics (accuracy numbers from that are meaningless).
+SAMPLE ?= 20
+extraction-report:
+	PYTHONPATH=backend backend/$(VENV)/python -m validation.extraction_report --sample $(SAMPLE) $(if $(FAKE),--fake,)
 
 frontend-install:
 	cd frontend && npm install

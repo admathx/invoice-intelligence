@@ -22,9 +22,7 @@ synthetic/out/*
 validation/results/*
 !validation/results/.gitkeep
 
-# Uploaded invoice originals (path varies by how the API process was started —
-# see PROGRESS.md environment notes)
-uploads/
+# Uploaded invoice originals
 backend/uploads/
 inbox/*
 !inbox/.gitkeep
