@@ -5,6 +5,13 @@
 phase0:
   max_loop_seconds: 30
 
+phase1_corpus:
+  tenant_count: 20
+  weeks_per_tenant: 26
+  distributor_count: 4
+  metro_count: 3
+  volume_tier_count: 4
+
 phase2_extraction:
   line_item_accuracy_clean: 0.95
   line_item_accuracy_noisy: 0.85

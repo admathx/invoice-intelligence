@@ -26,7 +26,8 @@ migrate:
 	cd backend && $(VENV)/alembic upgrade head
 
 seed:
-	cd synthetic && ../backend/$(VENV)/python generate.py
+	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/seed_catalog.py
+	PYTHONPATH=backend backend/$(VENV)/python -m synthetic.generate
 
 smoke:
 	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/smoke.py
@@ -35,8 +36,12 @@ test:
 	cd backend && $(VENV)/pytest -q
 
 validate:
+	@echo "--- Phase 0 gate ---"
 	cd backend && $(VENV)/pytest -q tests/test_skeleton.py
 	$(MAKE) smoke
+	@echo "--- Phase 1 gate ---"
+	cd backend && $(VENV)/pytest -q tests/test_synthetic.py
+	PYTHONPATH=backend backend/$(VENV)/python -m validation.corpus_report
 
 frontend-install:
 	cd frontend && npm install

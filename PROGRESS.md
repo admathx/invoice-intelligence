@@ -42,7 +42,47 @@ Status: **done**, gate green.
 
 ## Phase 1 — Synthetic corpus and ground truth
 
-Status: not started.
+Status: **done**, gate green.
+
+- `pytest tests/test_synthetic.py`: 5 passed — every PDF has a paired ground-truth
+  file (520/520), line extendeds sum to subtotal within a cent on every invoice,
+  subtotal+tax=total, injected creep SKUs show upward trajectory (verified via
+  early-window vs. late-window price averages, not exact-week lookups — a given
+  week only orders a random subset of a tenant's basket, so exact-week pairs were
+  too sparse), stable SKUs stay within a tight noise band.
+- `python -m validation.corpus_report`: 20 tenants, 3 metros, 4 volume tiers, 4
+  distributor layouts at 130 invoices each (perfectly even — 5 tenants/distributor
+  by design), 520 invoices, 39,179 line items, 82 creep injections. PASS.
+- Regeneration confirmed byte-identical under the fixed seed (MASTER_SEED=42),
+  including the noisy/rasterized PDFs — verified via md5 across two full-corpus
+  `make seed` runs, not just spot-checked.
+- Canonical catalog: 204 SKUs (proteins/dairy/produce/oils/flour/paper/cleaning)
+  seeded into `canonical_skus` via `make seed` (idempotent — re-running doesn't
+  duplicate rows). Lives at `backend/app/normalize/catalog.py` since Phase 3's
+  matcher will use the same list, not just the synthetic generator.
+- Found and fixed a real modeling bug during this phase: price ranges were
+  originally keyed by category alone, so fluid-ounce condiments (hot sauce,
+  vinegar, cleaning sprays) inherited the gallon-scale $3-22 range *per fluid
+  ounce*, producing $7,000+ line items. Re-keyed by (category, base_uom); see
+  `synthetic/pricing.py`. Caught by manually sanity-checking invoice totals
+  against each volume tier's annual-spend budget, not by a test — worth adding
+  a report-level check on this before Phase 4 leans on it.
+- Case quantities scale by volume tier (`VOLUME_TIER_QTY_MULTIPLIER` in
+  `synthetic/generate.py`) so annualized weekly totals land roughly in each
+  tier's band (~450k/~650k/~2.1M/~4M sampled across a few tenants) — soft-tuned
+  by inspection, not a hard invariant.
+- Seasonal-amplitude-vs-creep-threshold risk flagged for Phase 4: amplitudes in
+  `synthetic/pricing.py` are kept small (max ~0.035) specifically so seasonal
+  drift alone shouldn't trip the >5%-move creep detector on non-creep SKUs, but
+  this hasn't been validated against the actual Phase 4 detector yet — if the
+  "zero false positives" gate fails there, check this first before loosening
+  the gate.
+- Distributor PDFs are visibly distinct on inspection: different column order/
+  labels (Gordon leads with Description; PFG adds a line-number column),
+  different abbreviation intensity (Sysco 0.85 heaviest, Gordon 0.3 lightest),
+  different SKU code formats. Noisy subset (~18% of invoices) renders as a
+  genuinely convincing "scanned" document — skewed, JPEG-degraded raster,
+  visually confirmed.
 
 ## Phase 2 — Real extraction
 
