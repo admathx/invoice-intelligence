@@ -11,7 +11,16 @@ from app.models.enums import VolumeTier
 
 
 class PriceObservation(Base):
-    """Denormalized read model for benchmarking. Written after a line item is confirmed."""
+    """Denormalized read model for benchmarking. Written after a line item is confirmed.
+
+    Deliberately NOT TenantScoped (app.db.TenantScoped), unlike the other tables
+    with a tenant_id column: SPEC.md §7 benchmarking reads across every tenant in
+    a (metro, volume_tier) cell by design (with suppression below 5 distinct
+    tenants, not tenant-id filtering) — that's this table's whole purpose. Making
+    it TenantScoped would force every Phase 4 benchmark query to carry a
+    tenant_scope_bypass execution option, which would just be noise rather than
+    a meaningful safety check for this one table.
+    """
 
     __tablename__ = "price_observations"
     __table_args__ = (

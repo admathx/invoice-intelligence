@@ -84,6 +84,76 @@ Status: **done**, gate green.
   genuinely convincing "scanned" document — skewed, JPEG-degraded raster,
   visually confirmed.
 
+## Review pass after P0+P1 (before starting Phase 2)
+
+Ran a structured code review (code-review skill, high effort) against everything
+committed so far. 10 findings, all fixed before moving on:
+
+- **Cross-tenant data leak**: `GET /invoices/{id}` had no `tenant_id` filter at
+  all — any caller could read any tenant's invoice by guessing/learning its
+  UUID. Fixed with a real "session-level guard" per SPEC.md §11: `TenantScoped`
+  is now a declarative mixin (`app/db.py`) providing `tenant_id` on every
+  tenant-scoped model, and a `do_orm_execute` event listener auto-injects a
+  `tenant_id` filter (via `with_loader_criteria`) into every SELECT against
+  those models when a tenant is bound to the Session — and **raises** instead of
+  running unscoped if no tenant is bound. `PriceObservation` deliberately opts
+  out (documented in the model): SPEC.md §7 benchmarking is cross-tenant by
+  design. Tenant is bound via `Session.info` (a plain dict on the Session
+  object), not a `contextvars.ContextVar` — FastAPI runs sync dependencies and
+  sync endpoints via anyio's thread-pool executor, and each call can get its own
+  *copied* contextvars Context, so a value set in a dependency isn't reliably
+  visible in the endpoint body (also broke `Token.reset()` across the `yield`
+  boundary with "created in a different Context"). `Session.info` doesn't have
+  that problem since the Session object itself is passed by reference. Added a
+  negative test (`test_skeleton.py`) proving a second tenant gets a 404.
+- **Timestamps stored without timezone**: every `Mapped[datetime]` column was
+  `timestamp without time zone` in Postgres despite SPEC.md §11 mandating
+  `timestamptz`, so `datetime.now(timezone.utc)` was silently getting its offset
+  dropped on write. Fixed via `type_annotation_map = {datetime: DateTime(timezone=True)}`
+  on `Base` — one place, not six repeated column overrides.
+- **Creep ramp never completed**: `CREEP_DURATION_WEEKS=12` starting at week 14
+  meant the ramp was still in progress at week 25 (the last generated week),
+  capping at 91.7% of `target_pct` and never holding flat — the corpus never
+  actually contained a completed-creep plateau. Changed to 8 weeks (completes at
+  week 22, holds flat weeks 22-25). Verified directly against regenerated data.
+- **Spot buys contaminated the "stable SKU" ground truth**: the spot-buy
+  multiplier was applied before `normalized_unit_price` was computed and stored
+  — the same field `test_stable_skus_stay_within_noise_band` treats as a
+  spot-buy-free trend baseline. Restructured `_build_line` so
+  `normalized_unit_price_base` reflects only market + creep + markup (the
+  tenant's contracted-price trend), and spot buys apply only to the
+  invoice-visible `unit_price`/`extended_price` — matching the schema's own
+  separate `off_contract` vs `creep` alert types (§4). Verified: a spot buy that
+  previously caused a 7.35%+ swing in ground truth now sits smoothly among its
+  neighboring weeks' prices.
+- **`_to_decimal` silently zeroed unparseable extraction values** and still
+  shipped the invoice to `extracted` — dormant today (the fake extractor never
+  produces bad data) but a landmine for Phase 2. Removed the swallow; a parse
+  failure now raises and is caught by `process_invoice`'s existing except block,
+  routing the whole invoice to `failed` instead of silently zeroing one field.
+- **`canonical_skus.name` had no DB uniqueness constraint** despite being relied
+  on everywhere as the stable cross-reference key (no separate slug column).
+  Added `unique=True`.
+- **Money computed via float() round-trips** in the synthetic price chain,
+  against SPEC.md §11's explicit "Decimal everywhere... Never floats. Ever."
+  New `synthetic/money.py` (`q()`/`apply_ratio()`) is now the one place a ratio
+  (seasonal factor, markup, creep multiplier — inherently float, from
+  `math.sin`/`random`) gets applied to a Decimal price, replacing five
+  ad-hoc `float(x) * y` round-trips in `generate.py` and the duplicate
+  `_round_money`/`_q` helpers (which also rounded inconsistently — HALF_UP vs
+  Python's HALF_EVEN default — now both delegate to the same helper).
+- **RNG reseeded per line item instead of cached per SKU**: `DistributorLayout`'s
+  `sku_code`/`description_for`/`pack_config_for` depend only on (distributor,
+  canonical SKU name), never tenant/week, but were called once per line item
+  (~100,000+ redundant `random.Random(str)` constructions for ~800 distinct
+  outputs). Precomputed into module-level dicts in `generate.py`, mirroring the
+  existing `_PRICE_PROFILES` pattern.
+
+Regenerated the full corpus and reran every gate after each fix; `make validate`
+green end to end, plus a fresh browser check (upload -> extracted -> tenant
+isolation) after the DB schema changes (required `alembic downgrade base &&
+upgrade head` twice — mixin-based `tenant_id` changed table DDL).
+
 ## Phase 2 — Real extraction
 
 Status: not started.

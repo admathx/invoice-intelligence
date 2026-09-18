@@ -17,7 +17,11 @@ class CanonicalSku(Base):
     __tablename__ = "canonical_skus"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String, nullable=False)
+    # Unique: there's no separate slug column, so `name` is the stable identifier
+    # app/normalize/catalog.py and the synthetic corpus's ground truth both rely
+    # on as a cross-reference key — that reliance needs a DB-level guarantee, not
+    # just seed_canonical_skus()'s application-level dedup.
+    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     category: Mapped[str] = mapped_column(String, nullable=False)
     subcategory: Mapped[str | None] = mapped_column(String, nullable=True)
 

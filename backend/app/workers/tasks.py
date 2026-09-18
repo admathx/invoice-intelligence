@@ -1,12 +1,12 @@
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import select
 
 from app.config import settings
-from app.db import SessionLocal
+from app.db import TENANT_SCOPE_BYPASS, SessionLocal, bind_tenant
 from app.extract.client import FakeExtractorClient
 from app.ingest.render import render_pdf_to_pngs
 from app.models import Distributor, Invoice, InvoiceLineItem
@@ -15,20 +15,23 @@ from app.models.enums import InvoiceStatus
 extractor = FakeExtractorClient()
 
 
-def _to_decimal(value: str) -> Decimal:
-    try:
-        return Decimal(value)
-    except InvalidOperation:
-        return Decimal("0")
+def _get_invoice_bypassing_tenant_scope(db, invoice_id: uuid.UUID) -> Invoice | None:
+    """The worker looks up an invoice by opaque id with no tenant known yet — the
+    one legitimate case for bypassing the tenant guard (app.db.TenantScoped).
+    Callers must bind_tenant(db, ...) from the result before running any other
+    query against a tenant-scoped table.
+    """
+    return db.get(Invoice, invoice_id, execution_options={TENANT_SCOPE_BYPASS: True})
 
 
 def process_invoice(invoice_id: str) -> None:
     """RQ job: render -> extract -> persist. Runs the Phase 0 fake extractor."""
     db = SessionLocal()
     try:
-        invoice = db.get(Invoice, uuid.UUID(invoice_id))
+        invoice = _get_invoice_bypassing_tenant_scope(db, uuid.UUID(invoice_id))
         if invoice is None:
             return
+        bind_tenant(db, invoice.tenant_id)
 
         invoice.status = InvoiceStatus.rendering
         db.commit()
@@ -49,9 +52,14 @@ def process_invoice(invoice_id: str) -> None:
         invoice.delivery_date = (
             datetime.strptime(extracted.delivery_date, "%Y-%m-%d").date() if extracted.delivery_date else None
         )
-        invoice.subtotal = _to_decimal(extracted.subtotal)
-        invoice.tax = _to_decimal(extracted.tax)
-        invoice.total = _to_decimal(extracted.total)
+        # Decimal(...) raises InvalidOperation on anything unparseable, which the
+        # except block below catches and routes the whole invoice to `failed` —
+        # per SPEC.md §1, "wrong numbers are worse than missing numbers," so an
+        # extractor returning a garbled number must not silently become a $0.00
+        # line item on an invoice that still ships as `extracted`.
+        invoice.subtotal = Decimal(extracted.subtotal)
+        invoice.tax = Decimal(extracted.tax)
+        invoice.total = Decimal(extracted.total)
         invoice.extraction_model = "fake-phase0"
         invoice.extraction_cost_usd = Decimal(str(cost_usd))
         invoice.extracted_at = datetime.now(timezone.utc)
@@ -65,9 +73,9 @@ def process_invoice(invoice_id: str) -> None:
                     raw_description=line.raw_description,
                     raw_sku=line.raw_sku,
                     raw_pack_size=line.raw_pack_size,
-                    quantity=_to_decimal(line.quantity),
-                    unit_price=_to_decimal(line.unit_price),
-                    extended_price=_to_decimal(line.extended_price),
+                    quantity=Decimal(line.quantity),
+                    unit_price=Decimal(line.unit_price),
+                    extended_price=Decimal(line.extended_price),
                     uom=line.uom,
                     extraction_confidence=Decimal(str(line.confidence)),
                 )
@@ -77,7 +85,7 @@ def process_invoice(invoice_id: str) -> None:
         db.commit()
     except Exception:
         db.rollback()
-        invoice = db.get(Invoice, uuid.UUID(invoice_id))
+        invoice = _get_invoice_bypassing_tenant_scope(db, uuid.UUID(invoice_id))
         if invoice is not None:
             invoice.status = InvoiceStatus.failed
             db.commit()

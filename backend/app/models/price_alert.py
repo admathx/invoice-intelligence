@@ -7,17 +7,15 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
-from app.db import Base
+from app.db import Base, TenantScoped
 from app.models.enums import AlertStatus, AlertType
 
 
-class PriceAlert(Base):
+class PriceAlert(Base, TenantScoped):
     __tablename__ = "price_alerts"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True
-    )
+    # tenant_id comes from the TenantScoped mixin.
     canonical_sku_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("canonical_skus.id"), nullable=False
     )

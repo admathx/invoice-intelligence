@@ -15,7 +15,9 @@ corpus is reproducible from one master seed.
 import math
 import random
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
+
+from synthetic.money import apply_ratio, q
 
 WEEKS_PER_YEAR = 52
 
@@ -57,10 +59,6 @@ CATEGORY_UOM_PRICE_PROFILE: dict[tuple[str, str], tuple[float, float, float]] = 
 }
 
 
-def _round_money(value: float) -> Decimal:
-    return Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-
-
 @dataclass(frozen=True)
 class PriceProfile:
     base_price: Decimal
@@ -77,7 +75,10 @@ def build_price_profiles(catalog_items: list[tuple[str, str, str]]) -> dict[str,
     for name, category, base_uom in catalog_items:
         rng = random.Random(f"price::{name}")
         low, high, amplitude = CATEGORY_UOM_PRICE_PROFILE[(category, base_uom)]
-        base_price = _round_money(rng.uniform(low, high))
+        # The one place a price is created from scratch rather than derived from
+        # an existing Decimal — going through str() avoids binary-float noise
+        # leaking into the quantized result.
+        base_price = q(Decimal(str(rng.uniform(low, high))))
         phase = rng.uniform(0, 2 * math.pi)
         profiles[name] = PriceProfile(base_price=base_price, seasonal_amplitude=amplitude, seasonal_phase=phase)
     return profiles
@@ -87,13 +88,13 @@ def market_baseline(profile: PriceProfile, week: int, rng: random.Random) -> Dec
     """Seasonal commodity baseline for a given ISO-ish week index (0..N), plus small noise."""
     seasonal = 1 + profile.seasonal_amplitude * math.sin(2 * math.pi * week / WEEKS_PER_YEAR + profile.seasonal_phase)
     noise = 1 + rng.uniform(-0.008, 0.008)
-    return _round_money(float(profile.base_price) * seasonal * noise)
+    return apply_ratio(profile.base_price, seasonal * noise)
 
 
 def tenant_distributor_markup(rng: random.Random) -> Decimal:
     """Drawn once per (tenant, distributor) pair: how much that distributor marks this tenant up."""
     markup = max(1.03, rng.gauss(1.18, 0.06))
-    return _round_money(markup)
+    return q(Decimal(str(markup)))
 
 
 def creep_multiplier(weeks_since_creep_start: int, creep_duration_weeks: int, target_pct: float) -> float:

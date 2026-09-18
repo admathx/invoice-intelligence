@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db import get_db
+from app.db import get_db_for_tenant
 from app.ingest.upload import save_uploaded_file
 from app.models import Invoice, InvoiceLineItem
 from app.models.enums import InvoiceSource, InvoiceStatus
@@ -24,7 +24,7 @@ queue = Queue("invoices", connection=redis_conn)
 def upload_invoice(
     tenant_id: uuid.UUID,
     file: UploadFile,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db_for_tenant),
 ) -> InvoiceUploadResponse:
     invoice = Invoice(
         tenant_id=tenant_id,
@@ -45,12 +45,16 @@ def upload_invoice(
 
 
 @router.get("", response_model=list[InvoiceOut])
-def list_invoices(tenant_id: uuid.UUID, db: Session = Depends(get_db)) -> list[Invoice]:
+def list_invoices(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)) -> list[Invoice]:
+    # The tenant_id filter here is redundant with the auto-injected TenantScoped
+    # criteria from get_db_for_tenant (defense in depth), not a substitute for it.
     return list(db.scalars(select(Invoice).where(Invoice.tenant_id == tenant_id).order_by(Invoice.created_at.desc())))
 
 
 @router.get("/{invoice_id}", response_model=InvoiceDetailOut)
-def get_invoice(invoice_id: uuid.UUID, db: Session = Depends(get_db)) -> InvoiceDetailOut:
+def get_invoice(
+    invoice_id: uuid.UUID, tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)
+) -> InvoiceDetailOut:
     invoice = db.get(Invoice, invoice_id)
     if invoice is None:
         raise HTTPException(status_code=404, detail="invoice not found")

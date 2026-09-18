@@ -1,4 +1,5 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+const TENANT_ID = process.env.NEXT_PUBLIC_DEV_TENANT_ID ?? "";
 
 type LineItem = {
   id: string;
@@ -22,7 +23,7 @@ type InvoiceDetail = {
 };
 
 async function getInvoice(id: string): Promise<InvoiceDetail | null> {
-  const res = await fetch(`${API_BASE}/invoices/${id}`, { cache: "no-store" });
+  const res = await fetch(`${API_BASE}/invoices/${id}?tenant_id=${TENANT_ID}`, { cache: "no-store" });
   if (!res.ok) return null;
   return res.json();
 }

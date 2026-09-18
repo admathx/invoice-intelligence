@@ -19,7 +19,9 @@ from decimal import Decimal
 from pathlib import Path
 
 from app.normalize.catalog import CANONICAL_SKUS
+from synthetic.money import apply_ratio, q
 from synthetic.noise import apply_scan_noise
+from synthetic.pack_sizes import PackConfig
 from synthetic.pdf_writer import render_invoice_pdf
 from synthetic.pricing import PriceProfile, build_price_profiles, creep_multiplier, market_baseline, tenant_distributor_markup
 from synthetic.rng import rng_for
@@ -36,7 +38,10 @@ SPOT_BUY_PROB = 0.015
 SPOT_BUY_MULT_RANGE = (1.15, 1.45)
 CREEP_SKUS_PER_TENANT = (3, 5)  # inclusive range
 CREEP_START_WEEK = 14
-CREEP_DURATION_WEEKS = 12
+# Must finish (and hold flat) before the last generated week (25) so the corpus
+# actually contains a completed-creep plateau, not just an in-progress ramp:
+# 14 + 8 = week 22 reaches full target_pct, weeks 22-25 hold flat.
+CREEP_DURATION_WEEKS = 8
 CREEP_TARGET_PCT_RANGE = (0.10, 0.28)
 BASKET_SIZE_RANGE = (100, 160)
 # Case quantity scales with volume tier so weekly invoice totals land in a
@@ -55,9 +60,19 @@ _PRICE_PROFILES: dict[str, PriceProfile] = build_price_profiles(
     [(i.name, i.category, i.base_uom.value) for i in CANONICAL_SKUS]
 )
 
-
-def _q(value) -> Decimal:
-    return Decimal(str(value)).quantize(Decimal("0.0001"))
+# sku_code/description_for/pack_config_for on a DistributorLayout depend only on
+# (distributor slug, canonical SKU name) — never on tenant or week — so they're
+# precomputed once here rather than re-seeding a random.Random on every one of
+# the corpus's ~39,000 line items for what's actually ~800 distinct outputs.
+_SKU_CODES: dict[tuple[str, str], str | None] = {}
+_DESCRIPTIONS: dict[tuple[str, str], str] = {}
+_PACK_CONFIGS: dict[tuple[str, str], PackConfig] = {}
+for _layout in LAYOUTS.values():
+    for _item in CANONICAL_SKUS:
+        _key = (_layout.slug, _item.name)
+        _SKU_CODES[_key] = _layout.sku_code(_item.name)
+        _DESCRIPTIONS[_key] = _layout.description_for(_item.name)
+        _PACK_CONFIGS[_key] = _layout.pack_config_for(_item.name, _item.base_uom)
 
 
 def _tenant_basket(tenant: SyntheticTenant) -> list[str]:
@@ -118,27 +133,33 @@ def _build_line(
         mult = creep_multiplier(weeks_since, creep["creep_duration_weeks"], creep["target_pct"])
         if mult > 1.0:
             is_creep_injected = True
-        base_unit_price = _q(float(base_unit_price) * mult)
+        base_unit_price = apply_ratio(base_unit_price, mult)
+
+    # normalized_unit_price is the tenant's contracted-price trend line — what
+    # creep detection should see. Spot buys are one-off, off-contract prices
+    # (the schema's separate 'off_contract' alert_type, per SPEC.md §4) and must
+    # NOT feed into this trend value, or a single spot buy landing inside a
+    # ground-truth verification window looks like part of the creep signal.
+    normalized_unit_price = apply_ratio(base_unit_price, float(markup))
 
     is_spot_buy = False
+    invoice_unit_price_base = normalized_unit_price
     if line_rng.random() < SPOT_BUY_PROB:
         is_spot_buy = True
-        base_unit_price = _q(float(base_unit_price) * line_rng.uniform(*SPOT_BUY_MULT_RANGE))
+        invoice_unit_price_base = apply_ratio(normalized_unit_price, line_rng.uniform(*SPOT_BUY_MULT_RANGE))
 
-    normalized_unit_price = _q(float(base_unit_price) * float(markup))
-
-    pack = layout.pack_config_for(sku_name, item.base_uom)
-    unit_price = _q(float(normalized_unit_price) * pack.base_units_per_case)
+    pack = _PACK_CONFIGS[(layout.slug, sku_name)]
+    unit_price = apply_ratio(invoice_unit_price_base, pack.base_units_per_case)
     base_quantity = line_rng.choice([1, 1, 1, 1, 2, 2, 2, 3, 3, 4])
     quantity = max(1, round(base_quantity * VOLUME_TIER_QTY_MULTIPLIER[tenant.volume_tier]))
-    extended_price = _q(float(unit_price) * quantity)
+    extended_price = q(unit_price * quantity)
 
-    description = layout.description_for(sku_name)
+    description = _DESCRIPTIONS[(layout.slug, sku_name)]
     if truncate:
         cut = line_rng.randint(max(4, len(description) - 10), max(5, len(description) - 2))
         description = description[:cut]
 
-    raw_sku = None if omit_sku_column else layout.sku_code(sku_name)
+    raw_sku = None if omit_sku_column else _SKU_CODES[(layout.slug, sku_name)]
 
     extracted = {
         "line_number": line_number,
@@ -185,9 +206,9 @@ def _generate_invoice(tenant: SyntheticTenant, week: int, basket: list[str], cre
         extracted_lines.append(extracted)
         meta_lines.append(meta)
 
-    subtotal = _q(sum(Decimal(li["extended_price"]) for li in extracted_lines))
-    tax = _q(0)
-    total = _q(subtotal + tax)
+    subtotal = q(sum((Decimal(li["extended_price"]) for li in extracted_lines), Decimal(0)))
+    tax = Decimal("0.0000")
+    total = q(subtotal + tax)
 
     invoice_date = START_DATE + timedelta(weeks=week)
     delivery_date = invoice_date + timedelta(days=1)

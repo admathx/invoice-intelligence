@@ -58,7 +58,7 @@ def main() -> int:
 
         start = time.monotonic()
         while time.monotonic() - start < TIMEOUT_SECONDS:
-            resp = client.get(f"/invoices/{invoice_id}")
+            resp = client.get(f"/invoices/{invoice_id}", params={"tenant_id": tenant_id})
             status = resp.json()["status"]
             if status == "extracted":
                 line_items = resp.json()["line_items"]

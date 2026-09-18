@@ -45,7 +45,16 @@ def tenant(db_session):
     yield t
 
 
-def test_upload_job_rows_api_read(tenant, monkeypatch):
+@pytest.fixture()
+def other_tenant(db_session):
+    t = Tenant(name="Other Tenant", metro="other-metro", volume_tier=VolumeTier.under_500k)
+    db_session.add(t)
+    db_session.commit()
+    db_session.refresh(t)
+    yield t
+
+
+def test_upload_job_rows_api_read(tenant, other_tenant, monkeypatch):
     # Don't push onto the real Redis queue: if a dev worker (`make up`) is also
     # running against the same Redis, it races this test's own synchronous call
     # to process_invoice below and double-processes the invoice.
@@ -65,9 +74,14 @@ def test_upload_job_rows_api_read(tenant, monkeypatch):
     # Run the job synchronously instead of via the RQ queue.
     process_invoice(invoice_id)
 
-    resp = client.get(f"/invoices/{invoice_id}")
+    resp = client.get(f"/invoices/{invoice_id}", params={"tenant_id": str(tenant.id)})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == InvoiceStatus.extracted.value
     assert len(body["line_items"]) == 2
     assert body["line_items"][0]["raw_description"]
+
+    # Tenant isolation: another tenant guessing/knowing this invoice's id must
+    # not be able to read it, even though the row exists (app.db.TenantScoped).
+    resp = client.get(f"/invoices/{invoice_id}", params={"tenant_id": str(other_tenant.id)})
+    assert resp.status_code == 404, resp.text
