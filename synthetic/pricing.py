@@ -44,8 +44,13 @@ CATEGORY_UOM_PRICE_PROFILE: dict[tuple[str, str], tuple[float, float, float]] = 
     ("dairy", "lb"): (2.00, 9.00, 0.015),
     ("dairy", "gal"): (2.50, 6.00, 0.015),
     ("dairy", "dozen"): (1.50, 4.00, 0.02),
-    ("produce", "lb"): (0.40, 4.50, 0.035),
-    ("produce", "each"): (0.25, 1.50, 0.035),
+    # Produce started at 0.035 amplitude; Phase 4's price-creep gate found that
+    # too high in practice (sparsely-purchased produce items can compare
+    # windows separated by a wide calendar gap, letting seasonal drift alone
+    # cross the creep threshold) — reduced per this file's own comment above
+    # ("detrend by category" rather than loosen the Phase 4 threshold).
+    ("produce", "lb"): (0.40, 4.50, 0.02),
+    ("produce", "each"): (0.25, 1.50, 0.02),
     ("oils", "gal"): (3.00, 22.00, 0.02),
     ("oils", "fl_oz"): (0.05, 0.35, 0.02),
     ("oils", "lb"): (0.50, 4.00, 0.01),

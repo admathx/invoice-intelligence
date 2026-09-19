@@ -1,4 +1,4 @@
-.PHONY: up down migrate seed smoke test validate extraction-report frontend-install frontend-dev
+.PHONY: up down migrate seed seed-analytics smoke test validate extraction-report frontend-install frontend-dev
 
 VENV := .venv/bin
 RUN_DIR := .run
@@ -29,6 +29,14 @@ seed:
 	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/seed_catalog.py
 	PYTHONPATH=backend backend/$(VENV)/python -m synthetic.generate
 
+# Runs the full corpus through Invoice/InvoiceLineItem creation + the real
+# matcher (no Anthropic spend — ground truth stands in for extraction output),
+# populating price_observations so Phase 4's analytics have real data. Not
+# folded into `make seed`: it's Phase-4-specific and takes ~15-20s, not
+# needed for Phase 0-3 work.
+seed-analytics:
+	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/seed_corpus_pipeline.py
+
 smoke:
 	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/smoke.py
 
@@ -47,6 +55,10 @@ validate:
 	@echo "--- Phase 3 gate ---"
 	cd backend && $(VENV)/pytest -q tests/test_pack_size.py tests/test_alias.py
 	PYTHONPATH=backend backend/$(VENV)/python -m validation.matching_report
+	@echo "--- Phase 4 gate ---"
+	cd backend && $(VENV)/pytest -q tests/test_suppression.py tests/test_negotiation.py
+	$(MAKE) seed-analytics
+	PYTHONPATH=backend backend/$(VENV)/python -m validation.creep_report
 
 # Costs real money once ANTHROPIC_API_KEY is configured with credit — not part
 # of `make validate`. Defaults to a small sample; override with SAMPLE=200 to

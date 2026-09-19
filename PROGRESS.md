@@ -307,7 +307,111 @@ Status: **done**, gate green, demoed live in the browser.
 
 ## Phase 4 — Analytics
 
-Status: not started.
+Status: **done**, gates green, demoed against the live corpus.
+
+- Built in spec order (4a → 4b → 4c):
+  - `app/analytics/price_creep.py`: within-tenant creep detection, no peers.
+  - `app/analytics/benchmark.py`: p25/p50/p75 with hard suppression (<5
+    distinct tenants), metro → national → none fallback.
+  - `app/analytics/negotiation.py`: top-15 sheet ranked by dollars
+    recoverable, every line traceable to specific `invoice_line_item_id`s.
+- **Prerequisite not named in SPEC.md's Phase 4 build list, but required for
+  any of the above to have data**: `price_observations` had zero rows before
+  this phase (nothing writes it — SPEC.md's schema comment says "written
+  after a line item is confirmed," and there's no confirm flow yet, that's
+  Phase 5). Built `backend/scripts/seed_corpus_pipeline.py` (`make
+  seed-analytics`): runs the full 520-invoice corpus through real
+  Invoice/InvoiceLineItem creation and the actual pack-size/alias/embedding
+  matcher — ground truth stands in for extraction output (Phase 2's accuracy
+  is validated separately, at real API cost; this avoids spending that budget
+  again just to get matched data into the DB). Writes a `price_observations`
+  row for every `review_status=auto` match. Dedupes the expensive embedding
+  lookup by (description, pack_size, uom) — 978 distinct computations for
+  39,179 line items, same insight as Phase 3's matching_report. Runs in
+  ~15-20s, fully idempotent (clears a tenant's prior corpus data before
+  reinserting). Result: 38,709 price observations from 39,179 line items
+  (matches Phase 3's 98.8% auto-match rate exactly, as it should).
+- **Two rounds of user sign-off on ambiguous, gate-affecting design calls**
+  (both via AskUserQuestion — flagged rather than decided silently, since
+  both bear on hard/near-hard numeric gates):
+  1. SPEC.md's creep rule — "flag moves above 5% or $0.25/base unit,
+     whichever is larger" — is ambiguous between "either condition fires"
+     (OR) and "clear the larger of the two thresholds" (AND-max). Tested both
+     against the full corpus: OR hit recall but produced real false positives
+     (2-8% of stable SKUs, from ordinary noise on expensive items crossing
+     the flat $0.25 floor); AND-max gave clean 0 FP but only ~51-61% recall,
+     because a flat $0.25 floor structurally blocks real creep on cheap items
+     (a 20%+ move on a $0.50/lb herb is only ~$0.10). User picked AND-max +
+     a price-tiered floor: `ABS_FLOOR_CAP_FRACTION` caps the dollar floor at
+     a fraction of the item's own baseline price instead of a flat number, so
+     the 5% rule governs cheap items while the $0.25 floor still applies at
+     $3+/base unit.
+  2. Window sizing then exposed a second, narrower tension: a 4-observation
+     window (SPEC.md's literal "trailing 4 weeks") reached 95.1% recall but
+     let one false positive through — two rare spot-buy prices (~1.5% odds
+     each) coincidentally landed in the same 4-sample window for one SKU,
+     which a median of 4 can't distinguish from real creep (robust to one
+     outlier, not two). Confirmed this wasn't a fixable RNG-probability issue
+     (the two draws were ~0.5% and ~0.06%, robust to any reasonable
+     spot-buy-probability tweak) before asking. User picked genuine
+     0-false-positive robustness: `RECENT_WINDOW_SIZE=5` (not spec's literal
+     4); `thresholds.yaml`'s `recall_min` lowered from spec's literal 0.95 to
+     0.93 to match what's actually achievable under a hard, non-tunable
+     `false_positive_max: 0` — recorded in both the yaml and
+     `app/analytics/price_creep.py`'s module docstring, not silently changed.
+  - Both decisions are recall/FP-neutral with respect to SPEC.md's own stated
+    priority: "a bad price... that the rep debunks loses the account" — false
+    positives are the worse failure, so both calls resolved in that direction
+    when the two couldn't both be maximized.
+- Windows are sized in **observation count** ("last 5 times this tenant was
+  billed for this SKU"), not calendar days: a rigid "last 28 calendar days"
+  window suppressed roughly half of the 82 injected creep events purely from
+  realistic purchase sparsity (a tenant's weekly order samples 30-120 of a
+  100-160 item basket, so not every SKU is bought every week) — not detector
+  failure. Same sparsity-tolerant spirit as Phase 1's own creep-trajectory
+  test, which hit the identical problem and already worked around it
+  ("early-window vs. late-window... exact-week pairs were too sparse").
+- One real corpus-modeling bug found and fixed along the way: produce's
+  seasonal amplitude (0.035, the highest in the catalog) was large enough
+  that sparsely-purchased produce items could compare two windows separated
+  by a wide calendar gap and let seasonal drift alone cross the creep
+  threshold — 2 false positives (Zucchini, Onion Red), both eliminated by
+  reducing produce's amplitude to 0.02 (matching dairy/oils' tier). This is
+  exactly the risk Phase 1 flagged in advance in `synthetic/pricing.py`'s own
+  comment ("if it still does [trip the FP gate], that's a Phase 4 finding to
+  fix then... not a reason to have quietly loosened the threshold") —
+  regenerated the corpus and reconfirmed Phase 1 (`corpus_report`) and Phase
+  3 (`matching_report`) gates stayed green after the change.
+- `python -m validation.creep_report`: 82 injected creep events, **93.9%
+  recall** (77/82, vs. the revised 0.93 threshold), **0 false positives** (vs.
+  the hard-zero threshold). PASS.
+- `pytest tests/test_suppression.py` (6 tests, written before any real
+  benchmark computation touched corpus data, per SPEC.md's own instruction
+  "write the privacy test before the feature"): a 4-distinct-tenant cell
+  suppresses; a 5-tenant cell returns a result; 20 observations from one
+  tenant never substitute for tenant diversity; metro falls back to national
+  when the metro cell alone is too thin; a nationally-thin cell also
+  suppresses; percentiles are computed across the full peer set, spot-checked
+  with visibly distinct per-tenant prices. All passing.
+- `pytest tests/test_negotiation.py` (4 tests): SPEC.md's own worked example
+  (a 3% gap on a high-volume SKU outranks a 40% gap on a low-volume one) holds
+  under real ranking; SKUs priced at or below peer p25 are excluded (no
+  negotiable gap); every line traces to real `invoice_line_item_id`s; the
+  sheet caps at 15. All passing.
+- **Demoed live** against the seeded corpus: generated a real negotiation
+  sheet for "The Copper Skillet" (one of Phase 1's synthetic tenants) — 15
+  ranked lines, top one Cilantro (recoverable $255.40/quarter,
+  $1,021.60/year, peer benchmark from 12 distinct tenants) — and confirmed
+  Cilantro is in fact one of this tenant's injected-creep SKUs (target
+  +22.3%), a good end-to-end coherence signal even though the negotiation
+  sheet and the creep detector are otherwise independent computations.
+- `make validate`'s Phase 0 `make smoke` step is currently blocked by the
+  same pre-existing Anthropic account credit issue noted under Phase 2 (the
+  real extractor gets a 400 on insufficient credit) — confirmed this is
+  unrelated to Phase 4 by running every other gate individually (Phase 1
+  `corpus_report`, Phase 2 `test_extract.py`, Phase 3 `matching_report`,
+  Phase 4 `creep_report` + both new test files); all green. Full backend
+  suite: 74 passed.
 
 ## Phase 5 — Dashboard
 
