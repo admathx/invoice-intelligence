@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Enum, String
+from sqlalchemy import Enum, Index, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -15,6 +15,18 @@ EMBEDDING_DIM = 384
 
 class CanonicalSku(Base):
     __tablename__ = "canonical_skus"
+    __table_args__ = (
+        # SPEC.md §4: "Indexes that matter: ... an HNSW index on
+        # canonical_skus.description_embedding" — Phase 3's embedding matcher
+        # queries this via cosine distance.
+        Index(
+            "ix_canonical_skus_embedding_hnsw",
+            "description_embedding",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"description_embedding": "vector_cosine_ops"},
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # Unique: there's no separate slug column, so `name` is the stable identifier

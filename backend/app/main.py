@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import invoices
+from app.api import invoices, skus
 
 app = FastAPI(title="Invoice Intelligence")
 
@@ -15,6 +15,7 @@ app.add_middleware(
 )
 
 app.include_router(invoices.router)
+app.include_router(skus.router)
 
 
 @app.get("/health")

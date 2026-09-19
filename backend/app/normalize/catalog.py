@@ -267,3 +267,19 @@ def seed_canonical_skus(db: Session) -> dict[str, uuid.UUID]:
         existing[item.name] = row.id
     db.commit()
     return existing
+
+
+def backfill_canonical_embeddings(db: Session) -> int:
+    """Idempotent: computes description_embedding for any canonical SKU that
+    doesn't have one yet (Phase 3's embedding matcher needs it on every row it
+    searches). Returns the number backfilled. Canonical names are already
+    full-word (not abbreviated like raw invoice text), so no expansion needed
+    before embedding — see app/normalize/description_expansion.py for that.
+    """
+    from app.normalize.embeddings import embed_text  # local import: avoid loading the model for callers that only seed rows
+
+    rows = list(db.scalars(select(CanonicalSku).where(CanonicalSku.description_embedding.is_(None))))
+    for row in rows:
+        row.description_embedding = embed_text(row.name)
+    db.commit()
+    return len(rows)

@@ -227,7 +227,83 @@ via a real 400 from the API, not a config issue on our end).
 
 ## Phase 3 — Normalization
 
-Status: not started.
+Status: **done**, gate green, demoed live in the browser.
+
+- Built in spec order (3a → 3b → 3c), each independently gated:
+  - `app/normalize/pack_size.py`: pure parser, `pytest tests/test_pack_size.py`
+    — 36 passed, 100%, every distinct `raw_pack_size` format actually present
+    in the synthetic corpus (verified by scanning it first) plus adversarial
+    cases including the spec's own `"6/#10 CAN"` → 660 oz worked example.
+    Returns a generic unit token rather than committing to `BaseUom` directly:
+    a bare "OZ" is genuinely ambiguous between dry weight and fluid volume
+    (the pack string alone can't resolve that), so `compatible_base_uoms`
+    returns `{oz, fl_oz}` for that case and the matcher reconciles it against
+    whichever canonical SKU actually matches.
+  - `app/normalize/matcher.py`: alias → GTIN → pack-size → embedding,
+    short-circuiting on the first hit. `pytest tests/test_alias.py` — 5
+    passed, including a spy-based test proving the embedding matcher is never
+    invoked when a confirmed alias exists. GTIN matching is implemented and
+    correct but structurally inert: SPEC.md §5's extraction contract has no
+    GTIN field, so nothing currently supplies one.
+  - `app/normalize/embeddings.py` (`all-MiniLM-L6-v2`, 384-dim, matches
+    `canonical_skus.description_embedding`) + `app/normalize/
+    description_expansion.py` (a maintained glossary of common foodservice-
+    distributor abbreviations, expanded before embedding — e.g. "MOZZ SHRD
+    WHL MLK" → "MOZZARELLA SHREDDED WHOLE MILK"). Added the HNSW index
+    SPEC.md §4 calls out (`ix_canonical_skus_embedding_hnsw`,
+    `vector_cosine_ops`) that Phase 0's migration had missed.
+  - `python -m validation.matching_report`: run over the **entire** corpus
+    (39,179 line items — SPEC.md's exit criteria says "of corpus line items,"
+    not a sample), deduplicated to 978 distinct (description, pack_size)
+    pairs before batch-embedding (the same description/pack-size is stable
+    across all 26 weeks for a given (distributor, item), so this is seconds
+    of embedding work, not tens of minutes). **98.8% auto-match rate** (vs.
+    ≥90% required), **0% false match rate** (vs. <1% max), 0 unparseable pack
+    sizes, 19/20 on the cross-distributor consistency spot-check (the one
+    exception is a line truncated to 4 characters by Phase 1's noise
+    injection — correctly routed to review rather than a wrong auto-match,
+    not a matcher defect — see below). PASS.
+  - Caught a real bug in my own spot-check script while investigating that
+    19/20 (not the matcher): a line with no confident match (`new_candidate`
+    status) contributed `None` to the per-SKU matched-id set, which a naive
+    "exactly one distinct id" check then flagged as a false inconsistency.
+    Fixed to only compare resolved (auto/review) matches — "no confident
+    match yet" and "matched to the wrong thing" are different failure modes
+    and the check was conflating them.
+  - Found and fixed a real coverage gap in the abbreviation glossary while
+    spot-testing before trusting the full-corpus run: "MOZZ" (→ MOZZARELLA)
+    and "YLW" (→ YELLOW) were missing, which alone dropped two realistic
+    test strings to 0.76-0.78 similarity — under the 0.80 review floor, not
+    just the 0.92 auto floor. Both are common real distributor abbreviations,
+    not synthetic-corpus artifacts (my synthetic generator never abbreviates
+    "Mozzarella" → "Mozz" or colors, so this gap was invisible to the
+    matching_report's own numbers and would only have surfaced against real
+    invoices).
+  - Wired the matcher into `process_invoice` (the actual worker pipeline, not
+    just a standalone validated function) — every extracted line item is now
+    normalized automatically when its distributor is recognized. Skipped
+    when the distributor is `other`/unrecognized: that invoice is already
+    routed to `needs_review` by Phase 2's `assess_extraction`, and alias
+    lookup has no distributor to scope to anyway.
+  - Built the `/skus` search page (repo layout already reserved this route in
+    §3; the spec's own Phase 3 demo line calls for it explicitly, not
+    deferred to Phase 5's four dashboard pages) — `GET /skus?q=` (search,
+    unscoped: `canonical_skus` is shared reference data, not `TenantScoped`)
+    and `GET /skus/{id}?tenant_id=` (matched-line detail, tenant-scoped as
+    usual). **Demoed live**: seeded two ground-truth invoices from different
+    distributors (Sysco, Gordon) under one dev tenant — bypassing Phase 2
+    extraction entirely, which is fine, Phase 3 doesn't depend on it, and
+    real extraction is still blocked on Anthropic credit — searched
+    "mozzarella" in the browser, opened the result, confirmed both
+    distributors' differently-abbreviated lines (`MOZZARELLA SHRD WHOLE MLK`
+    / `MOZZARELLA SHRD WHL MLK`) resolved to the same canonical SKU at
+    confidence 1.000, with correctly normalized per-pound prices ($3.76 vs.
+    $3.57) despite different case-pack configs. Screenshot taken.
+  - Acknowledged limitation: the embedding matcher's accuracy is validated
+    only against synthetic data generated using a description-abbreviation
+    scheme I also chose. This is the expected, spec-anticipated limitation of
+    synthetic-corpus-driven development (not something to fix within v0) —
+    real invoice text is the actual test, whenever that's available.
 
 ## Phase 4 — Analytics
 

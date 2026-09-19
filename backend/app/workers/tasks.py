@@ -12,6 +12,7 @@ from app.extract.confidence import assess_extraction
 from app.ingest.render import render_pdf_to_pngs
 from app.models import Distributor, Invoice, InvoiceLineItem
 from app.models.enums import InvoiceStatus
+from app.normalize.matcher import match_line_item
 
 extractor = get_extractor()
 
@@ -72,21 +73,45 @@ def process_invoice(invoice_id: str) -> None:
         invoice.extracted_at = datetime.now(timezone.utc)
 
         for line in extracted.line_items:
-            db.add(
-                InvoiceLineItem(
-                    tenant_id=invoice.tenant_id,
-                    invoice_id=invoice.id,
-                    line_number=line.line_number,
-                    raw_description=line.raw_description,
-                    raw_sku=line.raw_sku,
-                    raw_pack_size=line.raw_pack_size,
-                    quantity=Decimal(line.quantity),
-                    unit_price=Decimal(line.unit_price),
-                    extended_price=Decimal(line.extended_price),
-                    uom=line.uom,
-                    extraction_confidence=Decimal(str(line.confidence)),
-                )
+            quantity = Decimal(line.quantity)
+            unit_price = Decimal(line.unit_price)
+            line_item = InvoiceLineItem(
+                tenant_id=invoice.tenant_id,
+                invoice_id=invoice.id,
+                line_number=line.line_number,
+                raw_description=line.raw_description,
+                raw_sku=line.raw_sku,
+                raw_pack_size=line.raw_pack_size,
+                quantity=quantity,
+                unit_price=unit_price,
+                extended_price=Decimal(line.extended_price),
+                uom=line.uom,
+                extraction_confidence=Decimal(str(line.confidence)),
             )
+
+            # SPEC.md §6 normalization — only possible once we know which
+            # distributor's alias table to check; an unrecognized distributor
+            # ('other') already routes the whole invoice to needs_review via
+            # assess_extraction below, so leaving these fields unset here is
+            # honest, not a gap.
+            if invoice.distributor_id is not None:
+                match = match_line_item(
+                    db,
+                    distributor_id=invoice.distributor_id,
+                    raw_sku=line.raw_sku,
+                    raw_description=line.raw_description,
+                    raw_pack_size=line.raw_pack_size,
+                    quantity=quantity,
+                    unit_price=unit_price,
+                )
+                line_item.canonical_sku_id = match.canonical_sku_id
+                line_item.match_confidence = match.match_confidence
+                line_item.normalized_qty_base = match.normalized_qty_base
+                line_item.normalized_unit_price = match.normalized_unit_price
+                line_item.base_uom = match.base_uom
+                line_item.review_status = match.review_status
+
+            db.add(line_item)
 
         # SPEC.md §5: arithmetic validation is the confidence signal, not the
         # model's own self-reported certainty. Any failure routes to needs_review

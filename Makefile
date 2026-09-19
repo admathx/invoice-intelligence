@@ -44,6 +44,9 @@ validate:
 	PYTHONPATH=backend backend/$(VENV)/python -m validation.corpus_report
 	@echo "--- Phase 2 gate (pytest only — extraction-report costs real API spend, run it separately) ---"
 	cd backend && $(VENV)/pytest -q tests/test_extract.py
+	@echo "--- Phase 3 gate ---"
+	cd backend && $(VENV)/pytest -q tests/test_pack_size.py tests/test_alias.py
+	PYTHONPATH=backend backend/$(VENV)/python -m validation.matching_report
 
 # Costs real money once ANTHROPIC_API_KEY is configured with credit — not part
 # of `make validate`. Defaults to a small sample; override with SAMPLE=200 to
