@@ -31,6 +31,10 @@ from app.db import SessionLocal  # noqa: E402
 from app.models.canonical_sku import CanonicalSku  # noqa: E402
 from app.normalize.description_expansion import normalize_for_embedding  # noqa: E402
 from app.normalize.embeddings import embed_texts  # noqa: E402
+# Import the live thresholds rather than redefining them: matcher.py is what
+# actually gates production matches, so this report must score against
+# exactly those cutoffs or it can silently stop reflecting live behavior.
+from app.normalize.matcher import AUTO_MATCH_CONFIDENCE_THRESHOLD, REVIEW_QUEUE_CONFIDENCE_LOW  # noqa: E402
 from app.normalize.pack_size import PackSizeParseError, parse_pack_size  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
@@ -38,16 +42,17 @@ OUT_DIR = REPO_ROOT / "synthetic" / "out"
 THRESHOLDS_PATH = REPO_ROOT / "validation" / "thresholds.yaml"
 RESULTS_PATH = REPO_ROOT / "validation" / "results" / "phase3_normalization.json"
 
-AUTO_MATCH_CONFIDENCE_THRESHOLD = Decimal("0.92")
-REVIEW_QUEUE_CONFIDENCE_LOW = Decimal("0.80")
-
 
 def _load_candidates(db):
     rows = list(db.scalars(select(CanonicalSku).where(CanonicalSku.description_embedding.is_not(None))))
     ids = [r.id for r in rows]
     names = [r.name for r in rows]
     base_uoms = [r.base_uom for r in rows]
-    matrix = np.array([r.description_embedding for r in rows], dtype=np.float32)
+    # float64, not float32: matcher.py's live _cosine_similarity sums in Python
+    # float64, and this report exists to validate that live path — a lower-
+    # precision dtype here can round a boundary similarity (e.g. ~0.91998) to
+    # a different auto/review classification than production actually makes.
+    matrix = np.array([r.description_embedding for r in rows], dtype=np.float64)
     return ids, names, base_uoms, matrix
 
 
@@ -110,7 +115,7 @@ def main() -> int:
             continue
 
         candidate_id, candidate_name, similarity = _best_match(
-            np.array(vec, dtype=np.float32), pack.compatible_base_uoms, ids, names, base_uoms, matrix
+            np.array(vec, dtype=np.float64), pack.compatible_base_uoms, ids, names, base_uoms, matrix
         )
         if candidate_id is None:
             match_cache[(desc, pack_str)] = {"status": "no_candidates"}

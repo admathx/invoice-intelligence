@@ -69,35 +69,43 @@ def match_by_embedding(
     de facto through the embedding itself (semantically distant categories
     score low) plus the UOM filter, rather than a category classifier that
     would just be guessing from the same text the embedding already sees.
-    """
-    candidates = list(db.scalars(select(CanonicalSku).where(CanonicalSku.base_uom.in_(compatible_uoms))))
-    candidates = [c for c in candidates if c.description_embedding is not None]
-    if not candidates:
-        return None, None
 
+    Scored with a single `ORDER BY cosine_distance LIMIT 1` query rather than
+    fetching every compatible-UOM candidate and scoring it in Python — this is
+    the query shape the HNSW index (app/models/canonical_sku.py) exists to
+    accelerate.
+    """
     query_text = normalize_for_embedding(raw_description)
     query_vec = embed_text(query_text)
 
-    best_candidate: CanonicalSku | None = None
-    best_similarity = -1.0
-    for candidate in candidates:
-        similarity = _cosine_similarity(query_vec, candidate.description_embedding)
-        if similarity > best_similarity:
-            best_similarity = similarity
-            best_candidate = candidate
+    distance = CanonicalSku.description_embedding.cosine_distance(query_vec)
+    row = db.execute(
+        select(CanonicalSku, distance.label("distance"))
+        .where(
+            CanonicalSku.base_uom.in_(compatible_uoms),
+            CanonicalSku.description_embedding.is_not(None),
+        )
+        .order_by(distance)
+        .limit(1)
+    ).first()
+    if row is None:
+        return None, None
 
-    return best_candidate, Decimal(str(round(best_similarity, 4)))
-
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    # Both vectors are pre-normalized (embed_text uses normalize_embeddings=True),
-    # so cosine similarity is just the dot product.
-    return sum(x * y for x, y in zip(a, b))
+    candidate, distance_value = row
+    similarity = Decimal(str(round(1 - distance_value, 4)))
+    return candidate, similarity
 
 
 def _apply_pack_size(
-    pack: ParsedPackSize, quantity: Decimal, unit_price: Decimal
+    pack: ParsedPackSize, quantity: Decimal, unit_price: Decimal, uom: str
 ) -> tuple[Decimal, Decimal]:
+    # unit_price is only a case price when the line is actually billed by the
+    # case (printed UOM "CS") — SPEC.md §6 also lists EA/DZ/etc. as UOMs to
+    # handle, and a distributor billing directly by the base unit (e.g.
+    # UOM="LB") already prices per base unit, so dividing by the pack size
+    # again would silently understate normalized_unit_price by that factor.
+    if uom.strip().upper() != "CS":
+        return quantity, unit_price.quantize(Decimal("0.0001"))
     normalized_qty_base = quantity * pack.base_units_per_case
     normalized_unit_price = (unit_price / pack.base_units_per_case).quantize(Decimal("0.0001"))
     return normalized_qty_base, normalized_unit_price
@@ -110,6 +118,7 @@ def _exact_match_result(
     raw_pack_size: str,
     quantity: Decimal,
     unit_price: Decimal,
+    uom: str,
 ) -> MatchResult:
     """Shared by the alias and GTIN paths: both are a confirmed exact match on
     identity, differing only in how canonical_sku_id was found — everything
@@ -117,17 +126,22 @@ def _exact_match_result(
     """
     try:
         pack = parse_pack_size(raw_pack_size)
-        qty_base, price_base = _apply_pack_size(pack, quantity, unit_price)
+        qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom)
         base_uom = _resolve_base_uom(db, pack, canonical_sku_id)
+        review_status = ReviewStatus.auto
     except PackSizeParseError:
+        # Identity is still certain (that's what alias/GTIN means), but with no
+        # normalized price this row isn't actually fully resolved — auto would
+        # claim "no review needed" over a line with no usable price.
         qty_base = price_base = base_uom = None
+        review_status = ReviewStatus.pending
     return MatchResult(
         canonical_sku_id=canonical_sku_id,
         match_confidence=Decimal("1.0"),
         normalized_qty_base=qty_base,
         normalized_unit_price=price_base,
         base_uom=base_uom,
-        review_status=ReviewStatus.auto,
+        review_status=review_status,
         method=method,
     )
 
@@ -141,15 +155,16 @@ def match_line_item(
     raw_pack_size: str,
     quantity: Decimal,
     unit_price: Decimal,
+    uom: str,
     gtin: str | None = None,
 ) -> MatchResult:
     alias_match = match_by_alias(db, distributor_id, raw_sku)
     if alias_match is not None:
-        return _exact_match_result(db, alias_match, "alias", raw_pack_size, quantity, unit_price)
+        return _exact_match_result(db, alias_match, "alias", raw_pack_size, quantity, unit_price, uom)
 
     gtin_match = match_by_gtin(db, gtin)
     if gtin_match is not None:
-        return _exact_match_result(db, gtin_match, "gtin", raw_pack_size, quantity, unit_price)
+        return _exact_match_result(db, gtin_match, "gtin", raw_pack_size, quantity, unit_price, uom)
 
     try:
         pack = parse_pack_size(raw_pack_size)
@@ -168,7 +183,7 @@ def match_line_item(
             method="unparseable_pack_size",
         )
 
-    qty_base, price_base = _apply_pack_size(pack, quantity, unit_price)
+    qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom)
     candidate, similarity = match_by_embedding(db, raw_description, pack.compatible_base_uoms)
     # A singleton compatible-UOM set (everything but the "oz" weight/fluid
     # ambiguity) is already unambiguous from the pack string alone; only the

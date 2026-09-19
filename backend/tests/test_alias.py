@@ -68,6 +68,7 @@ def test_confirmed_alias_short_circuits(db_session, distributor, canonical_sku, 
         raw_pack_size="4/5 LB",
         quantity=Decimal("2"),
         unit_price=Decimal("47.50"),
+        uom="CS",
     )
     assert result.canonical_sku_id == canonical_sku.id
     assert result.method == "alias"
@@ -89,6 +90,7 @@ def test_embedding_matcher_never_called_on_known_alias(monkeypatch, db_session, 
         raw_pack_size="4/5 LB",
         quantity=Decimal("1"),
         unit_price=Decimal("10.00"),
+        uom="CS",
     )
 
     assert calls == [], "embedding matcher was called despite a confirmed alias existing"
@@ -105,6 +107,7 @@ def test_alias_is_scoped_to_distributor(db_session, distributor, other_distribut
         raw_pack_size="4/5 LB",
         quantity=Decimal("1"),
         unit_price=Decimal("10.00"),
+        uom="CS",
     )
     assert result.method != "alias"
 
@@ -118,6 +121,7 @@ def test_no_alias_falls_through_to_embedding(db_session, distributor):
         raw_pack_size="4/5 LB",
         quantity=Decimal("1"),
         unit_price=Decimal("47.50"),
+        uom="CS",
     )
     assert result.method in ("embedding_auto", "embedding_review", "new_candidate")
 

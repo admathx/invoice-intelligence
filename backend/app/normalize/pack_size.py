@@ -72,7 +72,9 @@ _CASE_PATTERN = re.compile(r"^(\d+)\s*/\s*([\d.]+)\s*([A-Za-z]+)$")
 _BARE_PATTERN = re.compile(r"^([\d.]+)\s*([A-Za-z]+)$")
 
 
-def parse_pack_size(raw_pack_size: str) -> ParsedPackSize:
+def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
+    if not raw_pack_size:
+        raise PackSizeParseError(f"empty or missing pack size: {raw_pack_size!r}")
     text = raw_pack_size.strip().upper()
 
     m = _CAN_PATTERN.match(text)
@@ -80,7 +82,7 @@ def parse_pack_size(raw_pack_size: str) -> ParsedPackSize:
         count, can_code = m.group(1), m.group(2)
         if can_code not in CAN_SIZE_OZ:
             raise PackSizeParseError(f"unknown can size #{can_code} in {raw_pack_size!r}")
-        return ParsedPackSize(unit="oz", base_units_per_case=Decimal(count) * CAN_SIZE_OZ[can_code])
+        return _positive(ParsedPackSize(unit="oz", base_units_per_case=Decimal(count) * CAN_SIZE_OZ[can_code]), raw_pack_size)
 
     m = _CASE_PATTERN.match(text)
     if m:
@@ -88,7 +90,7 @@ def parse_pack_size(raw_pack_size: str) -> ParsedPackSize:
         unit = _UNIT_TO_TOKEN.get(unit_raw)
         if unit is None:
             raise PackSizeParseError(f"unknown unit {unit_raw!r} in {raw_pack_size!r}")
-        return ParsedPackSize(unit=unit, base_units_per_case=Decimal(count) * Decimal(size))
+        return _positive(ParsedPackSize(unit=unit, base_units_per_case=Decimal(count) * Decimal(size)), raw_pack_size)
 
     m = _BARE_PATTERN.match(text)
     if m:
@@ -96,6 +98,16 @@ def parse_pack_size(raw_pack_size: str) -> ParsedPackSize:
         unit = _UNIT_TO_TOKEN.get(unit_raw)
         if unit is None:
             raise PackSizeParseError(f"unknown unit {unit_raw!r} in {raw_pack_size!r}")
-        return ParsedPackSize(unit=unit, base_units_per_case=Decimal(size))
+        return _positive(ParsedPackSize(unit=unit, base_units_per_case=Decimal(size)), raw_pack_size)
 
     raise PackSizeParseError(f"unrecognized pack size format: {raw_pack_size!r}")
+
+
+def _positive(parsed: ParsedPackSize, raw_pack_size: str) -> ParsedPackSize:
+    # A zero (or negative, though the grammar can't produce one) case size
+    # would divide-by-zero downstream in matcher.py's price normalization —
+    # reject it here as unparseable rather than letting that propagate as an
+    # uncaught crash that fails the whole invoice.
+    if parsed.base_units_per_case <= 0:
+        raise PackSizeParseError(f"non-positive pack size in {raw_pack_size!r}: {parsed.base_units_per_case}")
+    return parsed
