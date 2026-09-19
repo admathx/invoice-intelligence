@@ -1,4 +1,4 @@
-.PHONY: up down migrate seed seed-analytics smoke test validate extraction-report frontend-install frontend-dev
+.PHONY: up down migrate seed seed-analytics smoke test test-e2e validate extraction-report frontend-install frontend-dev
 
 VENV := .venv/bin
 RUN_DIR := .run
@@ -43,6 +43,13 @@ smoke:
 test:
 	cd backend && $(VENV)/pytest -q
 
+# Playwright drives its own Next.js dev server (frontend/playwright.config.ts,
+# reuseExistingServer: true) but assumes `make up` is already running for the
+# backend/worker/postgres/redis it talks to — same assumption every other
+# gate above makes.
+test-e2e:
+	cd frontend && npx playwright test
+
 validate:
 	@echo "--- Phase 0 gate ---"
 	cd backend && $(VENV)/pytest -q tests/test_skeleton.py
@@ -56,9 +63,12 @@ validate:
 	cd backend && $(VENV)/pytest -q tests/test_pack_size.py tests/test_alias.py
 	PYTHONPATH=backend backend/$(VENV)/python -m validation.matching_report
 	@echo "--- Phase 4 gate ---"
-	cd backend && $(VENV)/pytest -q tests/test_suppression.py tests/test_negotiation.py
+	cd backend && $(VENV)/pytest -q tests/test_suppression.py tests/test_negotiation.py tests/test_price_creep.py
 	$(MAKE) seed-analytics
 	PYTHONPATH=backend backend/$(VENV)/python -m validation.creep_report
+	@echo "--- Phase 5 gate ---"
+	cd frontend && npm run test
+	$(MAKE) test-e2e
 
 # Costs real money once ANTHROPIC_API_KEY is configured with credit — not part
 # of `make validate`. Defaults to a small sample; override with SAMPLE=200 to

@@ -415,7 +415,112 @@ Status: **done**, gates green, demoed against the live corpus.
 
 ## Phase 5 — Dashboard
 
-Status: not started.
+Status: **done**, gate green, demoed live in the browser.
+
+- Built the three pages SPEC.md §9 lists that didn't already exist (Invoices
+  and `/skus` were built during earlier phases; `/skus` isn't one of the four
+  but was already there from Phase 3's own demo need):
+  - **Review queue** (`frontend/src/app/review/page.tsx`): one item at a
+    time, not a bulk table — matches SPEC.md's "the one screen worth making
+    genuinely fast." A single autofocused search input drives both actions:
+    `Enter` on an empty box confirms the matcher's suggested SKU; typing
+    filters canonical SKUs live (reusing Phase 3's `GET /skus?q=` endpoint),
+    arrow keys move the selection, `Enter` corrects to the highlighted
+    result. Both paths write a `sku_aliases` row (a confirm teaches the
+    system too, not just a correction — "the whole point of a human
+    verifying a match is that the next identical line resolves for free")
+    and, when a price is resolvable, a `price_observations` row — this is
+    the real "written after a line item is confirmed" path
+    `price_observation.py`'s own docstring describes; Phase 4's
+    `seed_corpus_pipeline.py` used `review_status==auto` as a stand-in
+    specifically because this endpoint didn't exist yet.
+  - **Insights** (`frontend/src/app/insights/page.tsx`): open alerts (refreshed
+    on read via `upsert_creep_alerts` — no background job infra in v0), a
+    dependency-free inline-SVG sparkline per SKU (`frontend/src/lib/
+    sparkline.ts`, unit-tested), and a benchmark position bar (peer
+    p25/p50/p75 vs. the tenant's own price).
+  - **Negotiation sheet** (`frontend/src/app/negotiation/page.tsx`): the
+    ranked table from `build_negotiation_sheet`, a `window.print()` button,
+    print-hidden chrome via Tailwind's `print:hidden`.
+  - **Invoices detail** (`frontend/src/app/invoices/[id]/page.tsx`): added
+    the page image side-by-side with extracted lines that SPEC.md's Invoices
+    page calls for and earlier phases hadn't built yet. Required mounting
+    `<upload_dir>/renders/` as static files (`app/main.py`) and a new
+    `page_image_urls` field on `GET /invoices/{id}` — rendered PNGs existed
+    on disk since Phase 0 (`app/ingest/render.py`) but were never served over
+    HTTP before this.
+- New backend surface: `app/api/{review,insights,negotiation}.py` +
+  matching `app/schemas/*.py`, registered in `main.py`. `review.py` reuses
+  `app/normalize/matcher.py`'s own `_exact_match_result` to recompute
+  normalized price/qty on a correction — not a second reimplementation of
+  that pack-size math (the kind of duplication Phase 4's code review flagged
+  once already). Also added `GET /review/queue?distributor_id=` as an
+  optional filter — genuinely useful for a rep working one distributor at a
+  time, and load-bearing for the e2e gate below (see why in that section).
+- **Playwright e2e gate** (`frontend/e2e/dashboard.spec.ts`,
+  `frontend/playwright.config.ts`): ingest → review → negotiation sheet,
+  headless, `npx playwright test` as the only command a human runs (assumes
+  `make up` already running, same as every other gate). "Ingest" seeds two
+  pending review-queue line items directly via a new
+  `backend/scripts/e2e_fixture.py` instead of uploading a PDF through real
+  vision extraction — the same "ground truth stands in for extraction"
+  reasoning `seed_corpus_pipeline.py` already established for Phase 4, and
+  necessary here regardless: the dev environment's Anthropic account still
+  has no credit (same blocker noted under Phase 2), so a real-upload e2e test
+  would be failing on an unrelated billing issue, not exercising the
+  dashboard at all.
+  - Test 1 drives both keyboard paths for real: searches and corrects one
+    line, confirms another via bare `Enter`, then calls the matcher again
+    directly for the corrected line's (distributor, raw_sku) and asserts
+    `method == "alias"` — SPEC.md's own definition of "the next matching
+    line auto-resolves."
+  - Test 2 seeds 20 already-suggested review items and clears all 20 via
+    keyboard, timing it against the exit criteria's 120s budget:
+    **0.6 seconds** (automated `Enter`-per-item; a human typing would still
+    be well inside the budget). Needed `GET /review/queue`'s new
+    `distributor_id` filter to get a clean, isolated slice of the queue —
+    without it the timing loop raced against whatever else was already
+    pending for the dev tenant (real corpus review items, leftover fixtures)
+    and undercounted, since pressing `Enter` on an item with no suggested
+    match is correctly a no-op.
+  - Test 3 checks the negotiation sheet renders a table (or the explicit
+    empty state) with a working print button.
+  - `backend/scripts/e2e_fixture.py` self-cleans (deletes any prior run's
+    `e2e-%`-slugged distributor/invoice/line-items/aliases before creating
+    its own) so repeated `npx playwright test` runs — e.g. in CI — don't
+    accumulate one throwaway distributor per run forever. Verified by
+    running the suite twice and confirming the distributor count stayed flat.
+- Added `frontend/vitest.config.ts` (didn't exist before — vitest was
+  running with pure defaults) to exclude `e2e/**`: Playwright and Vitest both
+  default to scanning `*.spec.ts`, and without the exclusion Vitest tried to
+  execute Playwright's `test.describe()` in its own runner and failed.
+  `npm run test` had zero unit tests before this phase; added
+  `sparkline.test.ts` (4 cases) against a pure function extracted from the
+  Insights page's chart component, rather than padding the suite with a
+  token test.
+- Real bugs found and fixed while wiring this up (not part of any formal
+  review pass — just building and immediately checking in the browser):
+  - `next build` failed prerendering `/review`: `useSearchParams()` needs a
+    Suspense boundary in the App Router or static generation bails with an
+    error, not just a warning. Split into an outer `ReviewQueuePage`
+    (`<Suspense>`) and inner `ReviewQueueInner` (the actual hook usage).
+  - The API server doesn't run with `--reload`, so editing `app/api/*.py`
+    mid-session silently kept serving the old code until a manual restart —
+    cost real debugging time chasing what looked like a backend filter bug
+    when it was a stale process. Worth remembering for any future backend
+    edit made while `make up` is already running.
+- **Demoed live** in the browser against the seeded Phase 4 corpus data (not
+  just Playwright): cleared a real truncated-by-noise line ("2% MILK") via
+  keyboard search+correct, confirmed a real embedding-review-band suggestion
+  ("AVOCA" → Avocado, 0.91 confidence) via bare `Enter`, watched Insights
+  render this tenant's actual injected-creep SKUs (Pasta Penne, Souffle Cup
+  2oz, Yeast Active Dry, Bar Mop Towel — matching Phase 1's own injected
+  targets almost exactly) with live sparklines and benchmark bars, and
+  generated a real negotiation sheet ($976.49 total annualized opportunity
+  for one tenant, correctly ranked by dollars not percentage).
+- `npm run build`: clean. Full backend suite: 76 passed. `npm run test`
+  (vitest): 4 passed. `npx playwright test`: 3 passed, run twice back-to-back
+  with no accumulation and no flakiness observed.
 
 ## Phase 6 — Email intake
 

@@ -10,6 +10,11 @@ node_modules/
 .next/
 frontend/.env.local
 
+# Playwright output (regeneratable)
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+
 # Env / secrets
 .env
 *.env.local

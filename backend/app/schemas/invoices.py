@@ -50,6 +50,7 @@ class InvoiceOut(BaseModel):
 
 class InvoiceDetailOut(InvoiceOut):
     line_items: list[LineItemOut] = []
+    page_image_urls: list[str] = []
 
 
 class InvoiceUploadResponse(BaseModel):

@@ -20,6 +20,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <a href="/skus" className="text-sm text-gray-600 hover:text-gray-900">
             SKUs
           </a>
+          <a href="/review" className="text-sm text-gray-600 hover:text-gray-900">
+            Review queue
+          </a>
+          <a href="/insights" className="text-sm text-gray-600 hover:text-gray-900">
+            Insights
+          </a>
+          <a href="/negotiation" className="text-sm text-gray-600 hover:text-gray-900">
+            Negotiation
+          </a>
         </nav>
         <main className="p-6">{children}</main>
       </body>

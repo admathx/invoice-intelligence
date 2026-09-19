@@ -1,4 +1,5 @@
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from redis import Redis
@@ -65,7 +66,14 @@ def get_invoice(
             .order_by(InvoiceLineItem.line_number)
         )
     )
+    render_dir = Path(settings.upload_dir) / "renders" / str(invoice_id)
+    page_image_urls = (
+        [f"/renders/{invoice_id}/{p.name}" for p in sorted(render_dir.glob("page_*.png"))]
+        if render_dir.is_dir()
+        else []
+    )
     return InvoiceDetailOut(
         **InvoiceOut.model_validate(invoice).model_dump(),
         line_items=[LineItemOut.model_validate(li) for li in line_items],
+        page_image_urls=page_image_urls,
     )

@@ -1,7 +1,11 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-from app.api import invoices, skus
+from app.api import insights, invoices, negotiation, review, skus
+from app.config import settings
 
 app = FastAPI(title="Invoice Intelligence")
 
@@ -14,8 +18,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# SPEC.md §9: Invoices page shows the page image side-by-side with extracted
+# lines. Renders live on disk at <upload_dir>/renders/<invoice_id>/page_NNN.png
+# (app/ingest/render.py) — served directly rather than proxied through an
+# endpoint, since they're static once extraction finishes and tenant scoping
+# doesn't apply to raw file bytes any differently than a signed-URL proxy
+# would provide in this no-auth v0.
+renders_dir = Path(settings.upload_dir) / "renders"
+renders_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/renders", StaticFiles(directory=renders_dir), name="renders")
+
 app.include_router(invoices.router)
 app.include_router(skus.router)
+app.include_router(review.router)
+app.include_router(insights.router)
+app.include_router(negotiation.router)
 
 
 @app.get("/health")
