@@ -79,7 +79,7 @@ def main() -> None:
     distributor_ids = {d.slug: d.id for d in db.scalars(select(Distributor))}
     synth_tenants = build_tenants()
 
-    match_cache: dict[tuple[str, str, str], MatchResult] = {}
+    match_cache: dict[tuple[uuid.UUID, str | None, str, str, str], MatchResult] = {}
     total_invoices = total_lines = total_observations = 0
     t0 = time.time()
 
@@ -117,7 +117,14 @@ def main() -> None:
             )
 
             for line in gt["line_items"]:
-                key = (line["raw_description"], line["raw_pack_size"] or "", line["uom"])
+                # Includes distributor_id/raw_sku, not just the free-text
+                # description/pack/uom: match_line_item's alias path resolves
+                # on (distributor_id, raw_sku), so a cache keyed on
+                # description alone would reuse an alias-derived match across
+                # a different distributor or raw_sku once sku_aliases rows
+                # exist (Phase 5's review queue writes those; none exist yet,
+                # but this cache is meant to survive that).
+                key = (distributor_id, line["raw_sku"], line["raw_description"], line["raw_pack_size"] or "", line["uom"])
                 cached = match_cache.get(key)
                 if cached is None:
                     cached = match_line_item(
@@ -168,6 +175,14 @@ def main() -> None:
                 )
                 total_lines += 1
 
+                # review_status=auto stands in for price_observation.py's actual
+                # "confirmed" semantics, since there's no human confirm flow yet
+                # (that's Phase 5). This is a real gap, not just a placeholder:
+                # every Phase 4 threshold tuned against this corpus (window
+                # sizes, floor fraction, recall/FP targets) is calibrated
+                # against auto-match-shaped data, which may not match Phase 5's
+                # real confirmed-line volume/timing once that flow exists —
+                # worth re-validating creep_report's numbers once it does.
                 if cached.review_status == ReviewStatus.auto and cached.canonical_sku_id is not None:
                     db.add(
                         PriceObservation(

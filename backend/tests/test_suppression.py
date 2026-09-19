@@ -11,18 +11,13 @@ from decimal import Decimal
 import pytest
 
 from app.analytics.benchmark import MIN_DISTINCT_TENANTS, compute_benchmark
-from app.db import SessionLocal
 from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceObservation, Tenant
 from app.models.enums import BaseUom, InvoiceSource, InvoiceStatus, ReviewStatus, VolumeTier
 
 AS_OF = date(2026, 6, 1)
 
-
-@pytest.fixture()
-def db_session():
-    session = SessionLocal()
-    yield session
-    session.close()
+# db_session fixture is shared from conftest.py — it rolls back every commit
+# a test makes, unlike a bare SessionLocal().
 
 
 @pytest.fixture()

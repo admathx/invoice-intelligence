@@ -56,7 +56,10 @@ def build_negotiation_sheet(db: Session, tenant_id: uuid.UUID, as_of: date) -> l
             PriceObservation.observed_on >= window_start,
             PriceObservation.observed_on <= as_of,
         )
-        .order_by(PriceObservation.canonical_sku_id, PriceObservation.observed_on.desc())
+        # Tertiary sort key: observed_on is a Date, so two deliveries of the
+        # same SKU from two distributors on the same calendar date would
+        # otherwise tie with no deterministic winner for "current price".
+        .order_by(PriceObservation.canonical_sku_id, PriceObservation.observed_on.desc(), PriceObservation.id.desc())
     ).all()
 
     by_sku: dict[uuid.UUID, list[tuple[date, Decimal, uuid.UUID, Decimal]]] = {}
@@ -65,7 +68,7 @@ def build_negotiation_sheet(db: Session, tenant_id: uuid.UUID, as_of: date) -> l
 
     candidates: list[NegotiationLine] = []
     for sku_id, points in by_sku.items():
-        benchmark = compute_benchmark(db, sku_id, tenant.metro, as_of, volume_tier=None)
+        benchmark = compute_benchmark(db, sku_id, tenant.metro, as_of, volume_tier=None, exclude_tenant_id=tenant_id)
         if benchmark is None:
             continue
 
@@ -75,7 +78,7 @@ def build_negotiation_sheet(db: Session, tenant_id: uuid.UUID, as_of: date) -> l
             continue  # no overpay to recover
 
         trailing_qty = sum((qty for _, _, _, qty in points), Decimal(0))
-        recoverable_90d = (current_price - benchmark.p25) * trailing_qty
+        recoverable_90d = ((current_price - benchmark.p25) * trailing_qty).quantize(Decimal("0.0001"))
         candidates.append(
             NegotiationLine(
                 canonical_sku_id=sku_id,
@@ -86,7 +89,7 @@ def build_negotiation_sheet(db: Session, tenant_id: uuid.UUID, as_of: date) -> l
                 trailing_90d_quantity=trailing_qty,
                 quantity_line_item_ids=[lid for _, _, lid, _ in points],
                 recoverable_90d=recoverable_90d,
-                annualized_savings=recoverable_90d * ANNUALIZATION_FACTOR,
+                annualized_savings=(recoverable_90d * ANNUALIZATION_FACTOR).quantize(Decimal("0.0001")),
             )
         )
 

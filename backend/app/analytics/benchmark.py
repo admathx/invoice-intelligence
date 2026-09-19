@@ -44,11 +44,17 @@ def _percentile(sorted_values: list[Decimal], pct: Decimal) -> Decimal:
     lo = int(rank)
     hi = min(lo + 1, n - 1)
     frac = rank - lo
-    return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * frac
+    return (sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * frac).quantize(Decimal("0.0001"))
 
 
 def _cell(
-    db: Session, canonical_sku_id: uuid.UUID, metro: str | None, volume_tier: VolumeTier | None, window_start: date, as_of: date
+    db: Session,
+    canonical_sku_id: uuid.UUID,
+    metro: str | None,
+    volume_tier: VolumeTier | None,
+    window_start: date,
+    as_of: date,
+    exclude_tenant_id: uuid.UUID | None,
 ) -> BenchmarkResult | None:
     conditions = [
         PriceObservation.canonical_sku_id == canonical_sku_id,
@@ -59,6 +65,8 @@ def _cell(
         conditions.append(PriceObservation.metro == metro)
     if volume_tier is not None:
         conditions.append(PriceObservation.volume_tier == volume_tier)
+    if exclude_tenant_id is not None:
+        conditions.append(PriceObservation.tenant_id != exclude_tenant_id)
 
     rows = db.execute(select(PriceObservation.tenant_id, PriceObservation.unit_price_base).where(*conditions)).all()
     distinct_tenants = {tenant_id for tenant_id, _ in rows}
@@ -82,12 +90,19 @@ def compute_benchmark(
     metro: str,
     as_of: date,
     volume_tier: VolumeTier | None = None,
+    exclude_tenant_id: uuid.UUID | None = None,
 ) -> BenchmarkResult | None:
     """Suppresses the cell below MIN_DISTINCT_TENANTS, falls back metro ->
     national -> None. Never falls back to something narrower than metro (that
     would risk identifying a specific competitor, not protect against it).
+
+    `exclude_tenant_id`: pass the requesting tenant's own id when the caller
+    is that same tenant asking "how do I compare to peers" (e.g. a
+    negotiation sheet) — a "peer" benchmark that includes the asker's own
+    price lets their own overpayment partially cancel out of the very
+    comparison meant to expose it.
     """
     window_start = as_of - timedelta(days=LOOKBACK_DAYS)
-    return _cell(db, canonical_sku_id, metro, volume_tier, window_start, as_of) or _cell(
-        db, canonical_sku_id, None, volume_tier, window_start, as_of
+    return _cell(db, canonical_sku_id, metro, volume_tier, window_start, as_of, exclude_tenant_id) or _cell(
+        db, canonical_sku_id, None, volume_tier, window_start, as_of, exclude_tenant_id
     )

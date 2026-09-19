@@ -1,8 +1,12 @@
 """SPEC.md §7: price creep — within-tenant only, no peers required. The first
 of Phase 4's three outputs, and the one that works for customer number one.
 
-Mirrors validation/thresholds.yaml's phase4_analytics.creep block, with one
-deliberate deviation documented below (ABS_FLOOR_CAP_FRACTION).
+Thresholds below are loaded directly from validation/thresholds.yaml's
+phase4_analytics.creep block at import time, rather than hardcoded literals
+mirrored by comment (matcher.py's Phase 3 pattern) — code-review found that
+pattern lets the live detector silently drift from what thresholds.yaml
+documents if only one side gets edited later. See that file for the values
+and the reasoning behind ABS_FLOOR_CAP_FRACTION.
 
 Threshold semantics: SPEC.md says "flag moves above 5% or $0.25/base unit,
 whichever is larger." Read literally as "clear whichever of the two
@@ -18,8 +22,9 @@ per base unit): 20%+ genuine creep on a $0.50/lb item is only ~$0.10, which
 never reaches $0.25 regardless of magnitude. ABS_FLOOR_CAP_FRACTION caps the
 dollar floor at a fraction of the item's own baseline price instead of a flat
 number, so the floor scales down for cheap items (letting the 5% rule govern
-them, as intended) while staying at the full $0.25 for anything priced at or
-above ~$3/base unit.
+them, as intended) while staying at the full $0.25 floor for anything priced
+at or above MIN_ABS_CHANGE_USD / ABS_FLOOR_CAP_FRACTION (~$4.17 at the current
+0.06 fraction).
 
 Window size: a 4-observation recent window (SPEC.md's literal "trailing
 4-week") hit 95.1% recall but let a single false positive through — two rare
@@ -41,7 +46,9 @@ import uuid
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
+import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -49,6 +56,9 @@ from app.db import bind_tenant
 from app.models.enums import AlertStatus, AlertType
 from app.models.price_alert import PriceAlert
 from app.models.price_observation import PriceObservation
+
+_THRESHOLDS_PATH = Path(__file__).resolve().parents[3] / "validation" / "thresholds.yaml"
+_creep_thresholds = yaml.safe_load(_THRESHOLDS_PATH.read_text())["phase4_analytics"]["creep"]
 
 # Sized in OBSERVATION COUNT, not calendar days: a restaurant doesn't buy every
 # SKU every week (the synthetic corpus samples 30-120 of a 100-160 item basket
@@ -60,13 +70,13 @@ from app.models.price_observation import PriceObservation
 # synthetic/generate.py's history: "early-window vs. late-window ... exact-week
 # pairs were too sparse"). RECENT_WINDOW_SIZE is 5, not SPEC.md's literal 4 —
 # see module docstring for why.
-RECENT_WINDOW_SIZE = 5
-BASELINE_WINDOW_SIZE = 8
-MIN_OBSERVATIONS_PER_WINDOW = 3
+RECENT_WINDOW_SIZE = _creep_thresholds["lookback_recent_weeks"]
+BASELINE_WINDOW_SIZE = _creep_thresholds["lookback_baseline_weeks"]
+MIN_OBSERVATIONS_PER_WINDOW = _creep_thresholds["min_observations_per_window"]
 
-MIN_PCT_CHANGE = Decimal("0.05")
-MIN_ABS_CHANGE_USD = Decimal("0.25")
-ABS_FLOOR_CAP_FRACTION = Decimal("0.06")  # see module docstring
+MIN_PCT_CHANGE = Decimal(str(_creep_thresholds["min_pct_change"]))
+MIN_ABS_CHANGE_USD = Decimal(str(_creep_thresholds["min_abs_change_usd"]))
+ABS_FLOOR_CAP_FRACTION = Decimal(str(_creep_thresholds["abs_floor_cap_fraction"]))  # see module docstring
 
 
 @dataclass
@@ -106,6 +116,11 @@ def detect_price_creep(db: Session, tenant_id: uuid.UUID) -> list[CreepFinding]:
 
         recent_median = statistics.median(p for _, p in recent)
         baseline_median = statistics.median(p for _, p in baseline)
+        if baseline_median <= 0:
+            # A $0 baseline (e.g. a promo/free-case line) makes both a
+            # percentage move and the price-tiered floor below undefined —
+            # skip rather than divide by zero computing pct_change.
+            continue
         delta = recent_median - baseline_median
 
         floor = min(MIN_ABS_CHANGE_USD, ABS_FLOOR_CAP_FRACTION * baseline_median)
