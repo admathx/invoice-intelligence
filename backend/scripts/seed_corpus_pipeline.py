@@ -38,6 +38,7 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 sys.path.insert(0, str(REPO_ROOT))
 
 from app.db import SessionLocal, bind_tenant  # noqa: E402
+from app.ingest.email_stub import inbox_address_for  # noqa: E402
 from app.models import (  # noqa: E402
     Distributor,
     Invoice,
@@ -57,10 +58,15 @@ OUT_DIR = REPO_ROOT / "synthetic" / "out"
 def _get_or_create_tenant(db, synth_tenant) -> Tenant:
     existing = db.scalar(select(Tenant).where(Tenant.name == synth_tenant.name))
     if existing is not None:
+        # Backfill for corpora seeded before Phase 6 added the column.
+        if existing.inbox_address is None:
+            existing.inbox_address = inbox_address_for(existing.name)
+            db.commit()
         return existing
     tenant = Tenant(
         id=uuid.uuid4(),
         name=synth_tenant.name,
+        inbox_address=inbox_address_for(synth_tenant.name),
         metro=synth_tenant.metro,
         volume_tier=VolumeTier(synth_tenant.volume_tier),
     )

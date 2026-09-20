@@ -1,4 +1,4 @@
-.PHONY: up down migrate seed seed-analytics smoke test test-e2e validate extraction-report frontend-install frontend-dev
+.PHONY: up down migrate seed seed-analytics smoke watch-inbox test test-e2e validate extraction-report frontend-install frontend-dev
 
 VENV := .venv/bin
 RUN_DIR := .run
@@ -40,6 +40,11 @@ seed-analytics:
 smoke:
 	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/smoke.py
 
+# Polls inbox/ for .eml files and turns their PDF attachments into invoices
+# (SPEC.md §10 Phase 6). ONCE=1 scans what's there and exits.
+watch-inbox:
+	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/watch_inbox.py $(if $(ONCE),--once,)
+
 test:
 	cd backend && $(VENV)/pytest -q
 
@@ -69,6 +74,8 @@ validate:
 	@echo "--- Phase 5 gate ---"
 	cd frontend && npm run test
 	$(MAKE) test-e2e
+	@echo "--- Phase 6 gate ---"
+	cd backend && $(VENV)/pytest -q tests/test_email_intake.py
 
 # Costs real money once ANTHROPIC_API_KEY is configured with credit — not part
 # of `make validate`. Defaults to a small sample; override with SAMPLE=200 to

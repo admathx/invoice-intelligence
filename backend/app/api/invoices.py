@@ -2,8 +2,6 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
-from redis import Redis
-from rq import Queue
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,13 +11,11 @@ from app.db import get_db_for_tenant
 from app.ingest.upload import save_uploaded_file
 from app.models import Invoice, InvoiceLineItem
 from app.models.enums import InvoiceSource, InvoiceStatus
+from app.queue import invoice_queue as queue
 from app.schemas.invoices import InvoiceDetailOut, InvoiceOut, InvoiceUploadResponse, LineItemOut
 from app.workers.tasks import process_invoice
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
-
-redis_conn = Redis.from_url(settings.redis_url)
-queue = Queue("invoices", connection=redis_conn)
 
 
 @router.post("", response_model=InvoiceUploadResponse, status_code=201)

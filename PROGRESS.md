@@ -669,4 +669,62 @@ the compounding effect the alias table exists for.
 
 ## Phase 6 — Email intake
 
-Status: not started.
+Status: **done**, gate green, demoed live in the browser.
+
+- `app/ingest/email_stub.py` (the filename SPEC.md §3's repo layout reserved):
+  parses `.eml` files from a watch directory, routes each to a tenant by the
+  address it was sent to, and turns every PDF attachment into an invoice on
+  the same queue the HTTP upload endpoint uses. Nothing talks to a mail
+  provider — swapping in a real inbound webhook later means replacing
+  `scan_inbox`, not the routing/attachment logic under it.
+- **Per-tenant address routing** needed somewhere to route *to*, so
+  `tenants.inbox_address` is new (migration 0004): nullable, because a tenant
+  can exist before an address is issued, and unique, because it IS the
+  routing key. The unique constraint immediately earned itself — backfilling
+  addresses across existing tenants failed on the duplicate-named leftover
+  test fixtures (`Test Tenant` x N) rather than silently making inbound mail
+  for them ambiguous.
+- Routing reads `Delivered-To`/`X-Original-To` as well as `To`/`Cc`, because
+  the realistic flow is a restaurant *forwarding* a distributor's invoice —
+  which leaves their own address in `Delivered-To` while `To` becomes
+  whoever they forwarded it to. Matching is case-insensitive.
+- **Nothing is silently dropped** (the spec's actual exit criterion). An
+  email that can't be routed, carries no PDF, or fails to parse is moved to
+  `inbox/quarantine/` with a `.reason.txt` beside it. Successful ones move
+  to `inbox/processed/`. Both use a collision-safe destination name, so the
+  same invoice forwarded twice doesn't overwrite the first copy — and
+  because the inbox is left empty either way, a rerun can't double-ingest.
+- Multi-attachment: one invoice per PDF (a distributor mailing a week's
+  invoices as several attachments is one email but several invoices);
+  non-PDF attachments like signature logos are ignored, but an email with
+  *only* non-PDFs quarantines rather than vanishing.
+- `make watch-inbox` polls the directory (`ONCE=1` scans and exits). Polling
+  rather than inotify/FSEvents on purpose: a few lines, identical on every
+  platform, and the interval stops mattering the moment a real webhook
+  replaces it.
+- Small refactors this phase, both to avoid a second copy of something:
+  `app/queue.py` now owns the one Redis/RQ queue (the upload endpoint was
+  constructing its own, and email intake would have been a second), and
+  `upload.py` grew `save_invoice_bytes` that `save_uploaded_file` delegates
+  to, so email attachments and HTTP uploads name and place files identically.
+- `pytest tests/test_email_intake.py`: 11 passed — routing by address,
+  case-insensitivity, `Delivered-To` forwarding, unroutable → quarantine
+  (asserting the file and its reason survive, not just that no invoice was
+  created), multi-PDF → multiple invoices, mixed attachments, no-PDF →
+  quarantine, malformed email → quarantine rather than crash, scan-level
+  failure isolation, and the same-filename collision case.
+- **Demoed live**: dropped two `.eml` files in `inbox/` (one addressed to
+  Blue Oak Kitchen with two invoice PDFs plus a logo.png, one addressed to
+  nobody), ran `make watch-inbox ONCE=1`, and watched it report
+  `2 invoice(s) for tenant …` and `QUARANTINED — no tenant for recipient
+  address(es): wrong-address@…`. Both invoices then appeared at the top of
+  the dashboard with `source: email`, and the detail page showed the actual
+  emailed PDF rendered side-by-side with its extracted line items.
+- Note on that demo: the running RQ worker first marked both `failed` on the
+  same Anthropic account-credit blocker carried since Phase 2 — unrelated to
+  email intake, which had already done its job. Re-running the two
+  email-created invoices through the `FakeExtractorClient` (the documented
+  dev path when no API key is configured) took them to `extracted` and
+  produced the screenshots above.
+- Full backend suite: 94 passed. Phase 3 `matching_report` and Phase 4
+  `creep_report` still green; Playwright 3 passed.

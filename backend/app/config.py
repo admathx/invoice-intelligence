@@ -21,6 +21,10 @@ class Settings(BaseSettings):
 
     upload_dir: str = str(BACKEND_DIR / "uploads")
     inbox_dir: str = str(BACKEND_DIR.parent / "inbox")
+    # Domain half of a tenant's forwarding address (see
+    # app/ingest/email_stub.py's inbox_address_for). Configurable because the
+    # real deployment's inbound domain won't be this placeholder.
+    inbox_domain: str = "invoices.example.com"
 
     extraction_model: str = "claude-sonnet-4-6"
 
