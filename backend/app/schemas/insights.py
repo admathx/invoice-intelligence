@@ -15,6 +15,10 @@ class BenchmarkPosition(BaseModel):
     p50: Decimal
     p75: Decimal
     tenant_price: Decimal
+    # Where tenant_price sits among peers, 0..1. The one number that answers
+    # "is this bad?" without the reader having to compare four dollar figures
+    # in their head.
+    percentile: Decimal
     # Independent businesses in the cell, not locations — a multi-unit group
     # counts once (app/analytics/benchmark.py).
     distinct_account_count: int

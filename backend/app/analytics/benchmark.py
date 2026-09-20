@@ -15,9 +15,10 @@ fragmented), per SPEC.md §12's open question: "does volume tier belong in
 benchmark cells, or does it fragment the data too much early on? Leaning:
 make it a query parameter, default off until tenant density supports it."
 """
+import statistics
 import uuid
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
@@ -51,6 +52,12 @@ class BenchmarkResult:
     p75: Decimal
     distinct_account_count: int
     scope: str  # "metro" | "national"
+    # Where a caller-supplied price sits in this cell, 0..1 — "you pay more
+    # than 78% of comparable businesses." Set only when compute_benchmark(s)
+    # was given a subject price. It is a property of the asker's own price
+    # rather than a new published quantile, which is why it is safe to show:
+    # it reveals nothing about any individual peer that p25/p50/p75 don't.
+    subject_percentile: Decimal | None = None
 
 
 def _account_key_column():
@@ -94,6 +101,27 @@ def _percentile(sorted_values: list[Decimal], pct: Decimal) -> Decimal:
     return (sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * frac).quantize(Decimal("0.0001"))
 
 
+def _percentile_rank(sorted_values: list[Decimal], value: Decimal) -> Decimal:
+    """The inverse of _percentile: where `value` sits in the distribution, 0..1.
+
+    Ties count as half ("midrank"), so a price identical to every peer's lands
+    at 0.50 rather than at 0.00 or 1.00 depending on comparison direction.
+    """
+    below = sum(1 for v in sorted_values if v < value)
+    tied = sum(1 for v in sorted_values if v == value)
+    return ((Decimal(below) + Decimal(tied) / 2) / Decimal(len(sorted_values))).quantize(Decimal("0.0001"))
+
+
+def _account_price(prices: list[Decimal]) -> Decimal:
+    """One business's representative price for the window: its median.
+
+    Median rather than mean for the same reason price_creep.py and the
+    negotiation sheet's history target use it — one spot buy or promo price
+    shouldn't move what this business is recorded as paying.
+    """
+    return statistics.median(prices).quantize(Decimal("0.0001"))  # median sorts internally
+
+
 def _cells(
     db: Session,
     canonical_sku_ids: Sequence[uuid.UUID],
@@ -102,6 +130,7 @@ def _cells(
     window_start: date,
     as_of: date,
     exclude_account_key: uuid.UUID | None,
+    subject_prices: Mapping[uuid.UUID, Decimal] | None,
 ) -> dict[uuid.UUID, BenchmarkResult]:
     """One scope (metro or national) for many SKUs in a single query.
 
@@ -140,23 +169,35 @@ def _cells(
         .where(*conditions)
     ).all()
 
-    by_sku: dict[uuid.UUID, list[tuple[uuid.UUID, Decimal]]] = defaultdict(list)
+    by_sku: dict[uuid.UUID, dict[uuid.UUID, list[Decimal]]] = defaultdict(lambda: defaultdict(list))
     for sku_id, key, price in rows:
-        by_sku[sku_id].append((key, price))
+        by_sku[sku_id][key].append(price)
 
     results: dict[uuid.UUID, BenchmarkResult] = {}
-    for sku_id, pairs in by_sku.items():
-        distinct_accounts = {key for key, _ in pairs}
-        if len(distinct_accounts) < MIN_DISTINCT_ACCOUNTS:
+    for sku_id, by_account in by_sku.items():
+        if len(by_account) < MIN_DISTINCT_ACCOUNTS:
             continue
-        prices = sorted(price for _, price in pairs)
+
+        # One vote per business, not one per delivery. Percentiles taken over
+        # raw observations are weighted by how often each business buys, which
+        # stopped matching the count the moment suppression started counting
+        # accounts: a five-location group counts once toward the threshold but
+        # would contribute five locations' worth of prices to the statistic.
+        # A cell of one such group plus five independents paying $10-$14
+        # returned a p25 of $20.00 — a "target price" arguing for a rise.
+        account_prices = sorted(_account_price(prices) for prices in by_account.values())
         results[sku_id] = BenchmarkResult(
             canonical_sku_id=sku_id,
-            p25=_percentile(prices, Decimal("0.25")),
-            p50=_percentile(prices, Decimal("0.50")),
-            p75=_percentile(prices, Decimal("0.75")),
-            distinct_account_count=len(distinct_accounts),
+            p25=_percentile(account_prices, Decimal("0.25")),
+            p50=_percentile(account_prices, Decimal("0.50")),
+            p75=_percentile(account_prices, Decimal("0.75")),
+            distinct_account_count=len(account_prices),
             scope="metro" if metro is not None else "national",
+            subject_percentile=(
+                _percentile_rank(account_prices, subject_prices[sku_id])
+                if subject_prices is not None and sku_id in subject_prices
+                else None
+            ),
         )
     return results
 
@@ -168,6 +209,7 @@ def compute_benchmarks(
     as_of: date,
     volume_tier: VolumeTier | None = None,
     exclude_account_key: uuid.UUID | None = None,
+    subject_prices: Mapping[uuid.UUID, Decimal] | None = None,
 ) -> dict[uuid.UUID, BenchmarkResult]:
     """Benchmarks for many SKUs at once: two queries total, not two per SKU.
 
@@ -185,9 +227,9 @@ def compute_benchmarks(
     whose prices are the asker's own company's.
     """
     window_start = as_of - timedelta(days=LOOKBACK_DAYS)
-    cells = _cells(db, canonical_sku_ids, metro, volume_tier, window_start, as_of, exclude_account_key)
+    cells = _cells(db, canonical_sku_ids, metro, volume_tier, window_start, as_of, exclude_account_key, subject_prices)
     unresolved = [sku_id for sku_id in canonical_sku_ids if sku_id not in cells]
-    cells.update(_cells(db, unresolved, None, volume_tier, window_start, as_of, exclude_account_key))
+    cells.update(_cells(db, unresolved, None, volume_tier, window_start, as_of, exclude_account_key, subject_prices))
     return cells
 
 
@@ -198,10 +240,17 @@ def compute_benchmark(
     as_of: date,
     volume_tier: VolumeTier | None = None,
     exclude_account_key: uuid.UUID | None = None,
+    subject_price: Decimal | None = None,
 ) -> BenchmarkResult | None:
     """One SKU, for callers that genuinely have only one (e.g. an insights card
     anchored to its own alert's window). Batching callers use compute_benchmarks.
     """
     return compute_benchmarks(
-        db, [canonical_sku_id], metro, as_of, volume_tier, exclude_account_key
+        db,
+        [canonical_sku_id],
+        metro,
+        as_of,
+        volume_tier,
+        exclude_account_key,
+        subject_prices={canonical_sku_id: subject_price} if subject_price is not None else None,
     ).get(canonical_sku_id)

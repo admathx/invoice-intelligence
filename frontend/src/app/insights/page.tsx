@@ -1,4 +1,5 @@
 import { computeSparklineCoords, type PriceHistoryPoint } from "@/lib/sparkline";
+import { labelAnchor, ordinal, priceVerdict, trackPosition } from "@/lib/spectrum";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 const TENANT_ID = process.env.NEXT_PUBLIC_DEV_TENANT_ID ?? "";
@@ -8,6 +9,7 @@ type BenchmarkPosition = {
   p50: string;
   p75: string;
   tenant_price: string;
+  percentile: string;
   distinct_account_count: number;
   scope: string;
 };
@@ -47,27 +49,105 @@ function Sparkline({ points }: { points: PriceHistoryPoint[] }) {
   );
 }
 
-function BenchmarkBar({ benchmark }: { benchmark: BenchmarkPosition }) {
-  const values = [benchmark.p25, benchmark.p50, benchmark.p75, benchmark.tenant_price].map(Number);
-  const max = Math.max(...values) * 1.05;
-  const tenantPct = (Number(benchmark.tenant_price) / max) * 100;
-  const p50Pct = (Number(benchmark.p50) / max) * 100;
+const TONE = {
+  good: { text: "text-emerald-700", pin: "#047857" },
+  fair: { text: "text-amber-700", pin: "#b45309" },
+  bad: { text: "text-red-700", pin: "#b91c1c" },
+} as const;
+
+const QUARTILE_TICKS = [0.25, 0.5, 0.75] as const;
+
+const LABEL_TRANSFORM = {
+  start: "translateX(-0.35rem)",
+  middle: "translateX(-50%)",
+  end: "translateX(calc(-100% + 0.35rem))",
+} as const;
+
+/** Where this price sits among comparable businesses, as a spectrum.
+ *
+ * Replaces a 2px-tick bar that required reading four dollar figures and doing
+ * the comparison in your head. The question a reader actually has is "is this
+ * bad?", so the percentile answers it in words first and the track shows the
+ * distribution behind that answer.
+ */
+function BenchmarkSpectrum({ benchmark }: { benchmark: BenchmarkPosition }) {
+  const percentile = Number(benchmark.percentile);
+  const verdict = priceVerdict(percentile, benchmark.distinct_account_count);
+  const tone = TONE[verdict.tone];
+  const quartilePrices = [benchmark.p25, benchmark.p50, benchmark.p75];
+  const pinPosition = trackPosition(percentile);
 
   return (
-    <div className="mt-1">
-      <div className="relative h-2 w-56 rounded bg-gray-200">
-        <div className="absolute top-0 h-2 w-0.5 bg-gray-500" style={{ left: `${p50Pct}%` }} title="peer median" />
-        <div
-          className="absolute top-0 h-2 w-0.5 bg-red-600"
-          style={{ left: `${tenantPct}%` }}
-          title="your price"
-        />
+    <div className="mt-3">
+      <div className={`text-sm font-medium ${tone.text}`}>
+        {verdict.headline} · {ordinal(percentile * 100)} percentile
       </div>
-      <div className="mt-1 text-xs text-gray-500">
-        Peer p25 ${benchmark.p25} · p50 ${benchmark.p50} · p75 ${benchmark.p75} ({benchmark.scope},{" "}
+
+      <div className="relative mt-2 h-11">
+        {/* Cheap on the left, dear on the right. Fixed stops, because the axis
+            is percentile: the colour under the pin always means the same
+            thing, on this card and on every other one. */}
+        <div
+          className="absolute top-5 h-2.5 w-full rounded-full"
+          style={{ background: "linear-gradient(to right, #6ee7b7 0%, #fcd34d 50%, #fca5a5 100%)" }}
+        />
+        {/* The middle half of the market: between the quartile ticks. */}
+        <div
+          className="absolute top-5 h-2.5 bg-black/5"
+          style={{
+            left: `${trackPosition(0.25)}%`,
+            width: `${trackPosition(0.75) - trackPosition(0.25)}%`,
+          }}
+        />
+        {QUARTILE_TICKS.map((q) => (
+          <div
+            key={q}
+            className="absolute top-[18px] h-[18px] w-px bg-gray-500/60"
+            style={{ left: `${trackPosition(q)}%` }}
+          />
+        ))}
+
+        {/* The reader's own price. Labelled as well as coloured — the position
+            has to survive being printed in greyscale or read colour-blind.
+            Label and pin are positioned separately so the label can hug the
+            edge without dragging the pin off its percentile. */}
+        <span
+          className={`absolute top-0 whitespace-nowrap text-xs font-semibold ${tone.text}`}
+          style={{ left: `${pinPosition}%`, transform: LABEL_TRANSFORM[labelAnchor(percentile)] }}
+        >
+          you ${benchmark.tenant_price}
+        </span>
+        <svg
+          width="11"
+          height="8"
+          viewBox="0 0 11 8"
+          aria-hidden="true"
+          className="absolute top-[14px] -translate-x-1/2"
+          style={{ left: `${pinPosition}%` }}
+        >
+          <path d="M5.5 8 L0 0 L11 0 Z" fill={tone.pin} />
+        </svg>
+      </div>
+
+      {/* Dollar values under their own ticks, so the percentile axis still
+          answers "and what would paying like them actually cost?". */}
+      <div className="relative mt-1 h-4">
+        {QUARTILE_TICKS.map((q, i) => (
+          <span
+            key={q}
+            className="absolute -translate-x-1/2 whitespace-nowrap text-[11px] text-gray-500"
+            style={{ left: `${trackPosition(q)}%` }}
+          >
+            ${quartilePrices[i]}
+          </span>
+        ))}
+      </div>
+
+      <div className="mt-1 text-xs text-gray-400">
         {/* "businesses", not "tenants": a multi-unit group counts once, so this
-            number is how many independent operators stand behind the cell. */}
-        {benchmark.distinct_account_count} businesses) — you: ${benchmark.tenant_price}
+            is how many independent operators stand behind the cell. */}
+        25th / 50th / 75th percentile across {benchmark.distinct_account_count} comparable businesses (
+        {benchmark.scope})
       </div>
     </div>
   );
@@ -91,7 +171,10 @@ export default async function InsightsPage() {
       <div className="space-y-4">
         {cards.map((card) => (
           <div key={card.alert_id} className="rounded border border-gray-200 bg-white p-4">
-            <div className="flex items-start justify-between">
+            {/* Stacked on a phone: the sparkline is a fixed 220px, so sitting
+                it beside the text crushed that column to ~140px and wrapped
+                the SKU name and the price line onto six lines apiece. */}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <div className="text-sm uppercase tracking-wide text-amber-600">{card.alert_type}</div>
                 <div className="text-lg font-medium">{card.canonical_sku_name}</div>
@@ -102,7 +185,7 @@ export default async function InsightsPage() {
               </div>
               <Sparkline points={card.price_history} />
             </div>
-            {card.benchmark && <BenchmarkBar benchmark={card.benchmark} />}
+            {card.benchmark && <BenchmarkSpectrum benchmark={card.benchmark} />}
           </div>
         ))}
       </div>

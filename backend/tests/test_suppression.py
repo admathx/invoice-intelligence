@@ -305,3 +305,74 @@ def test_account_key_is_the_account_for_a_group_member(db_session):
     group = _make_account(db_session, "Keyed Group")
     tenant = _make_tenant(db_session, f"metro-{uuid.uuid4().hex[:8]}", account=group)
     assert account_key_for(db_session, tenant.id) == group.id
+
+
+# --- one vote per business, and where the asker sits ------------------------
+
+
+def test_a_frequent_buyer_does_not_outvote_the_rest_of_the_cell(db_session, canonical_sku, distributor):
+    """Percentiles are taken over one price per business, not over raw
+    observations. Weighting by delivery frequency let a single heavy buyer —
+    or one multi-location group, which counts once toward suppression but
+    could contribute every location's prices — decide the whole cell.
+    """
+    metro = f"metro-{uuid.uuid4().hex[:8]}"
+    # One expensive business that buys constantly.
+    heavy = _make_tenant(db_session, metro)
+    for _ in range(40):
+        _add_observation(db_session, heavy, canonical_sku, distributor, metro, price="20.00")
+    # Five cheap ones that buy once each.
+    for price in ["10.00", "11.00", "12.00", "13.00", "14.00"]:
+        _add_observation(db_session, _make_tenant(db_session, metro), canonical_sku, distributor, metro, price=price)
+
+    result = compute_benchmark(db_session, canonical_sku.id, metro, AS_OF)
+
+    assert result is not None
+    assert result.distinct_account_count == 6
+    # Six businesses at 10, 11, 12, 13, 14, 20 — p25 is 11.25, not the 20.00
+    # that observation-weighting produced (40 of the 45 prices were $20.00).
+    assert result.p25 == Decimal("11.2500")
+    assert result.p50 == Decimal("12.5000")
+
+
+def test_a_group_contributes_one_price_no_matter_how_many_locations(db_session, canonical_sku, distributor):
+    metro = f"metro-{uuid.uuid4().hex[:8]}"
+    group = _make_account(db_session, "Loud Group")
+    for _ in range(5):
+        location = _make_tenant(db_session, metro, account=group)
+        for _ in range(10):
+            _add_observation(db_session, location, canonical_sku, distributor, metro, price="20.00")
+    for price in ["10.00", "11.00", "12.00", "13.00", "14.00"]:
+        _add_observation(db_session, _make_tenant(db_session, metro), canonical_sku, distributor, metro, price=price)
+
+    result = compute_benchmark(db_session, canonical_sku.id, metro, AS_OF)
+
+    assert result is not None
+    assert result.distinct_account_count == 6  # the group is one business
+    assert result.p25 == Decimal("11.2500")  # and one price, despite 50 observations
+
+
+def test_subject_percentile_places_the_asker_in_the_distribution(db_session, canonical_sku, distributor):
+    metro = f"metro-{uuid.uuid4().hex[:8]}"
+    for price in ["10.00", "11.00", "12.00", "13.00", "14.00"]:
+        _add_observation(db_session, _make_tenant(db_session, metro), canonical_sku, distributor, metro, price=price)
+
+    def rank(price: str) -> Decimal:
+        return compute_benchmark(
+            db_session, canonical_sku.id, metro, AS_OF, subject_price=Decimal(price)
+        ).subject_percentile
+
+    assert rank("9.00") == Decimal("0.0000")  # cheaper than every peer
+    assert rank("15.00") == Decimal("1.0000")  # more than every peer
+    assert rank("12.50") == Decimal("0.6000")  # three of five peers are cheaper
+    # Ties count as half, so matching a peer exactly doesn't read as "cheaper
+    # than nobody" or "cheaper than everybody" depending on comparison order.
+    assert rank("12.00") == Decimal("0.5000")
+
+
+def test_subject_percentile_is_absent_when_no_price_was_supplied(db_session, canonical_sku, distributor):
+    metro = f"metro-{uuid.uuid4().hex[:8]}"
+    for _ in range(MIN_DISTINCT_ACCOUNTS):
+        _add_observation(db_session, _make_tenant(db_session, metro), canonical_sku, distributor, metro)
+
+    assert compute_benchmark(db_session, canonical_sku.id, metro, AS_OF).subject_percentile is None

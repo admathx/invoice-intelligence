@@ -136,7 +136,7 @@ def _history_target(prior_prices: list[Decimal]) -> Decimal | None:
     # even-length median averages the two middle prices, which lands on a 5th
     # decimal often enough that the page was rendering "$6.03395" in a column
     # of 4-decimal prices.
-    return statistics.median(sorted(prior_prices)).quantize(Decimal("0.0001"))
+    return statistics.median(prior_prices).quantize(Decimal("0.0001"))  # median sorts internally
 
 
 def build_negotiation_sheet(

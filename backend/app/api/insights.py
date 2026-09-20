@@ -51,24 +51,34 @@ def get_insights(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant))
     # same for every alert on the page.
     exclude_account_key = account_key_for(db, tenant_id)
 
+    # One query for every SKU name on the page, not one db.get() per alert —
+    # the same rule app/api/negotiation.py already follows for its sheet.
+    names = {sku.id: sku.name for sku in db.scalars(select(CanonicalSku).where(CanonicalSku.id.in_(sku_ids)))}
+
     cards = []
     for alert in alerts:
-        sku = db.get(CanonicalSku, alert.canonical_sku_id)
         history_rows = history_by_sku.get(alert.canonical_sku_id, [])
 
         # Uses the alert's own window_end as "as of," not wall-clock today —
         # keeps the benchmark comparison anchored to the same period the
         # alert itself covers (detect_price_creep has no as_of concept of its
         # own; it windows by observation count, see price_creep.py).
+        # subject_price is the alert's own current price, so the returned
+        # percentile answers "where does what I'm paying now sit among peers".
         benchmark = compute_benchmark(
-            db, alert.canonical_sku_id, tenant.metro, alert.window_end, exclude_account_key=exclude_account_key
+            db,
+            alert.canonical_sku_id,
+            tenant.metro,
+            alert.window_end,
+            exclude_account_key=exclude_account_key,
+            subject_price=alert.current_price,
         )
 
         cards.append(
             InsightCard(
                 alert_id=alert.id,
                 canonical_sku_id=alert.canonical_sku_id,
-                canonical_sku_name=sku.name if sku else "(unknown SKU)",
+                canonical_sku_name=names.get(alert.canonical_sku_id, "(unknown SKU)"),
                 alert_type=alert.alert_type.value,
                 baseline_price=alert.baseline_price,
                 current_price=alert.current_price,
@@ -80,16 +90,23 @@ def get_insights(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant))
                     PriceHistoryPoint(observed_on=observed_on, unit_price_base=price)
                     for observed_on, price in history_rows
                 ],
+                # Both conditions, not just the first: the spectrum is built
+                # around the percentile, so a cell without one has no chart to
+                # draw. subject_percentile is always set here today (a
+                # subject_price is passed above and alerts carry a non-null
+                # current_price), but failing closed beats a required schema
+                # field turning an insights page into a 500 if that changes.
                 benchmark=(
                     BenchmarkPosition(
                         p25=benchmark.p25,
                         p50=benchmark.p50,
                         p75=benchmark.p75,
                         tenant_price=alert.current_price,
+                        percentile=benchmark.subject_percentile,
                         distinct_account_count=benchmark.distinct_account_count,
                         scope=benchmark.scope,
                     )
-                    if benchmark is not None
+                    if benchmark is not None and benchmark.subject_percentile is not None
                     else None
                 ),
             )

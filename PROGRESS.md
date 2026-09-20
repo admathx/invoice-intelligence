@@ -908,3 +908,85 @@ as noise.
 - Browser: default sheet now renders a genuine peer/history mix (10 history
   lines interleaved by dollar value), and the API-down path was exercised
   live by killing uvicorn mid-session.
+
+## Peer-price spectrum, and the weighting bug it exposed
+
+### The visual
+
+The Insights benchmark readout was a 2px-tick bar plus a line of four dollar
+figures, which made the reader do the comparison themselves. Replaced with a
+spectrum: a plain-language verdict ("More expensive than 91% of 11 comparable
+businesses · 91st percentile"), a green→red track with the quartile ticks, and
+a pin for the reader's own price.
+
+- **The track is a percentile axis, not a dollar axis.** A dollar axis has to
+  be rescaled per SKU, so every card's quartile ticks land somewhere different
+  and you can't scan a page of alerts. On a percentile axis the ticks are in
+  the same place on every card and the pin's position means the same thing
+  every time. Magnitude hasn't gone anywhere — the card still states the price,
+  the move, and the quartile dollars under their own ticks. (Built the dollar
+  version first; switching only became obviously right once four real cards
+  were on screen next to each other.)
+- **New API field: `BenchmarkPosition.percentile`**, from
+  `BenchmarkResult.subject_percentile`. Deliberately a *rank*, not another
+  published quantile: with as few as 5 businesses in a cell, a p10 or a min
+  would effectively be one identifiable competitor's price, which SPEC.md §1
+  forbids. A rank is a property of the asker's own price and reveals nothing
+  p25/p50/p75 don't. Ties count as half, so matching every peer reads as the
+  50th percentile rather than as 0 or 100 depending on comparison direction.
+- Geometry and wording live in `src/lib/spectrum.ts` with 11 unit tests, the
+  same split `sparkline.ts` already uses — a marker in the wrong place is a
+  wrong answer that looks authoritative.
+
+### The bug it exposed: percentiles weighted by delivery frequency
+
+Building the percentile rank meant asking what the denominator actually was,
+and it was wrong. Percentiles were taken over **raw observations**, so a
+business that takes weekly deliveries got 13 times the votes of one that
+orders monthly. That was always a bit off; the account change made it a real
+defect, because suppression now counts a multi-unit group **once** while the
+statistic still took **every location's** prices.
+
+Simulated, then fixed: a cell of one five-location group at $20.00 plus five
+independents at $10-$14 returned a **p25 of $20.00** — a "target price" that
+argues the customer should pay *more* than every independent in the market.
+
+`_cells` now collapses each account to one representative price (its median,
+matching the creep baseline and the history target) before computing
+percentiles. One business, one vote — which is also what makes the new
+percentile claim ("more than 78% of comparable businesses") literally true.
+Corpus effect: the negotiation sheet total moved $76,213 → $74,092 (-2.8%),
+i.e. slightly more conservative, which is the right direction.
+
+### Other issues found and fixed in the same pass
+- `insights.py` did `db.get(CanonicalSku, ...)` per alert — the N+1 that
+  `negotiation.py` already had a comment explaining it avoided. Now one query.
+- `BenchmarkPosition.percentile` is required, so a None would have 500'd the
+  whole page. Can't happen today (alerts carry a non-null `current_price`),
+  but the card now fails closed: no percentile, no spectrum.
+- The "you $X" label overflowed the card at the 100th percentile — exactly the
+  case a reader most needs to read. Label and pin are now positioned
+  separately so the label can hug the edge without moving the pin off its
+  percentile (`labelAnchor`, tested).
+- "Higher than 100% of 12 comparable businesses" is not a sentence anyone
+  says; the extremes are now named ("More expensive than all 12...").
+- Pre-existing mobile layout: the fixed 220px sparkline sat beside the text and
+  crushed that column to ~140px at 375px wide, wrapping the SKU name and price
+  line onto six lines each. Now stacked below `sm:`.
+- Two redundant `sorted()` calls passed into `statistics.median`, which sorts
+  internally.
+
+### Gates
+- Backend 125 passed (was 121): 4 new — frequent-buyer weighting, group
+  weighting, percentile rank including the tie case, and rank absent when no
+  subject price was given.
+- Frontend 15 unit tests (was 4), `tsc` clean, Playwright 4 passed.
+- `creep_report` 93.9% / 0 FP and `matching_report` 0/0 both still PASS.
+- Verified in the browser at desktop and 375px, both bases of the negotiation
+  sheet, and with the API stopped.
+
+### Lesson
+Next's dev server served a 404 for `/insights` after a hot-reload runtime
+error mid-edit, while the same source built and passed 4/4 in Playwright on
+its own server. `rm -rf .next` and a restart fixed it. Worth knowing before
+debugging a routing problem that isn't one.
