@@ -43,7 +43,7 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
 
       <div className="flex gap-6">
         <div className="w-72 flex-none">
-          {invoice.page_image_urls.length > 0 ? (
+          {(invoice.page_image_urls ?? []).length > 0 ? (
             <div className="space-y-3">
               {invoice.page_image_urls.map((url) => (
                 // eslint-disable-next-line @next/next/no-img-element

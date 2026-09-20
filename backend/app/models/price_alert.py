@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, Enum, ForeignKey, Numeric
+from sqlalchemy import Date, Enum, ForeignKey, Index, Numeric, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -13,6 +13,22 @@ from app.models.enums import AlertStatus, AlertType
 
 class PriceAlert(Base, TenantScoped):
     __tablename__ = "price_alerts"
+    __table_args__ = (
+        # At most one OPEN alert per (tenant, sku, type) — backs
+        # upsert_creep_alerts' check-then-act against concurrent callers.
+        # A closed/acknowledged/resolved alert for the same SKU is
+        # legitimate history, not a duplicate, hence the partial WHERE.
+        # Alembic migration 0003 applies this to databases that already
+        # ran 0001/0002 before this constraint existed.
+        Index(
+            "ix_price_alerts_open_unique",
+            "tenant_id",
+            "canonical_sku_id",
+            "alert_type",
+            unique=True,
+            postgresql_where=text("status = 'open'"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # tenant_id comes from the TenantScoped mixin.

@@ -56,16 +56,23 @@ function ReviewQueueInner() {
 
   useEffect(() => {
     if (!TENANT_ID) return;
+    // Ignore a stale response: if distributorId changes again before this
+    // request resolves, an out-of-order response must not clobber the
+    // queue for whichever filter is current by the time it lands.
+    let ignore = false;
     const params = new URLSearchParams({ tenant_id: TENANT_ID });
     if (distributorId) params.set("distributor_id", distributorId);
     fetch(`${API_BASE}/review/queue?${params}`, { cache: "no-store" })
       .then((res) => (res.ok ? res.json() : []))
-      .then(setQueue);
+      .then((data) => {
+        if (ignore) return;
+        setQueue(data);
+        setIndex(0); // a new queue (e.g. after the filter changes) starts from the top
+      });
+    return () => {
+      ignore = true;
+    };
   }, [distributorId]);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, [index]);
 
   const current = queue?.[index] ?? null;
 
@@ -74,6 +81,7 @@ function ReviewQueueInner() {
     setResults([]);
     setSelected(0);
     setError(null);
+    inputRef.current?.focus();
   }, [index]);
 
   async function runSearch(q: string) {
@@ -140,13 +148,19 @@ function ReviewQueueInner() {
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (results.length > 0) {
-        correct(results[selected].id);
+        // Clamped rather than trusting `selected` to already be in range:
+        // it's reset to 0 in a few places but nothing enforces that pairing
+        // structurally, so a future producer of `results` that forgets to
+        // reset it should degrade to "pick the last item," not throw.
+        const target = results[Math.min(selected, results.length - 1)];
+        correct(target.id);
       } else if (!query.trim() && current?.canonical_sku_id) {
         confirm();
       }
     } else if (e.key === "Escape") {
       setQuery("");
       setResults([]);
+      setSelected(0);
     }
   }
 

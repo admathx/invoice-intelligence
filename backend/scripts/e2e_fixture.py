@@ -34,12 +34,26 @@ from app.models.enums import InvoiceSource, InvoiceStatus, ReviewStatus  # noqa:
 from app.normalize.matcher import match_line_item  # noqa: E402
 
 
-def _cleanup_prior_fixtures(db) -> None:
+def _cleanup_prior_fixtures(db, tenant_id: uuid.UUID) -> None:
     """Each run creates a fresh, uuid-tagged distributor for isolation —
     without this, repeated `npx playwright test` runs (e.g. in CI) would
     accumulate one throwaway distributor/invoice per run forever.
+
+    Scoped to THIS tenant_id (via a join through Invoice), not just the
+    "e2e-" slug prefix alone: an unscoped delete-by-slug-prefix would let
+    two Playwright shards running concurrently against different tenants
+    delete each other's in-progress fixture rows mid-test — a code-review
+    finding on Phase 5.
     """
-    prior_ids = [row[0] for row in db.execute(sqlalchemy.select(Distributor.id).where(Distributor.slug.like("e2e-%"))).all()]
+    prior_ids = [
+        row[0]
+        for row in db.execute(
+            sqlalchemy.select(Distributor.id)
+            .join(Invoice, Invoice.distributor_id == Distributor.id)
+            .where(Distributor.slug.like("e2e-%"), Invoice.tenant_id == tenant_id)
+            .distinct()
+        ).all()
+    ]
     if not prior_ids:
         return
     invoice_ids = [
@@ -57,7 +71,7 @@ def _cleanup_prior_fixtures(db) -> None:
 def cmd_setup(tenant_id: str) -> None:
     db = SessionLocal()
     bind_tenant(db, uuid.UUID(tenant_id))
-    _cleanup_prior_fixtures(db)
+    _cleanup_prior_fixtures(db, uuid.UUID(tenant_id))
 
     tag = uuid.uuid4().hex[:8]
     distributor = Distributor(id=uuid.uuid4(), name=f"E2E Distributor {tag}", slug=f"e2e-test-{tag}")
@@ -136,7 +150,7 @@ def cmd_setup(tenant_id: str) -> None:
 def cmd_setup_bulk(tenant_id: str, count: int) -> None:
     db = SessionLocal()
     bind_tenant(db, uuid.UUID(tenant_id))
-    _cleanup_prior_fixtures(db)
+    _cleanup_prior_fixtures(db, uuid.UUID(tenant_id))
 
     tag = uuid.uuid4().hex[:8]
     distributor = Distributor(id=uuid.uuid4(), name=f"E2E Bulk Distributor {tag}", slug=f"e2e-bulk-{tag}")

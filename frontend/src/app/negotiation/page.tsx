@@ -18,12 +18,20 @@ type NegotiationLine = {
 
 export default function NegotiationPage() {
   const [lines, setLines] = useState<NegotiationLine[] | null>(null);
+  // Summed server-side in Decimal (backend/app/api/negotiation.py) rather
+  // than reduced here via Number()+float addition over Decimal-string
+  // fields — this is the one document this phase's own docstring says a
+  // sales rep will scrutinize line by line.
+  const [totalAnnualized, setTotalAnnualized] = useState<string | null>(null);
 
   useEffect(() => {
     if (!TENANT_ID) return;
     fetch(`${API_BASE}/negotiation?tenant_id=${TENANT_ID}`, { cache: "no-store" })
-      .then((res) => (res.ok ? res.json() : []))
-      .then(setLines);
+      .then((res) => (res.ok ? res.json() : { lines: [], total_annualized_savings: "0" }))
+      .then((data) => {
+        setLines(data.lines);
+        setTotalAnnualized(data.total_annualized_savings);
+      });
   }, []);
 
   if (!TENANT_ID) {
@@ -33,8 +41,6 @@ export default function NegotiationPage() {
       </p>
     );
   }
-
-  const totalAnnualized = (lines ?? []).reduce((sum, l) => sum + Number(l.annualized_savings), 0);
 
   return (
     <div className="max-w-4xl">
@@ -82,7 +88,7 @@ export default function NegotiationPage() {
             </tbody>
           </table>
           <div className="mt-4 text-sm font-medium">
-            Total annualized savings opportunity: ${totalAnnualized.toFixed(2)}
+            Total annualized savings opportunity: ${totalAnnualized}
           </div>
         </>
       )}

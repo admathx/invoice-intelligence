@@ -15,3 +15,12 @@ class NegotiationLineOut(BaseModel):
     quantity_line_item_ids: list[uuid.UUID]
     recoverable_90d: Decimal
     annualized_savings: Decimal
+
+
+class NegotiationSheetOut(BaseModel):
+    lines: list[NegotiationLineOut]
+    # Summed server-side in Decimal — SPEC.md §11's money discipline applies
+    # just as much to a total shown on the page as to any per-line figure;
+    # a client-side sum over stringified Decimals via JS floats risks a
+    # rounding drift on the one document a sales rep is meant to scrutinize.
+    total_annualized_savings: Decimal

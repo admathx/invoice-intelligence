@@ -49,7 +49,8 @@ from decimal import Decimal
 from pathlib import Path
 
 import yaml
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.db import bind_tenant
@@ -147,32 +148,48 @@ def upsert_creep_alerts(db: Session, tenant_id: uuid.UUID) -> list[PriceAlert]:
     """Persists detect_price_creep's findings as open price_alerts rows —
     updates an existing open creep alert for a SKU rather than duplicating it
     on rerun. Feeds Phase 5's Insights page.
+
+    Uses a single atomic INSERT ... ON CONFLICT DO UPDATE (targeting
+    price_alerts' partial unique index on (tenant_id, canonical_sku_id,
+    alert_type) WHERE status='open' — migration 0003) rather than a
+    check-then-act SELECT-then-INSERT: two concurrent callers for the same
+    tenant (e.g. two review actions landing close together) previously could
+    both observe "no open alert yet" and both insert one, producing two open
+    creep alerts for the same SKU that only one of them would ever update
+    again — a code-review finding on Phase 5.
     """
     findings = detect_price_creep(db, tenant_id)
-    existing = {
-        alert.canonical_sku_id: alert
-        for alert in db.scalars(
-            select(PriceAlert).where(
-                PriceAlert.tenant_id == tenant_id,
-                PriceAlert.alert_type == AlertType.creep,
-                PriceAlert.status == AlertStatus.open,
-            )
-        )
-    }
+    if not findings:
+        return []
 
-    alerts = []
-    for finding in findings:
-        alert = existing.get(finding.canonical_sku_id)
-        if alert is None:
-            alert = PriceAlert(
-                tenant_id=tenant_id, canonical_sku_id=finding.canonical_sku_id, alert_type=AlertType.creep
-            )
-            db.add(alert)
-        alert.baseline_price = finding.baseline_price
-        alert.current_price = finding.current_price
-        alert.pct_change = finding.pct_change
-        alert.window_start = finding.window_start
-        alert.window_end = finding.window_end
-        alerts.append(alert)
+    values = [
+        {
+            "id": uuid.uuid4(),
+            "tenant_id": tenant_id,
+            "canonical_sku_id": finding.canonical_sku_id,
+            "alert_type": AlertType.creep,
+            "baseline_price": finding.baseline_price,
+            "current_price": finding.current_price,
+            "pct_change": finding.pct_change,
+            "window_start": finding.window_start,
+            "window_end": finding.window_end,
+            "status": AlertStatus.open,
+        }
+        for finding in findings
+    ]
+
+    stmt = pg_insert(PriceAlert).values(values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["tenant_id", "canonical_sku_id", "alert_type"],
+        index_where=text("status = 'open'"),
+        set_={
+            "baseline_price": stmt.excluded.baseline_price,
+            "current_price": stmt.excluded.current_price,
+            "pct_change": stmt.excluded.pct_change,
+            "window_start": stmt.excluded.window_start,
+            "window_end": stmt.excluded.window_end,
+        },
+    ).returning(PriceAlert.id)
+    alert_ids = db.execute(stmt).scalars().all()
     db.commit()
-    return alerts
+    return list(db.scalars(select(PriceAlert).where(PriceAlert.id.in_(alert_ids))))

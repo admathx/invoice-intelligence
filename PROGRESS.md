@@ -522,6 +522,77 @@ Status: **done**, gate green, demoed live in the browser.
   (vitest): 4 passed. `npx playwright test`: 3 passed, run twice back-to-back
   with no accumulation and no flakiness observed.
 
+### Review pass after Phase 5 (before starting Phase 6)
+
+Ran the code-review skill (high effort) against the Phase 5 diff. 10 findings,
+all fixed:
+
+- **Unchecked `Tenant` lookups crashed review/insights actions**: both
+  `app/api/review.py` and `app/api/insights.py` called `db.get(Tenant,
+  tenant_id)` with no None-check before reading `tenant.metro` — an orphaned
+  `tenant_id` (a deleted tenant, or the e2e fixture's own pattern of creating
+  line items without a `Tenant` row) raised an unhandled 500 instead of a
+  clean 404. Added a shared `_get_tenant_or_404` helper.
+- **No pending-status guard let confirm/correct double-write**: neither
+  endpoint checked `review_status == pending` before processing, so two
+  browser tabs or a retried POST could both succeed against the same line,
+  writing duplicate `sku_aliases`/`price_observations` rows. Added
+  `_get_pending_line_or_404`, returning 409 on a second attempt.
+- **Duplicate open creep alerts under concurrency**: `upsert_creep_alerts`
+  was a check-then-act (SELECT existing, then INSERT if none found) with no
+  DB constraint backing it. Added Alembic migration 0003 — a partial unique
+  index on `price_alerts(tenant_id, canonical_sku_id, alert_type) WHERE
+  status='open'` — and rewrote the function as a single atomic `INSERT ...
+  ON CONFLICT DO UPDATE` targeting it.
+- **`GET /insights` did a full recompute-and-write on every page view**: the
+  same `upsert_creep_alerts` call ran unconditionally on every GET, turning
+  a nominally safe/cacheable read into a required write, and looped a
+  separate price-history query per open alert (an N+1 costing ~60-80 round
+  trips for a tenant with 20+ alerts). Moved the trigger to
+  `app/api/review.py`'s `_finalize` helper — creep alerts now refresh right
+  after a confirm/correct actually lands a new price observation, not on
+  every unrelated page load — and batched the price-history query into one
+  `WHERE canonical_sku_id IN (...)` covering every open alert.
+- **Review-queue fetch race + stale index**: switching the `distributor_id`
+  filter mid-session had no guard against an out-of-order response
+  overwriting the queue, and `index` wasn't reset on a new fetch — a shorter
+  filtered queue could render "Queue is empty" while real items remained at
+  a now out-of-range index. Added an `ignore` flag and reset `index` to 0 on
+  every new queue fetch.
+- **Unclamped `results[selected]` read**: `selected` was kept in sync with
+  `results` only by convention (every producer of `results` was expected to
+  also reset it); the `Enter` handler read `results[selected]` directly with
+  no bounds check. Clamped at the read site instead of trusting every future
+  caller to remember the pairing.
+- **e2e fixture cleanup was unscoped by tenant**: `_cleanup_prior_fixtures`
+  matched distributors by an `"e2e-"` slug prefix alone — two Playwright
+  shards running concurrently against different tenants in CI could delete
+  each other's in-progress fixture rows. Scoped the query through a join on
+  `Invoice.tenant_id` so cleanup only ever touches rows created for the
+  tenant currently running.
+- **Invoice detail page could crash on a missing field**: `invoice.
+  page_image_urls.length` had no guard against `page_image_urls` being
+  `undefined` (a new field with zero runtime validation on the fetch).
+  Defaulted to `[]` at the read site.
+- **`PriceObservation` construction duplicated a third time**: `review.py`'s
+  `_write_observation` hand-built the same 8 fields
+  `seed_corpus_pipeline.py` already builds inline. Extracted a shared
+  `build_price_observation(line, invoice, tenant)` factory into
+  `app/models/price_observation.py` (using `TYPE_CHECKING` imports to avoid
+  introducing a real cross-model import) and pointed `review.py` at it.
+- **Negotiation total computed via JS floats**: the page summed
+  Decimal-string `annualized_savings` fields with `Number()` and JS
+  floating-point addition — a rounding-drift risk on the one document this
+  phase's own docstring says a sales rep will scrutinize line by line. Moved
+  the sum server-side (`Decimal` arithmetic, `NegotiationSheetOut.
+  total_annualized_savings`) and had the negotiation endpoint's SKU-name
+  lookup use one `WHERE id IN (...)` query instead of one `db.get()` per
+  line while touching that file anyway.
+
+Verified: full backend suite (76 passed) unchanged; `npm run build` clean;
+`npm run test` (4 passed) and `npx playwright test` (3 passed) both green
+after restarting the API/frontend dev processes to pick up the changes.
+
 ## Phase 6 — Email intake
 
 Status: not started.
