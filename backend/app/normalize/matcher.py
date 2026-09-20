@@ -11,14 +11,14 @@ from decimal import Decimal
 from pathlib import Path
 
 import yaml
-from sqlalchemy import distinct, func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, aliased
 
 from app.models.canonical_sku import CanonicalSku
 from app.models.enums import BaseUom, ReviewStatus
 from app.models.sku_alias import SkuAlias
 from app.models.tenant import Tenant, account_key_column
-from app.normalize.description_expansion import normalize_for_embedding
+from app.normalize.description_expansion import description_similarity, normalize_for_embedding
 from app.normalize.embeddings import embed_text
 from app.normalize.pack_size import ParsedPackSize, PackSizeParseError, parse_pack_size
 
@@ -35,6 +35,9 @@ REVIEW_QUEUE_CONFIDENCE_LOW = Decimal(str(_matching_thresholds["review_queue_con
 # How many separate businesses must independently make the same correction
 # before it is trusted for everyone else. See match_by_alias.
 MIN_INDEPENDENT_ALIAS_CONFIRMATIONS = _matching_thresholds["min_independent_alias_confirmations"]
+# How much an incoming description must still look like the one that was
+# corrected, before the alias is trusted at all. See match_by_alias.
+MIN_ALIAS_DESCRIPTION_SIMILARITY = _matching_thresholds["min_alias_description_similarity"]
 
 
 @dataclass
@@ -49,7 +52,11 @@ class MatchResult:
 
 
 def match_by_alias(
-    db: Session, distributor_id: uuid.UUID, raw_sku: str | None, tenant_id: uuid.UUID
+    db: Session,
+    distributor_id: uuid.UUID,
+    raw_sku: str | None,
+    raw_description: str,
+    tenant_id: uuid.UUID,
 ) -> uuid.UUID | None:
     """Exact match on (distributor_id, raw_sku). Free — no embedding call.
 
@@ -74,6 +81,18 @@ def match_by_alias(
     distributor's code means is exactly the situation where guessing produces
     a confident false match, and falling through to the embedding path costs
     one similarity search and keeps SPEC.md §6's false-match budget intact.
+
+    Every tier is gated on the description still describing the same item, per
+    MIN_ALIAS_DESCRIPTION_SIMILARITY. That is SPEC.md §12's third open
+    question — "How do we handle a distributor changing an item code for the
+    same product mid-year?" — from its dangerous direction: a distributor who
+    REUSES a retired code for a different product turns every alias for it
+    into a silent, confident false match, at confidence 1.0, with no embedding
+    call to notice and no human ever seeing the line. Checking the description
+    each time makes that self-correcting: the drifted line simply stops
+    qualifying and resolves on its own merits. Being too strict costs one
+    embedding search, which is why the threshold is set where legitimate
+    variation never reaches it.
     """
     if not raw_sku:
         return None
@@ -84,47 +103,71 @@ def match_by_alias(
     # runs once per line item, and the worker does ~75 of them per invoice.
     asker_business = select(account_key_column()).where(Tenant.id == tenant_id).scalar_subquery()
 
+    # Individual rows rather than a GROUP BY: the description check below has
+    # to run per row, before any counting, or a stale alias would still be
+    # corroborating its own reassigned code.
     rows = db.execute(
         select(
             SkuAlias.canonical_sku_id,
-            # COUNT(DISTINCT ...) ignores NULLs, so curated rows contribute
-            # nothing to the independent-business count and are handled below
-            # on their own terms.
-            func.count(distinct(business)).label("businesses"),
-            func.bool_or(SkuAlias.tenant_id.is_(None)).label("curated"),
-            func.bool_or(business == asker_business).label("mine"),
-            func.max(SkuAlias.created_at).label("latest"),
+            SkuAlias.raw_description,
+            SkuAlias.created_at,
+            SkuAlias.tenant_id,
+            business.label("business"),
+            asker_business.label("asker"),
         )
         .select_from(SkuAlias)
         .outerjoin(alias_tenant, alias_tenant.id == SkuAlias.tenant_id)
         .where(SkuAlias.distributor_id == distributor_id, SkuAlias.raw_sku == raw_sku)
-        .group_by(SkuAlias.canonical_sku_id)
     ).all()
-    if not rows:
+
+    live = [
+        row
+        for row in rows
+        if description_similarity(row.raw_description, raw_description) >= MIN_ALIAS_DESCRIPTION_SIMILARITY
+    ]
+    if not live:
         return None
 
-    # Newest first within each tier: a tenant who re-corrects the same code
-    # (a distributor reassigning an item code mid-year, SPEC.md §12's third
-    # open question) means the later answer, not the earlier one.
-    def _newest(candidates):
-        return max(candidates, key=lambda row: row.latest).canonical_sku_id
+    @dataclass
+    class _Candidate:
+        canonical_sku_id: uuid.UUID
+        businesses: set
+        curated: bool
+        mine: bool
+        latest: object
 
-    mine = [row for row in rows if row.mine]
+    by_sku: dict[uuid.UUID, _Candidate] = {}
+    for row in live:
+        candidate = by_sku.get(row.canonical_sku_id)
+        if candidate is None:
+            candidate = by_sku[row.canonical_sku_id] = _Candidate(row.canonical_sku_id, set(), False, False, row.created_at)
+        if row.business is not None:
+            candidate.businesses.add(row.business)
+        candidate.curated = candidate.curated or row.tenant_id is None
+        candidate.mine = candidate.mine or (row.business is not None and row.business == row.asker)
+        candidate.latest = max(candidate.latest, row.created_at)
+
+    # Newest first within each tier: a tenant who re-corrects the same code
+    # means the later answer, not the earlier one.
+    def _newest(candidates):
+        return max(candidates, key=lambda c: c.latest).canonical_sku_id
+
+    mine = [c for c in by_sku.values() if c.mine]
     if mine:
         return _newest(mine)
 
-    curated = [row for row in rows if row.curated]
+    curated = [c for c in by_sku.values() if c.curated]
     if curated:
         return _newest(curated)
 
     confirmed = sorted(
-        (row for row in rows if row.businesses >= MIN_INDEPENDENT_ALIAS_CONFIRMATIONS),
-        key=lambda row: row.businesses,
+        (c for c in by_sku.values() if len(c.businesses) >= MIN_INDEPENDENT_ALIAS_CONFIRMATIONS),
+        key=lambda c: len(c.businesses),
         reverse=True,
     )
     if not confirmed:
         return None
-    if len(confirmed) > 1 and confirmed[0].businesses == confirmed[1].businesses:
+    if len(confirmed) > 1 and len(confirmed[0].businesses) == len(confirmed[1].businesses):
         return None
     return confirmed[0].canonical_sku_id
 
@@ -242,7 +285,7 @@ def match_line_item(
     tenant_id: uuid.UUID,
     gtin: str | None = None,
 ) -> MatchResult:
-    alias_match = match_by_alias(db, distributor_id, raw_sku, tenant_id)
+    alias_match = match_by_alias(db, distributor_id, raw_sku, raw_description, tenant_id)
     if alias_match is not None:
         return _exact_match_result(db, alias_match, "alias", raw_pack_size, quantity, unit_price, uom)
 

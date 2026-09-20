@@ -19,6 +19,10 @@ from app.models.enums import BaseUom, VolumeTier
 from app.normalize.matcher import MIN_INDEPENDENT_ALIAS_CONFIRMATIONS, match_by_gtin, match_line_item
 
 RAW_SKU = "RAW-SKU-123"
+# What the distributor printed when the correction was made. An alias is only
+# trusted while the incoming line still looks like this (see match_by_alias),
+# so tests that mean "the alias applies" have to send a matching description.
+ALIAS_DESCRIPTION = "MOZZ SHRD WHL MLK 4/5 LB"
 
 # db_session comes from conftest.py, which rolls back everything a test
 # commits. This module used to define its own committing fixture, which is
@@ -83,7 +87,7 @@ def _write_alias(db, distributor, sku, tenant: Tenant | None, *, created_at: dat
         canonical_sku_id=sku.id,
         distributor_id=distributor.id,
         tenant_id=tenant.id if tenant is not None else None,
-        raw_description="whatever was on the invoice",
+        raw_description=ALIAS_DESCRIPTION,
         raw_sku=RAW_SKU,
         # Passed explicitly where ordering is under test: Postgres' now() is
         # the TRANSACTION timestamp, so rows written inside one test would
@@ -95,7 +99,7 @@ def _write_alias(db, distributor, sku, tenant: Tenant | None, *, created_at: dat
     return alias
 
 
-def _match(db, distributor, tenant: Tenant, raw_description: str = "SOME GARBLED TEXT THAT WOULD NEVER EMBED-MATCH"):
+def _match(db, distributor, tenant: Tenant, raw_description: str = ALIAS_DESCRIPTION):
     return match_line_item(
         db,
         tenant_id=tenant.id,
@@ -134,7 +138,7 @@ def test_embedding_matcher_never_called_on_known_alias(
         lambda *a, **k: (calls.append(1), (None, None))[1],
     )
 
-    _match(db_session, distributor, _make_tenant(db_session), raw_description="irrelevant")
+    _match(db_session, distributor, _make_tenant(db_session))
 
     assert calls == [], "embedding matcher was called despite a confirmed alias existing"
 
@@ -142,12 +146,7 @@ def test_embedding_matcher_never_called_on_known_alias(
 def test_alias_is_scoped_to_distributor(db_session, distributor, other_distributor, canonical_sku, curated_alias):
     # Same raw_sku, different distributor — must NOT match (SPEC.md §6: exact
     # match on (distributor_id, raw_sku), not raw_sku alone).
-    result = _match(
-        db_session,
-        other_distributor,
-        _make_tenant(db_session),
-        raw_description="TOTALLY UNRELATED TEXT THAT WONT EMBED MATCH ANYTHING WELL",
-    )
+    result = _match(db_session, other_distributor, _make_tenant(db_session))
     assert result.method != "alias"
 
 
@@ -282,3 +281,74 @@ def test_a_later_correction_supersedes_the_same_tenants_earlier_one(db_session, 
     result = _match(db_session, distributor, corrector)
 
     assert result.canonical_sku_id == now.id
+
+
+# --- SPEC.md §12 Q3: a distributor reusing a code for a different product ---
+
+
+def test_a_reassigned_item_code_does_not_silently_match_the_old_product(db_session, distributor, canonical_sku):
+    """The dangerous half of SPEC.md §12's third open question.
+
+    A distributor retires a code and later reuses it for something else. The
+    alias path short-circuits before any embedding call, so without this guard
+    every future line for that code became a confident false match at
+    confidence 1.0 — no similarity check to notice, no human ever seeing it,
+    and cheddar's prices recorded as mozzarella's in every benchmark and creep
+    window downstream.
+    """
+    corrector = _make_tenant(db_session)
+    _write_alias(db_session, distributor, canonical_sku, corrector)
+
+    result = match_line_item(
+        db_session,
+        tenant_id=corrector.id,
+        distributor_id=distributor.id,
+        raw_sku=RAW_SKU,  # same code...
+        raw_description="CHEDDAR SHRD SHARP 4/5 LB",  # ...different product
+        raw_pack_size="4/5 LB",
+        quantity=Decimal("1"),
+        unit_price=Decimal("50.00"),
+        uom="CS",
+    )
+
+    assert result.method != "alias"
+    assert result.canonical_sku_id != canonical_sku.id
+
+
+def test_a_truncated_reprint_of_the_same_line_still_matches(db_session, distributor, canonical_sku):
+    """Distributors truncate descriptions to a column width, so the same line
+    prints as "CUCUMBER" one week and "CUCU" the next. The guard above must
+    not read that as a reassignment — exact token matching scored this pair at
+    0.000 and would have disabled the alias path wholesale.
+    """
+    corrector = _make_tenant(db_session)
+    alias = _write_alias(db_session, distributor, canonical_sku, corrector)
+    assert alias.raw_description == ALIAS_DESCRIPTION
+
+    result = _match(db_session, distributor, corrector, raw_description="MOZZ SHRD WHL M")
+
+    assert result.method == "alias"
+    assert result.canonical_sku_id == canonical_sku.id
+
+
+def test_a_drifted_alias_does_not_corroborate_its_own_reassigned_code(db_session, distributor, canonical_sku):
+    """The description check runs per row, before any counting: two stale
+    aliases must not clear the confirmation bar for a code that now means
+    something else.
+    """
+    for _ in range(MIN_INDEPENDENT_ALIAS_CONFIRMATIONS):
+        _write_alias(db_session, distributor, canonical_sku, _make_tenant(db_session))
+
+    result = match_line_item(
+        db_session,
+        tenant_id=_make_tenant(db_session).id,
+        distributor_id=distributor.id,
+        raw_sku=RAW_SKU,
+        raw_description="CHEDDAR SHRD SHARP 4/5 LB",
+        raw_pack_size="4/5 LB",
+        quantity=Decimal("1"),
+        unit_price=Decimal("50.00"),
+        uom="CS",
+    )
+
+    assert result.method != "alias"

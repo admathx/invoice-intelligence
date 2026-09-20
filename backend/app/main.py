@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import insights, invoices, negotiation, review, skus
+from app.api import accounts, insights, invoices, negotiation, review, skus, tenants
 from app.config import settings
 
 app = FastAPI(title="Invoice Intelligence")
@@ -33,6 +33,8 @@ app.include_router(skus.router)
 app.include_router(review.router)
 app.include_router(insights.router)
 app.include_router(negotiation.router)
+app.include_router(accounts.router)
+app.include_router(tenants.router)
 
 
 @app.get("/health")

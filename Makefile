@@ -72,7 +72,7 @@ validate:
 	cd backend && $(VENV)/pytest -q tests/test_pack_size.py tests/test_alias.py
 	PYTHONPATH=backend backend/$(VENV)/python -m validation.matching_report
 	@echo "--- Phase 4 gate ---"
-	cd backend && $(VENV)/pytest -q tests/test_suppression.py tests/test_negotiation.py tests/test_price_creep.py
+	cd backend && $(VENV)/pytest -q tests/test_suppression.py tests/test_negotiation.py tests/test_price_creep.py tests/test_accounts_api.py
 	$(MAKE) seed-analytics
 	PYTHONPATH=backend backend/$(VENV)/python -m validation.creep_report
 	@echo "--- Phase 5 gate ---"

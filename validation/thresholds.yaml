@@ -31,6 +31,17 @@ phase3_normalization:
   # makes. Your own corrections always apply to you immediately; this gates
   # only whether they apply to everyone else. See app/normalize/matcher.py.
   min_independent_alias_confirmations: 2
+  # SPEC.md §12's third open question, from its dangerous direction: a
+  # distributor REUSING a retired item code for a different product turns
+  # every alias for it into a silent false match at confidence 1.0. An alias
+  # is only trusted while the incoming description still looks like the one
+  # that was corrected. Calibrated on the corpus (810 item codes, 16k
+  # cross-code pairs): the same code's own descriptions never score below
+  # 0.500 even with the truncation distributors apply ("CUCUMBER" printing as
+  # "CUCU"), while different codes sit at a median of 0.000. At 0.50 no
+  # legitimate alias hit is skipped and 98.6% of reassignments are caught.
+  # Erring strict costs one embedding search, never a wrong answer.
+  min_alias_description_similarity: 0.50
   review_queue_confidence_low: 0.80
   review_queue_confidence_high: 0.92
   false_match_rate_max: 0.01

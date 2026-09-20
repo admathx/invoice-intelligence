@@ -29,6 +29,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <a href="/negotiation" className="text-sm text-gray-600 hover:text-gray-900">
             Negotiation
           </a>
+          {/* Operator-facing, not tenant-facing: this is the only page that
+              works across tenants rather than inside the one the dashboard is
+              pointed at. Separated visually for that reason. */}
+          <a href="/accounts" className="ml-auto text-sm text-gray-400 hover:text-gray-900">
+            Businesses
+          </a>
         </nav>
         <main className="p-6">{children}</main>
       </body>

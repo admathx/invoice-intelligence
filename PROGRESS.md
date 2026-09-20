@@ -1067,3 +1067,95 @@ fourth time.
   different product) — only the same-tenant re-correction case is handled.
 - Phase 2's extraction gate has still never run against the real API.
 - Accounts remain schema-only: no way to create one or assign tenants.
+
+## Accounts made usable, and SPEC.md §12 Q3's dangerous half
+
+### Q3: a distributor reusing a retired item code
+
+The spec asks "How do we handle a distributor changing an item code for the
+same product mid-year?" The same-product direction was already covered (a
+tenant's newer correction wins). The direction that actually loses money is
+the reverse: a distributor **reuses** a retired code for a *different*
+product. The alias path short-circuits before any embedding call, so every
+line for that code kept matching the old product at confidence 1.0 — no
+similarity check to notice, no human ever seeing it, and cheddar's prices
+recorded as mozzarella's in every benchmark cell and creep window downstream.
+A silent, confident false match, which SPEC.md §1 names as the worst failure.
+
+`match_by_alias` now checks, per row and before any counting, that the
+incoming description still describes the same item
+(`min_alias_description_similarity`). A reassigned code simply stops
+qualifying and resolves on its own merits. Being too strict costs one
+embedding search, never a wrong answer — which is why the threshold sits
+where legitimate variation never reaches it.
+
+**Getting the similarity measure right took two attempts, and the corpus
+caught the first one.** Exact-token Jaccard looked obviously fine and was
+badly wrong: distributors truncate descriptions to a column width, so
+"CUCUMBER" prints as "CUCU" and "BACON SLICED" as "BACON S". Measured across
+810 item codes, a code's *own* descriptions scored a median of 0.333 and the
+CUCU pair scored 0.000 — a threshold anywhere useful would have disabled the
+alias path wholesale rather than catching reassignments.
+
+Replaced with prefix-tolerant symmetric coverage, which reads truncation as
+the same word. Then the first unit test failed and caught a second problem:
+many distributors print the pack into the description, and the shared "4 5 LB"
+tokens scored a mozzarella against a cheddar at 0.615 — enough to hide a
+reassignment. Numeric tokens are now dropped (pack size has its own parser and
+its own place in the pipeline; it is not product identity).
+
+Final calibration, 810 codes and 16,000 cross-code pairs:
+
+| | same item code | different item codes |
+|---|---|---|
+| min / median | 0.500 / 1.000 | — / 0.000 |
+| p99 | — | 0.500 |
+
+At `0.50`: **0.00% of legitimate alias hits skipped, 98.6% of reassignments
+caught.** `matching_report` still reports 0.0000% false match (0/38709).
+
+### Accounts, reachable at last
+
+Benchmark suppression and alias promotion both hinge on accounts, and both
+shipped before there was any way to create one — the privacy fix was
+unreachable by an actual operator.
+
+- `POST /accounts`, `GET /accounts`, `GET /accounts/{id}`,
+  `POST /accounts/{id}/locations`, `DELETE /accounts/{id}/locations/{tenant}`,
+  plus `GET /tenants?unassigned=true` for the picker.
+- **Re-parenting is a 409, not a silent move.** Shifting a location between
+  businesses changes which cells it can corroborate and whose corrections it
+  inherits; detaching first makes that deliberate.
+- A `/accounts` page, deliberately set apart in the nav: it is the one
+  operator-facing screen, working across tenants rather than inside the one
+  the dashboard points at. It leads with *why* grouping matters rather than
+  presenting itself as bookkeeping.
+- **No auth on any of it**, same as the rest of v0 (SPEC.md §1). Noted in the
+  module docstring because it matters more here: detaching raises the
+  distinct-business count and can un-suppress a cell that was suppressed a
+  moment earlier. First thing to gate when there is anything to gate against.
+
+The last test is the one worth having: five locations clear a five-business
+threshold, then the API groups them, and the same cell suppresses.
+
+### Dev-database hygiene
+46 of 67 tenants were debris from test runs that predated conftest's rollback
+fixture, which made the location picker unusable and is the same root cause as
+the 103 stray aliases cleaned up earlier. Removed, with their invoices and
+line items. The demo account created while verifying the UI was removed too —
+a stray grouping would sit in every future benchmark computation.
+
+### Gates
+- Backend **144 passed** (was 134): 7 accounts-API tests, 3 reassignment tests.
+- `matching_report` 0.0000% false match (0/38709), `creep_report` 93.9% / 0 FP.
+- Playwright 4, frontend 15 unit tests, `tsc` clean.
+- Verified in the browser: created a business, attached a location through the
+  picker, confirmed the API recorded it.
+
+### Still open
+- Phase 2's extraction gate has never run against the real API. Unchanged, and
+  now the only substantial item left.
+- `min_alias_description_similarity` is calibrated on synthetic descriptions.
+  Real distributor variation is probably wider; the failure mode of being too
+  strict is benign (one embedding call), so erring strict was the right call,
+  but this is worth re-measuring on real invoices.
