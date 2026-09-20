@@ -111,6 +111,7 @@ def process_invoice(invoice_id: str) -> None:
                     quantity=quantity,
                     unit_price=unit_price,
                     uom=line.uom,
+                    tenant_id=invoice.tenant_id,
                 )
                 line_item.canonical_sku_id = match.canonical_sku_id
                 line_item.match_confidence = match.match_confidence

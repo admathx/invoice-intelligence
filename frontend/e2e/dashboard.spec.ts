@@ -75,6 +75,7 @@ test.describe("ingest -> review -> negotiation sheet", () => {
     // (distributor, raw_sku) should now short-circuit via the alias.
     const verify = runFixture(
       "verify-alias",
+      TENANT_ID,
       fixture.distributor_id,
       fixture.correct_raw_sku,
       fixture.correct_raw_description

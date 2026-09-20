@@ -31,3 +31,20 @@ class Tenant(Base):
     metro: Mapped[str] = mapped_column(String, nullable=False)
     volume_tier: Mapped[VolumeTier] = mapped_column(Enum(VolumeTier, name="volume_tier"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+
+def account_key_column(entity=Tenant):
+    """A tenant's business identity: its account when it has one, else itself.
+
+    COALESCE rather than a NULL-safe join to a backfilled account row, so that
+    single-location tenants (the overwhelming majority, and every row that
+    predates accounts) need no Account row at all and count exactly as they
+    always did.
+
+    Lives on the model rather than in either caller because two unrelated
+    layers need the same notion of "independent business": benchmarking, for
+    how many businesses stand behind a cell, and alias promotion, for how many
+    businesses independently confirmed a match. `entity` takes an alias when
+    the query joins tenants under another name.
+    """
+    return func.coalesce(entity.account_id, entity.id)

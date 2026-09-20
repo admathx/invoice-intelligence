@@ -11,12 +11,13 @@ from decimal import Decimal
 from pathlib import Path
 
 import yaml
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import distinct, func, select
+from sqlalchemy.orm import Session, aliased
 
 from app.models.canonical_sku import CanonicalSku
 from app.models.enums import BaseUom, ReviewStatus
 from app.models.sku_alias import SkuAlias
+from app.models.tenant import Tenant, account_key_column
 from app.normalize.description_expansion import normalize_for_embedding
 from app.normalize.embeddings import embed_text
 from app.normalize.pack_size import ParsedPackSize, PackSizeParseError, parse_pack_size
@@ -31,6 +32,9 @@ _matching_thresholds = yaml.safe_load(_THRESHOLDS_PATH.read_text())["phase3_norm
 
 AUTO_MATCH_CONFIDENCE_THRESHOLD = Decimal(str(_matching_thresholds["auto_match_confidence_threshold"]))
 REVIEW_QUEUE_CONFIDENCE_LOW = Decimal(str(_matching_thresholds["review_queue_confidence_low"]))
+# How many separate businesses must independently make the same correction
+# before it is trusted for everyone else. See match_by_alias.
+MIN_INDEPENDENT_ALIAS_CONFIRMATIONS = _matching_thresholds["min_independent_alias_confirmations"]
 
 
 @dataclass
@@ -44,15 +48,85 @@ class MatchResult:
     method: str  # "alias" | "gtin" | "embedding_auto" | "embedding_review" | "new_candidate" | "unparseable_pack_size"
 
 
-def match_by_alias(db: Session, distributor_id: uuid.UUID, raw_sku: str | None) -> uuid.UUID | None:
-    """Exact match on (distributor_id, raw_sku). Free — no embedding call."""
+def match_by_alias(
+    db: Session, distributor_id: uuid.UUID, raw_sku: str | None, tenant_id: uuid.UUID
+) -> uuid.UUID | None:
+    """Exact match on (distributor_id, raw_sku). Free — no embedding call.
+
+    An alias is trusted for this tenant when any of these hold, in order:
+
+    1. Their own business made it. Your correction applies to you immediately —
+       keyed on account, not tenant, so a group's other locations count as the
+       same business rather than as independent corroboration.
+    2. It is system-curated (tenant_id NULL — a catalog import, not one
+       person's judgement call).
+    3. At least MIN_INDEPENDENT_ALIAS_CONFIRMATIONS *separate businesses* made
+       the same mapping.
+
+    Rule 3 is SPEC.md §12's first open question, which had been left as
+    "immediately, off one click": a single mistaken correction rewrote matching
+    for every other customer, in the table this codebase calls the moat.
+    Counting businesses rather than tenants matters for the same reason it does
+    in benchmarking — five locations of one group agreeing is one opinion.
+
+    Contradictory mappings that both clear the bar resolve to None rather than
+    to the more popular one. Two groups of businesses disagreeing about what a
+    distributor's code means is exactly the situation where guessing produces
+    a confident false match, and falling through to the embedding path costs
+    one similarity search and keeps SPEC.md §6's false-match budget intact.
+    """
     if not raw_sku:
         return None
-    return db.scalar(
-        select(SkuAlias.canonical_sku_id).where(
-            SkuAlias.distributor_id == distributor_id, SkuAlias.raw_sku == raw_sku
+
+    alias_tenant = aliased(Tenant)
+    business = account_key_column(alias_tenant)
+    # Resolved as a scalar subquery rather than a separate round trip: this
+    # runs once per line item, and the worker does ~75 of them per invoice.
+    asker_business = select(account_key_column()).where(Tenant.id == tenant_id).scalar_subquery()
+
+    rows = db.execute(
+        select(
+            SkuAlias.canonical_sku_id,
+            # COUNT(DISTINCT ...) ignores NULLs, so curated rows contribute
+            # nothing to the independent-business count and are handled below
+            # on their own terms.
+            func.count(distinct(business)).label("businesses"),
+            func.bool_or(SkuAlias.tenant_id.is_(None)).label("curated"),
+            func.bool_or(business == asker_business).label("mine"),
+            func.max(SkuAlias.created_at).label("latest"),
         )
+        .select_from(SkuAlias)
+        .outerjoin(alias_tenant, alias_tenant.id == SkuAlias.tenant_id)
+        .where(SkuAlias.distributor_id == distributor_id, SkuAlias.raw_sku == raw_sku)
+        .group_by(SkuAlias.canonical_sku_id)
+    ).all()
+    if not rows:
+        return None
+
+    # Newest first within each tier: a tenant who re-corrects the same code
+    # (a distributor reassigning an item code mid-year, SPEC.md §12's third
+    # open question) means the later answer, not the earlier one.
+    def _newest(candidates):
+        return max(candidates, key=lambda row: row.latest).canonical_sku_id
+
+    mine = [row for row in rows if row.mine]
+    if mine:
+        return _newest(mine)
+
+    curated = [row for row in rows if row.curated]
+    if curated:
+        return _newest(curated)
+
+    confirmed = sorted(
+        (row for row in rows if row.businesses >= MIN_INDEPENDENT_ALIAS_CONFIRMATIONS),
+        key=lambda row: row.businesses,
+        reverse=True,
     )
+    if not confirmed:
+        return None
+    if len(confirmed) > 1 and confirmed[0].businesses == confirmed[1].businesses:
+        return None
+    return confirmed[0].canonical_sku_id
 
 
 def match_by_gtin(db: Session, gtin: str | None) -> uuid.UUID | None:
@@ -165,9 +239,10 @@ def match_line_item(
     quantity: Decimal,
     unit_price: Decimal,
     uom: str,
+    tenant_id: uuid.UUID,
     gtin: str | None = None,
 ) -> MatchResult:
-    alias_match = match_by_alias(db, distributor_id, raw_sku)
+    alias_match = match_by_alias(db, distributor_id, raw_sku, tenant_id)
     if alias_match is not None:
         return _exact_match_result(db, alias_match, "alias", raw_pack_size, quantity, unit_price, uom)
 

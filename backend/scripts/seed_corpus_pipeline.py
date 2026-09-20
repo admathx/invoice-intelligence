@@ -148,6 +148,7 @@ def main() -> None:
                         quantity=Decimal("1"),
                         unit_price=Decimal("1"),
                         uom=line["uom"],
+                        tenant_id=tenant.id,
                     )
                     match_cache[key] = cached
 

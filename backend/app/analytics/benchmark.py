@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.models.enums import VolumeTier
 from app.models.price_observation import PriceObservation
-from app.models.tenant import Tenant
+from app.models.tenant import Tenant, account_key_column
 
 _THRESHOLDS_PATH = Path(__file__).resolve().parents[3] / "validation" / "thresholds.yaml"
 _benchmark_thresholds = yaml.safe_load(_THRESHOLDS_PATH.read_text())["phase4_analytics"]["benchmark"]
@@ -60,17 +60,6 @@ class BenchmarkResult:
     subject_percentile: Decimal | None = None
 
 
-def _account_key_column():
-    """A tenant's business identity: its account when it has one, else itself.
-
-    COALESCE rather than a NULL-safe join to a backfilled account row, so that
-    single-location tenants (the overwhelming majority, and every row that
-    predates accounts) need no Account row at all and count exactly as they
-    always did.
-    """
-    return func.coalesce(Tenant.account_id, Tenant.id)
-
-
 def account_key_for(db: Session, tenant_id: uuid.UUID) -> uuid.UUID:
     """The account key to exclude when `tenant_id` is the one asking.
 
@@ -78,7 +67,7 @@ def account_key_for(db: Session, tenant_id: uuid.UUID) -> uuid.UUID:
     callers ask for many SKUs in a loop (a negotiation sheet, an insights
     page), and the asker's account doesn't change between SKUs.
     """
-    key = db.scalar(select(_account_key_column()).where(Tenant.id == tenant_id))
+    key = db.scalar(select(account_key_column()).where(Tenant.id == tenant_id))
     # A tenant_id with no tenants row can't have siblings, so excluding the id
     # itself is exactly right (and keeps this total rather than raising on a
     # caller that already 404s on the same condition).
@@ -142,7 +131,7 @@ def _cells(
     if not canonical_sku_ids:
         return {}
 
-    account_key = _account_key_column()
+    account_key = account_key_column()
     conditions = [
         PriceObservation.canonical_sku_id.in_(canonical_sku_ids),
         PriceObservation.observed_on >= window_start,

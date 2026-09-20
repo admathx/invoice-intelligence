@@ -990,3 +990,80 @@ Next's dev server served a 404 for `/insights` after a hot-reload runtime
 error mid-edit, while the same source built and passed 4/4 in Playwright on
 its own server. `rm -rf .next` and a restart fixed it. Worth knowing before
 debugging a routing problem that isn't one.
+
+## SPEC.md §12 Q1 — how far does one correction travel?
+
+The spec asked: "Should a corrected alias apply across all tenants
+immediately, or only after N confirmations? (Leaning: cross-tenant after 2
+independent confirmations.)" It had never been answered. `sku_aliases` had no
+tenant at all, so the answer in force was **immediately, off one person's
+click** — a single mistaken correction silently rewrote matching for every
+other customer, in the table this repo's own model docstring calls the moat.
+
+Resolved as the spec's leaning said. `sku_aliases.tenant_id` (migration
+`0007`) records who corrected what, and `match_by_alias` trusts an alias for a
+given asker when, in order:
+
+1. **Their own business made it** — your correction applies to you
+   immediately. Keyed on *account*, so a group's other locations count as the
+   same business, and a sibling location inherits it at once.
+2. **It is system-curated** (`tenant_id` NULL — a catalog import, not one
+   person's judgement). This is also what every pre-existing row means, so the
+   migration changes no existing behaviour.
+3. **At least `min_independent_alias_confirmations` (2) separate businesses**
+   made the same mapping.
+
+Counting businesses rather than tenants for the same reason benchmarking does:
+five locations of one chain agreeing is one opinion. `account_key_column` moved
+from `benchmark.py` to `app/models/tenant.py`, since two unrelated layers now
+need the same notion of "independent business" and `normalize` importing from
+`analytics` would have been backwards.
+
+**Contradictory mappings resolve to None, not to the more popular one.** Two
+camps of businesses disagreeing about what a distributor's code means is
+exactly where guessing produces a confident false match; falling through costs
+one embedding search and protects SPEC.md §6's false-match budget. A clear
+majority (3 vs 2) does win — it's only a tie that abstains.
+
+Within each tier the **newest** correction wins, which is a partial answer to
+the spec's third open question (a distributor reassigning an item code
+mid-year): a tenant who re-corrects the same code means the later answer.
+
+### Data hygiene this surfaced
+- `test_alias.py` defined its own committing `db_session` that shadowed
+  conftest's rollback fixture — the source of **103 stray `sku_aliases` rows**
+  in the dev database. Removed; the module now uses conftest's.
+- Those 103 were deleted, and the **16 real corrections from the Phase 5 demo**
+  were attributed to the tenant whose line items produced them, so they stop
+  being grandfathered as globally-trusted curated aliases. One-off cleanup, not
+  a migration: a fresh deployment has none of these rows.
+- The new FK exposed a hole in `test_review_api.py`'s teardown: it deleted
+  tenants before the aliases the **confirm/correct endpoints** had written on
+  their behalf. Those were never in `created["aliases"]` (the API made them,
+  not the test), so before the FK they leaked silently and after it they broke
+  the teardown outright. Two had already leaked — and being the same mapping
+  owned by two different tenants, they counted as an independent confirmation
+  and promoted the alias globally. Test debris acting as crowd evidence.
+
+### The stale-server lesson, finally fixed at the root
+A backend edit looked like it hadn't worked (new aliases still had no tenant)
+because the running uvicorn predated the edit — the third time this session,
+already recorded twice. `make up` now starts uvicorn with `--reload`. It is
+the dev harness; a file watcher is cheaper than debugging the same illusion a
+fourth time.
+
+### Gates
+- Backend **134 passed** (was 125). 9 new alias tests; 4 of them verified to
+  fail against the old first-row-wins behaviour.
+- `matching_report` 0 unparseable / **0.0000% false match (0/38709)** — the
+  gate that would catch a promotion rule that trusts too much.
+- `creep_report` 93.9% / 0 FP, Playwright 4 passed, frontend 15 unit tests.
+- The e2e "a correction auto-resolves the next matching line" now exercises
+  rule 1 specifically: `verify-alias` takes a tenant, because "who's asking"
+  is the whole question now.
+
+### Still open
+- SPEC.md §12 Q3 proper (a distributor reassigning an item code to a genuinely
+  different product) — only the same-tenant re-correction case is handled.
+- Phase 2's extraction gate has still never run against the real API.
+- Accounts remain schema-only: no way to create one or assign tenants.

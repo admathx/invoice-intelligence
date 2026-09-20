@@ -23,6 +23,14 @@ phase3_normalization:
   pack_size_parser_pass_rate: 1.0  # hard 100%, not tunable
   auto_match_rate: 0.90
   auto_match_confidence_threshold: 0.92
+  # SPEC.md §12's first open question: "Should a corrected alias apply across
+  # all tenants immediately, or only after N confirmations? (Leaning:
+  # cross-tenant after 2 independent confirmations.)" Resolved as the leaning
+  # said. Counted in separate BUSINESSES, not tenants — five locations of one
+  # group agreeing is one opinion, the same distinction benchmark suppression
+  # makes. Your own corrections always apply to you immediately; this gates
+  # only whether they apply to everyone else. See app/normalize/matcher.py.
+  min_independent_alias_confirmations: 2
   review_queue_confidence_low: 0.80
   review_queue_confidence_high: 0.92
   false_match_rate_max: 0.01

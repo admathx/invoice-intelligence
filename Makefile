@@ -11,7 +11,11 @@ up:
 	@echo "Waiting for postgres..."
 	@until $(DOCKER) compose exec -T postgres pg_isready -U invoice > /dev/null 2>&1; do sleep 1; done
 	mkdir -p $(RUN_DIR) logs
-	backend/$(VENV)/uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8000 > logs/api.log 2>&1 & echo $$! > $(RUN_DIR)/api.pid
+	# --reload is not a nicety here: this target is the dev harness, and a
+	# uvicorn started without it has now three times served stale code to a
+	# browser check or an e2e run after a backend edit, each time looking like
+	# a bug in the change rather than in the server. Costs a file watcher.
+	backend/$(VENV)/uvicorn app.main:app --app-dir backend --reload --host 0.0.0.0 --port 8000 > logs/api.log 2>&1 & echo $$! > $(RUN_DIR)/api.pid
 	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/run_worker.py > logs/worker.log 2>&1 & echo $$! > $(RUN_DIR)/worker.pid
 	@sleep 1
 	@echo "API on http://localhost:8000, worker running. Logs in ./logs/"

@@ -201,10 +201,18 @@ def cmd_setup_bulk(tenant_id: str, count: int) -> None:
     print(json.dumps({"distributor_id": str(distributor.id), "invoice_date": "2020-01-01", "line_ids": line_ids}))
 
 
-def cmd_verify_alias(distributor_id: str, raw_sku: str, raw_description: str) -> None:
+def cmd_verify_alias(tenant_id: str, distributor_id: str, raw_sku: str, raw_description: str) -> None:
+    """Asks the matcher what THIS tenant now gets for a (distributor, raw_sku).
+
+    Takes a tenant because an alias is no longer globally trusted the instant
+    it is written (app/normalize/matcher.py's match_by_alias): the tenant whose
+    correction it was gets it immediately, everyone else waits for a second
+    independent business to agree. "Whose asking" is the whole question.
+    """
     db = SessionLocal()
     result = match_line_item(
         db,
+        tenant_id=uuid.UUID(tenant_id),
         distributor_id=uuid.UUID(distributor_id),
         raw_sku=raw_sku,
         raw_description=raw_description,
@@ -234,6 +242,7 @@ def main() -> None:
     bulk_p.add_argument("tenant_id")
     bulk_p.add_argument("count", type=int)
     verify_p = sub.add_parser("verify-alias")
+    verify_p.add_argument("tenant_id")
     verify_p.add_argument("distributor_id")
     verify_p.add_argument("raw_sku")
     verify_p.add_argument("raw_description")
@@ -244,7 +253,7 @@ def main() -> None:
     elif args.command == "setup-bulk":
         cmd_setup_bulk(args.tenant_id, args.count)
     elif args.command == "verify-alias":
-        cmd_verify_alias(args.distributor_id, args.raw_sku, args.raw_description)
+        cmd_verify_alias(args.tenant_id, args.distributor_id, args.raw_sku, args.raw_description)
 
 
 if __name__ == "__main__":

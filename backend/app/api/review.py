@@ -51,6 +51,9 @@ def _write_alias(db: Session, line: InvoiceLineItem, invoice: Invoice, canonical
     db.add(
         SkuAlias(
             id=uuid.uuid4(),
+            # Who corrected it, so matcher.match_by_alias can count how many
+            # independent businesses agree before trusting this everywhere.
+            tenant_id=line.tenant_id,
             canonical_sku_id=canonical_sku_id,
             distributor_id=invoice.distributor_id,
             raw_description=line.raw_description,

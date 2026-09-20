@@ -66,6 +66,11 @@ def db_session():
             session.execute(delete(PriceObservation).where(PriceObservation.invoice_line_item_id.in_(line_ids)))
             session.execute(delete(PriceObservation).where(PriceObservation.tenant_id.in_(tenant_ids)))
             session.execute(delete(PriceAlert).where(PriceAlert.tenant_id.in_(tenant_ids)))
+            # Aliases the confirm/correct endpoints wrote on this tenant's
+            # behalf. Not in created["aliases"] — the API made them, not the
+            # test — and since sku_aliases.tenant_id became a real FK, missing
+            # them makes the Tenant delete below fail instead of just leaking.
+            session.execute(delete(SkuAlias).where(SkuAlias.tenant_id.in_(tenant_ids)))
             session.execute(delete(InvoiceLineItem).where(InvoiceLineItem.tenant_id.in_(tenant_ids)))
             session.execute(delete(Invoice).where(Invoice.tenant_id.in_(tenant_ids)))
             session.execute(delete(Tenant).where(Tenant.id.in_(tenant_ids)))
@@ -166,6 +171,11 @@ def test_worker_writes_price_observations_for_auto_matched_lines(db_session, ten
     assert sysco is not None and sku is not None, "catalog/distributors not seeded — run `make seed`"
     alias = SkuAlias(
         id=uuid.uuid4(),
+        # Owned by this tenant rather than left NULL: a NULL alias is the
+        # system-curated tier, which is trusted everywhere without a second
+        # confirmation. Attributing it keeps the pin explicit and exercises
+        # the path a real correction takes (matcher.match_by_alias rule 1).
+        tenant_id=tenant.id,
         canonical_sku_id=sku.id,
         distributor_id=sysco.id,
         raw_description="MOZZ SHRD WHL MLK 4/5 LB",
