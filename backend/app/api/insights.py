@@ -9,13 +9,14 @@ load, refresh, or browser prefetch, a code-review finding on Phase 5.
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analytics.benchmark import compute_benchmark
+from app.api.deps import get_tenant_or_404
 from app.db import get_db_for_tenant
-from app.models import CanonicalSku, PriceAlert, PriceObservation, Tenant
+from app.models import CanonicalSku, PriceAlert, PriceObservation
 from app.models.enums import AlertStatus
 from app.schemas.insights import BenchmarkPosition, InsightCard, PriceHistoryPoint
 
@@ -24,9 +25,7 @@ router = APIRouter(prefix="/insights", tags=["insights"])
 
 @router.get("", response_model=list[InsightCard])
 def get_insights(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)) -> list[InsightCard]:
-    tenant = db.get(Tenant, tenant_id)
-    if tenant is None:
-        raise HTTPException(status_code=404, detail="tenant not found")
+    tenant = get_tenant_or_404(db, tenant_id)
 
     alerts = list(
         db.scalars(

@@ -67,9 +67,14 @@ class ParsedPackSize:
         return _TOKEN_TO_BASE_UOMS[self.unit]
 
 
-_CAN_PATTERN = re.compile(r"^(\d+)\s*/\s*#\s*([\d.]+)\s*CAN$", re.IGNORECASE)
-_CASE_PATTERN = re.compile(r"^(\d+)\s*/\s*([\d.]+)\s*([A-Za-z]+)$")
-_BARE_PATTERN = re.compile(r"^([\d.]+)\s*([A-Za-z]+)$")
+# The size groups are `\d+(?:\.\d+)?`, not `[\d.]+`: the looser form also
+# matches nonsense like "5.5.5", which then reaches Decimal() and raises
+# decimal.InvalidOperation — NOT a ValueError, so it sails past every
+# `except PackSizeParseError` in the codebase and takes down the whole
+# invoice instead of failing as one unparseable line.
+_CAN_PATTERN = re.compile(r"^(\d+)\s*/\s*#\s*(\d+(?:\.\d+)?)\s*CAN$", re.IGNORECASE)
+_CASE_PATTERN = re.compile(r"^(\d+)\s*/\s*(\d+(?:\.\d+)?)\s*([A-Za-z]+)$")
+_BARE_PATTERN = re.compile(r"^(\d+(?:\.\d+)?)\s*([A-Za-z]+)$")
 
 
 def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:

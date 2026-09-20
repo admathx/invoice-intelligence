@@ -593,6 +593,80 @@ Verified: full backend suite (76 passed) unchanged; `npm run build` clean;
 `npm run test` (4 passed) and `npx playwright test` (3 passed) both green
 after restarting the API/frontend dev processes to pick up the changes.
 
+## Full-codebase review pass (after Phase 5, before Phase 6)
+
+Unlike the earlier per-phase diff reviews, this one swept the **current state
+of the whole tree** (8 parallel review angles: ingestion/extraction,
+normalization, analytics, API/tenant isolation, frontend, synthetic+validation
+scripts, cross-phase integration, conventions/cleanup). It was worth doing:
+the most serious bug of the whole build only existed *because* several phases
+now coexist, so no single phase's own diff review could have seen it. 10
+findings, all fixed.
+
+**The big one — the live pipeline never fed its own analytics.**
+`app/workers/tasks.py` matched line items and set `review_status`, but never
+wrote a `price_observations` row. The only live code that wrote one was
+`app/api/review.py`'s confirm/correct — which rejects (409) anything that
+isn't `pending`. Since the matcher sets `auto` directly for anything scoring
+>= 0.92 (98.8% of lines, per Phase 3's own report), those lines never entered
+the review queue and so never produced an observation. Net effect: on real
+uploaded invoices, essentially nothing reached price creep / benchmarks /
+negotiation sheets — the entire Phase 4 analytics stack had no live data
+source, and only the synthetic seed script was feeding it. Both PROGRESS.md's
+Phase 5 notes and `review.py`'s own docstring asserted this gap had been
+closed; it had only been closed for the minority review-band case.
+*Fix:* the worker now writes an observation for every `auto` line (via the
+shared `build_price_observation` factory) and refreshes creep alerts once per
+invoice. `seed_corpus_pipeline.py` was switched onto the same factory and the
+same rule, so the synthetic and live paths can no longer disagree about what
+counts as observable. `tests/test_review_api.py` covers this, and the test was
+verified to fail without the fix rather than pass vacuously.
+
+**A wrong auto-match was permanent.** `ReviewStatus` has no "disputed" state
+and the queue only surfaces `pending`, so any embedding false positive at or
+above the auto threshold sat in `price_observations` forever, quietly skewing
+every peer benchmark in its cell, with no operator path to fix it. Added
+`POST /review/{id}/reopen`, which returns a resolved line to the queue and
+deletes the disputed observation so it stops feeding analytics immediately.
+
+**Other fixes:**
+- `pack_size.py`'s size groups were `[\d.]+`, which matches nonsense like
+  `"4/5.5.5 LB"`; `Decimal()` then raised `decimal.InvalidOperation` — *not* a
+  `ValueError`, so it sailed past every `except PackSizeParseError` and failed
+  the whole invoice instead of that one line. Tightened to
+  `\d+(?:\.\d+)?` (verified: all corpus formats still parse, malformed input
+  now raises cleanly) with regression tests.
+- `correct_line_item` always marked a line `corrected`, discarding the
+  matcher's own `pending` verdict for an unparseable pack size — the line left
+  the queue permanently with a null price and no way back. Now respects it.
+- An extraction with **zero line items** passed every arithmetic check
+  *vacuously* (empty loop, `all([])` is True, `sum([]) == 0` reconciles against
+  zeroed totals) and shipped as `extracted`. Now explicitly routed to
+  `needs_review`.
+- `matcher.py` still hardcoded its confidence thresholds behind a "mirrors
+  thresholds.yaml" comment — the exact anti-pattern `price_creep.py`'s
+  docstring calls out **by name** as already-fixed, never backported to the
+  file it originated in. Three of the eight review angles independently
+  flagged it. Now loaded from the YAML like price_creep.py's.
+- Review queue: if the distributor filter changed while sitting at index 0,
+  `setIndex(0)` was a no-op, the `[index]` reset effect never re-fired, and a
+  stale search dropdown from the *previous* item stayed on screen — one Enter
+  away from applying a correction to a different line item. Form state is now
+  cleared when the queue itself changes.
+- Tenant validation was inconsistent across the five routers (some 404'd, some
+  returned a degenerate 200, and `upload_invoice` would have raised an
+  unhandled `IntegrityError` *after* writing the uploaded file to disk).
+  Consolidated onto one `app/api/deps.py::get_tenant_or_404` used everywhere.
+
+Verified: 83 backend tests pass (up from 76). Phase 3 `matching_report`
+(98.8% auto-match, 0% false match) and Phase 4 `creep_report` (93.9% recall,
+0 false positives) both still green after reseeding. `npm run build` clean,
+vitest 4 passed, Playwright 3 passed. The corpus reseed produced slightly
+*more* observations than before (38,709 → 38,748) — not a regression: the
+`sku_aliases` rows written during earlier manual review testing now
+auto-resolve lines that used to fall to the review queue, which is exactly
+the compounding effect the alias table exists for.
+
 ## Phase 6 — Email intake
 
 Status: not started.

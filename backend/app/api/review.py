@@ -10,24 +10,27 @@ import uuid
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.analytics.price_creep import upsert_creep_alerts
+from app.api.deps import get_tenant_or_404
 from app.db import get_db_for_tenant
-from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, SkuAlias, Tenant, build_price_observation
+from app.models import (
+    CanonicalSku,
+    Distributor,
+    Invoice,
+    InvoiceLineItem,
+    PriceObservation,
+    SkuAlias,
+    Tenant,
+    build_price_observation,
+)
 from app.models.enums import ReviewStatus
 from app.normalize.matcher import _exact_match_result
 from app.schemas.review import CorrectRequest, ReviewActionResponse, ReviewQueueItem
 
 router = APIRouter(prefix="/review", tags=["review"])
-
-
-def _get_tenant_or_404(db: Session, tenant_id: uuid.UUID) -> Tenant:
-    tenant = db.get(Tenant, tenant_id)
-    if tenant is None:
-        raise HTTPException(status_code=404, detail="tenant not found")
-    return tenant
 
 
 def _get_pending_line_or_404(db: Session, line_item_id: uuid.UUID) -> InvoiceLineItem:
@@ -148,7 +151,7 @@ def confirm_line_item(
         raise HTTPException(status_code=400, detail="no suggested match to confirm — use /correct instead")
 
     invoice = db.get(Invoice, line.invoice_id)
-    tenant = _get_tenant_or_404(db, tenant_id)
+    tenant = get_tenant_or_404(db, tenant_id)
 
     line.review_status = ReviewStatus.confirmed
     return _finalize(db, line, invoice, tenant)
@@ -172,7 +175,7 @@ def correct_line_item(
         raise HTTPException(status_code=404, detail="canonical SKU not found")
 
     invoice = db.get(Invoice, line.invoice_id)
-    tenant = _get_tenant_or_404(db, tenant_id)
+    tenant = get_tenant_or_404(db, tenant_id)
 
     result = _exact_match_result(
         db,
@@ -188,6 +191,57 @@ def correct_line_item(
     line.normalized_unit_price = result.normalized_unit_price
     line.base_uom = result.base_uom
     line.match_confidence = Decimal("1.0")
-    line.review_status = ReviewStatus.corrected
+    # Respect what the matcher actually concluded rather than always claiming
+    # `corrected`: if the pack size couldn't be parsed there's no normalized
+    # price, and _exact_match_result deliberately returns `pending` for that
+    # case ("auto would claim 'no review needed' over a line with no usable
+    # price"). Marking it corrected anyway would drop it out of the queue
+    # permanently with a null price and no way to ever resurface it.
+    line.review_status = (
+        ReviewStatus.corrected if result.normalized_unit_price is not None else result.review_status
+    )
 
     return _finalize(db, line, invoice, tenant)
+
+
+@router.post("/{line_item_id}/reopen", response_model=ReviewActionResponse)
+def reopen_line_item(
+    line_item_id: uuid.UUID, tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)
+) -> ReviewActionResponse:
+    """Sends an already-resolved line back to the review queue.
+
+    Without this there is no path at all to fix a bad auto-match: the
+    matcher accepts anything scoring >= AUTO_MATCH_CONFIDENCE_THRESHOLD
+    without a human ever seeing it, and every other endpoint here rejects a
+    line whose review_status isn't `pending`. An embedding false positive at
+    or above threshold would otherwise sit in price_observations forever,
+    quietly skewing benchmarks for every tenant in the cell.
+
+    Any price observation this line produced is deleted on the way out — the
+    number is disputed, so it should stop feeding analytics immediately
+    rather than linger until someone re-resolves the line.
+    """
+    tenant = get_tenant_or_404(db, tenant_id)
+    line = db.get(InvoiceLineItem, line_item_id)
+    if line is None:
+        raise HTTPException(status_code=404, detail="line item not found")
+    if line.review_status == ReviewStatus.pending:
+        raise HTTPException(status_code=409, detail="line item is already pending review")
+
+    db.execute(delete(PriceObservation).where(PriceObservation.invoice_line_item_id == line.id))
+    line.review_status = ReviewStatus.pending
+    db.commit()
+    db.refresh(line)
+
+    # The disputed observation is gone, so this tenant's creep alerts are now
+    # computed from stale inputs until they're recomputed.
+    upsert_creep_alerts(db, tenant.id)
+
+    return ReviewActionResponse(
+        id=line.id,
+        review_status=line.review_status.value,
+        canonical_sku_id=line.canonical_sku_id,
+        normalized_unit_price=line.normalized_unit_price,
+        wrote_alias=False,
+        wrote_price_observation=False,
+    )

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analytics.negotiation import build_negotiation_sheet
+from app.api.deps import get_tenant_or_404
 from app.db import get_db_for_tenant
 from app.models import CanonicalSku
 from app.schemas.negotiation import NegotiationLineOut, NegotiationSheetOut
@@ -19,6 +20,7 @@ router = APIRouter(prefix="/negotiation", tags=["negotiation"])
 def get_negotiation_sheet(
     tenant_id: uuid.UUID, as_of: date | None = None, db: Session = Depends(get_db_for_tenant)
 ) -> NegotiationSheetOut:
+    get_tenant_or_404(db, tenant_id)
     sheet = build_negotiation_sheet(db, tenant_id, as_of or date.today())
 
     # One query for every SKU name on the sheet, not one db.get() per line —

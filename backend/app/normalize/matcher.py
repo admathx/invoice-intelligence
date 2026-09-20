@@ -8,7 +8,9 @@ once a distributor's catalog has been seen before.
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 
+import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -19,9 +21,16 @@ from app.normalize.description_expansion import normalize_for_embedding
 from app.normalize.embeddings import embed_text
 from app.normalize.pack_size import ParsedPackSize, PackSizeParseError, parse_pack_size
 
-# Mirrors validation/thresholds.yaml's phase3_normalization block.
-AUTO_MATCH_CONFIDENCE_THRESHOLD = Decimal("0.92")
-REVIEW_QUEUE_CONFIDENCE_LOW = Decimal("0.80")
+# Loaded from validation/thresholds.yaml rather than hardcoded literals kept
+# in sync by comment: that pattern (which originated here) lets the live
+# matcher silently ignore an edit to thresholds.yaml, even though the YAML's
+# own header advertises "tightening a threshold is a one-line diff."
+# app/analytics/price_creep.py already loads its thresholds this way.
+_THRESHOLDS_PATH = Path(__file__).resolve().parents[3] / "validation" / "thresholds.yaml"
+_matching_thresholds = yaml.safe_load(_THRESHOLDS_PATH.read_text())["phase3_normalization"]
+
+AUTO_MATCH_CONFIDENCE_THRESHOLD = Decimal(str(_matching_thresholds["auto_match_confidence_threshold"]))
+REVIEW_QUEUE_CONFIDENCE_LOW = Decimal(str(_matching_thresholds["review_queue_confidence_low"]))
 
 
 @dataclass

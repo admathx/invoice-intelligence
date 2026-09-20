@@ -5,13 +5,14 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from app.analytics.price_creep import upsert_creep_alerts
 from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS, SessionLocal, bind_tenant
 from app.extract.client import AnthropicExtractorClient, get_extractor
 from app.extract.confidence import assess_extraction
 from app.ingest.render import render_pdf_to_pngs
-from app.models import Distributor, Invoice, InvoiceLineItem
-from app.models.enums import InvoiceStatus
+from app.models import Distributor, Invoice, InvoiceLineItem, Tenant, build_price_observation
+from app.models.enums import InvoiceStatus, ReviewStatus
 from app.normalize.matcher import match_line_item
 
 extractor = get_extractor()
@@ -72,10 +73,16 @@ def process_invoice(invoice_id: str) -> None:
         invoice.extraction_cost_usd = Decimal(str(cost_usd))
         invoice.extracted_at = datetime.now(timezone.utc)
 
+        # Needed for the denormalized metro/volume_tier on any price
+        # observation this invoice produces (see below).
+        tenant = db.get(Tenant, invoice.tenant_id)
+        wrote_any_observation = False
+
         for line in extracted.line_items:
             quantity = Decimal(line.quantity)
             unit_price = Decimal(line.unit_price)
             line_item = InvoiceLineItem(
+                id=uuid.uuid4(),
                 tenant_id=invoice.tenant_id,
                 invoice_id=invoice.id,
                 line_number=line.line_number,
@@ -114,12 +121,31 @@ def process_invoice(invoice_id: str) -> None:
 
             db.add(line_item)
 
+            # SPEC.md §6's auto tier (>=0.92 confidence) means "resolved, no
+            # human needed" — so it feeds analytics immediately, exactly as
+            # seed_corpus_pipeline.py does for the synthetic corpus. Without
+            # this, the ~99% of real lines that auto-match would never
+            # produce a price_observations row at all (app/api/review.py only
+            # ever acts on lines in the `pending` review band), leaving
+            # price creep / benchmarks / negotiation sheets with no live
+            # data source.
+            if line_item.review_status == ReviewStatus.auto:
+                observation = build_price_observation(line_item, invoice, tenant)
+                if observation is not None:
+                    db.add(observation)
+                    wrote_any_observation = True
+
         # SPEC.md §5: arithmetic validation is the confidence signal, not the
         # model's own self-reported certainty. Any failure routes to needs_review
         # rather than extracted — never silently ships a wrong number.
         assessment = assess_extraction(extracted)
         invoice.status = assessment.status
         db.commit()
+
+        # Only after the observations above are durably committed, so
+        # detect_price_creep's fresh SELECT actually sees them.
+        if wrote_any_observation:
+            upsert_creep_alerts(db, invoice.tenant_id)
     except Exception:
         db.rollback()
         invoice = _get_invoice_bypassing_tenant_scope(db, uuid.UUID(invoice_id))

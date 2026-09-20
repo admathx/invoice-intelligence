@@ -92,6 +92,18 @@ def test_subtotal_plus_tax_not_reconciling_routes_to_needs_review():
     assert assessment.totals_reconcile is False
 
 
+def test_empty_line_items_routes_to_needs_review():
+    # Every arithmetic check passes vacuously on an empty invoice (the loop
+    # never runs, all([]) is True, sum([]) == 0 reconciles against zeroed
+    # totals), so this needs its own explicit check — a blank/unreadable
+    # page must not ship as `extracted`.
+    invoice = _invoice([], subtotal="0.0000", tax="0.0000", total="0.0000")
+    assessment = assess_extraction(invoice)
+    assert assessment.status == InvoiceStatus.needs_review
+    assert assessment.no_line_items is True
+    assert "no line items extracted" in assessment.reasons
+
+
 def test_distributor_other_routes_to_needs_review():
     invoice = _invoice([_line()], distributor="other")
     assessment = assess_extraction(invoice)

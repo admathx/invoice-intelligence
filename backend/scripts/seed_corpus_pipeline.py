@@ -38,7 +38,14 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 sys.path.insert(0, str(REPO_ROOT))
 
 from app.db import SessionLocal, bind_tenant  # noqa: E402
-from app.models import Distributor, Invoice, InvoiceLineItem, PriceObservation, Tenant  # noqa: E402
+from app.models import (  # noqa: E402
+    Distributor,
+    Invoice,
+    InvoiceLineItem,
+    PriceObservation,
+    Tenant,
+    build_price_observation,
+)
 from app.models.enums import InvoiceSource, InvoiceStatus, ReviewStatus, VolumeTier  # noqa: E402
 from app.normalize.matcher import MatchResult, _apply_pack_size, match_line_item  # noqa: E402
 from app.normalize.pack_size import PackSizeParseError, parse_pack_size  # noqa: E402
@@ -97,24 +104,23 @@ def main() -> None:
             delivery_date = datetime.strptime(gt["delivery_date"], "%Y-%m-%d").date() if gt.get("delivery_date") else None
 
             invoice_id = uuid.uuid4()
-            db.add(
-                Invoice(
-                    id=invoice_id,
-                    tenant_id=tenant.id,
-                    distributor_id=distributor_id,
-                    invoice_number=gt["invoice_number"],
-                    invoice_date=invoice_date,
-                    delivery_date=delivery_date,
-                    subtotal=Decimal(gt["subtotal"]),
-                    tax=Decimal(gt["tax"]),
-                    total=Decimal(gt["total"]),
-                    source=InvoiceSource.upload,
-                    original_file_uri=f"file://{week_file.with_suffix('.pdf').resolve()}",
-                    status=InvoiceStatus.extracted,
-                    extraction_model="ground_truth",
-                    extraction_cost_usd=Decimal("0"),
-                )
+            invoice = Invoice(
+                id=invoice_id,
+                tenant_id=tenant.id,
+                distributor_id=distributor_id,
+                invoice_number=gt["invoice_number"],
+                invoice_date=invoice_date,
+                delivery_date=delivery_date,
+                subtotal=Decimal(gt["subtotal"]),
+                tax=Decimal(gt["tax"]),
+                total=Decimal(gt["total"]),
+                source=InvoiceSource.upload,
+                original_file_uri=f"file://{week_file.with_suffix('.pdf').resolve()}",
+                status=InvoiceStatus.extracted,
+                extraction_model="ground_truth",
+                extraction_cost_usd=Decimal("0"),
             )
+            db.add(invoice)
 
             for line in gt["line_items"]:
                 # Includes distributor_id/raw_sku, not just the free-text
@@ -150,54 +156,39 @@ def main() -> None:
                 else:
                     qty_base = price_base = None
 
-                line_item_id = uuid.uuid4()
-                db.add(
-                    InvoiceLineItem(
-                        id=line_item_id,
-                        tenant_id=tenant.id,
-                        invoice_id=invoice_id,
-                        line_number=line["line_number"],
-                        raw_description=line["raw_description"],
-                        raw_sku=line["raw_sku"],
-                        raw_pack_size=line["raw_pack_size"],
-                        quantity=quantity,
-                        unit_price=unit_price,
-                        extended_price=Decimal(line["extended_price"]),
-                        uom=line["uom"],
-                        canonical_sku_id=cached.canonical_sku_id,
-                        normalized_qty_base=qty_base,
-                        normalized_unit_price=price_base,
-                        base_uom=cached.base_uom,
-                        extraction_confidence=Decimal(str(line["confidence"])),
-                        match_confidence=cached.match_confidence,
-                        review_status=cached.review_status,
-                    )
+                line_item = InvoiceLineItem(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant.id,
+                    invoice_id=invoice_id,
+                    line_number=line["line_number"],
+                    raw_description=line["raw_description"],
+                    raw_sku=line["raw_sku"],
+                    raw_pack_size=line["raw_pack_size"],
+                    quantity=quantity,
+                    unit_price=unit_price,
+                    extended_price=Decimal(line["extended_price"]),
+                    uom=line["uom"],
+                    canonical_sku_id=cached.canonical_sku_id,
+                    normalized_qty_base=qty_base,
+                    normalized_unit_price=price_base,
+                    base_uom=cached.base_uom,
+                    extraction_confidence=Decimal(str(line["confidence"])),
+                    match_confidence=cached.match_confidence,
+                    review_status=cached.review_status,
                 )
+                db.add(line_item)
                 total_lines += 1
 
-                # review_status=auto stands in for price_observation.py's actual
-                # "confirmed" semantics, since there's no human confirm flow yet
-                # (that's Phase 5). This is a real gap, not just a placeholder:
-                # every Phase 4 threshold tuned against this corpus (window
-                # sizes, floor fraction, recall/FP targets) is calibrated
-                # against auto-match-shaped data, which may not match Phase 5's
-                # real confirmed-line volume/timing once that flow exists —
-                # worth re-validating creep_report's numbers once it does.
-                if cached.review_status == ReviewStatus.auto and cached.canonical_sku_id is not None:
-                    db.add(
-                        PriceObservation(
-                            id=uuid.uuid4(),
-                            tenant_id=tenant.id,
-                            canonical_sku_id=cached.canonical_sku_id,
-                            distributor_id=distributor_id,
-                            observed_on=invoice_date,
-                            unit_price_base=price_base,
-                            metro=tenant.metro,
-                            volume_tier=tenant.volume_tier,
-                            invoice_line_item_id=line_item_id,
-                        )
-                    )
-                    total_observations += 1
+                # Same rule the live worker now applies (app/workers/tasks.py):
+                # the auto tier means "resolved, no human needed," so it feeds
+                # analytics directly. Built through the shared factory so this
+                # path and the live/review ones can't drift apart on which
+                # fields an observation carries.
+                if line_item.review_status == ReviewStatus.auto:
+                    observation = build_price_observation(line_item, invoice, tenant)
+                    if observation is not None:
+                        db.add(observation)
+                        total_observations += 1
 
             total_invoices += 1
 

@@ -22,11 +22,14 @@ class ExtractionAssessment:
     lines_sum_to_subtotal: bool = True
     totals_reconcile: bool = True
     distributor_is_other: bool = False
+    no_line_items: bool = False
     status: InvoiceStatus = InvoiceStatus.extracted
 
     @property
     def reasons(self) -> list[str]:
         out = []
+        if self.no_line_items:
+            out.append("no line items extracted")
         if self.failed_line_numbers:
             out.append(f"line arithmetic failed: {self.failed_line_numbers}")
         if self.low_confidence_line_numbers:
@@ -80,8 +83,18 @@ def assess_extraction(extracted: ExtractedInvoice) -> ExtractionAssessment:
 
     distributor_is_other = extracted.distributor == "other"
 
+    # Checked explicitly, because every arithmetic check above passes
+    # *vacuously* on an empty invoice: the per-line loop never runs,
+    # `all(...)` over an empty list is True, and sum([]) == 0 reconciles
+    # against zeroed totals. A blank or unreadable page that yields no line
+    # items would otherwise ship as `extracted` — a worse outcome than the
+    # wrong numbers this module exists to catch, since nothing downstream
+    # would ever flag it.
+    no_line_items = not extracted.line_items
+
     needs_review = (
-        bool(failed_line_numbers)
+        no_line_items
+        or bool(failed_line_numbers)
         or bool(low_confidence_line_numbers)
         or not totals_reconcile
         or distributor_is_other
@@ -93,5 +106,6 @@ def assess_extraction(extracted: ExtractedInvoice) -> ExtractionAssessment:
         lines_sum_to_subtotal=lines_sum_to_subtotal,
         totals_reconcile=totals_reconcile,
         distributor_is_other=distributor_is_other,
+        no_line_items=no_line_items,
         status=InvoiceStatus.needs_review if needs_review else InvoiceStatus.extracted,
     )

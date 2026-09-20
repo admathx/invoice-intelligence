@@ -130,3 +130,18 @@ def test_never_returns_zero_for_valid_input():
     # (price per base unit) — every valid parse must be strictly positive.
     for raw, _, _ in CORPUS_CASES:
         assert parse_pack_size(raw).base_units_per_case > 0
+
+
+def test_multiple_decimal_points_raises_cleanly():
+    # `[\d.]+` used to match these, then Decimal() raised
+    # decimal.InvalidOperation — which is NOT a ValueError, so it escaped
+    # every `except PackSizeParseError` and failed the whole invoice
+    # instead of just this line.
+    for raw in ("4/5.5.5 LB", "5.5.5 LB", "4/5..5 LB", "4/. LB"):
+        with pytest.raises(PackSizeParseError):
+            parse_pack_size(raw)
+
+
+def test_leading_decimal_point_raises_cleanly():
+    with pytest.raises(PackSizeParseError):
+        parse_pack_size("4/.5 LB")

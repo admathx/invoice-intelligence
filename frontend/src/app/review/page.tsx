@@ -67,7 +67,16 @@ function ReviewQueueInner() {
       .then((data) => {
         if (ignore) return;
         setQueue(data);
-        setIndex(0); // a new queue (e.g. after the filter changes) starts from the top
+        // Reset the per-item form state here too, not just via the [index]
+        // effect: if the user is already sitting at index 0, setIndex(0) is
+        // a no-op, that effect never re-fires, and a stale search dropdown
+        // from the *previous* queue's item stays on screen — one Enter away
+        // from applying a correction to a completely different line item.
+        setIndex(0);
+        setQuery("");
+        setResults([]);
+        setSelected(0);
+        setError(null);
       });
     return () => {
       ignore = true;

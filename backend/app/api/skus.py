@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_tenant_or_404
 from app.db import get_db, get_db_for_tenant
 from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem
 from app.schemas.skus import CanonicalSkuDetail, CanonicalSkuSearchResult, SkuMatchedLine
@@ -23,6 +24,7 @@ def search_skus(q: str, db: Session = Depends(get_db)) -> list[CanonicalSku]:
 
 @router.get("/{sku_id}", response_model=CanonicalSkuDetail)
 def get_sku(sku_id: uuid.UUID, tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)) -> CanonicalSkuDetail:
+    get_tenant_or_404(db, tenant_id)
     sku = db.get(CanonicalSku, sku_id)
     if sku is None:
         raise HTTPException(status_code=404, detail="canonical SKU not found")
