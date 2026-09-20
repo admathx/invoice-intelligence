@@ -127,4 +127,22 @@ test.describe("ingest -> review -> negotiation sheet", () => {
       timeout: 10_000,
     });
   });
+
+  test("negotiation sheet can be argued from the tenant's own history alone", async ({ page }) => {
+    // The day-one path: no peer benchmark needed, so this basis must render a
+    // sheet for a tenant whose metro has nobody else in it.
+    await page.goto("/negotiation");
+    await page.getByRole("button", { name: "Your own history" }).click();
+
+    await expect(page.getByRole("table").or(page.getByText("No overpriced SKUs"))).toBeVisible({
+      timeout: 10_000,
+    });
+    const rows = page.getByRole("row");
+    if ((await rows.count()) > 1) {
+      // Every line says where its target came from — the sheet must never put
+      // a peer claim and a history claim under one unqualified header.
+      await expect(page.getByText("your median").first()).toBeVisible();
+      await expect(page.getByText(/annualized at/)).toBeVisible();
+    }
+  });
 });

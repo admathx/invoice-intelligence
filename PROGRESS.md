@@ -728,3 +728,106 @@ Status: **done**, gate green, demoed live in the browser.
   produced the screenshots above.
 - Full backend suite: 94 passed. Phase 3 `matching_report` and Phase 4
   `creep_report` still green; Playwright 3 passed.
+
+## Post-Phase-6 — History-basis negotiation sheet, and the multi-unit benchmark bug
+
+Two things, driven by the same question: what is this product worth to a
+customer on day one, before any peer density exists?
+
+### The bug: suppression counted locations, not businesses
+
+SPEC.md §7 words the privacy rule as "fewer than 5 distinct tenants." A
+tenant is a *location*. A five-location restaurant group onboarded as five
+tenants therefore cleared its own suppression threshold using nothing but its
+own locations, and the "peer benchmark" it got back was the group compared
+against itself — a wrong number and a silent defeat of the rule that produced
+it. `exclude_tenant_id` had the same hole one level down: excluding only the
+asking location still left its siblings' prices in the cell.
+
+- New `accounts` table and a nullable `tenants.account_id` (migration `0005`).
+  A tenant with no account is its own account, so this is a no-op for every
+  single-location customer and for every row that predates it — no backfill.
+- `app/analytics/benchmark.py` counts `COALESCE(tenants.account_id,
+  tenants.id)` and `exclude_tenant_id` became `exclude_account_key` (resolved
+  once per request via `account_key_for`, not once per SKU).
+- Joined to `tenants` rather than denormalizing `account_id` onto
+  `price_observations` beside `metro`/`volume_tier`. Those two are deliberate
+  snapshots of what was true when the line was billed; account membership is a
+  privacy fact that has to be *current*, or a group acquiring a restaurant
+  today would keep counting as that restaurant's peer for last month's prices.
+- Verified against the live corpus in a rolled-back transaction: a Columbus
+  cell with exactly 5 distinct tenants read p25 $17.8530 (metro). Making those
+  same 5 tenants one account suppressed the metro cell and fell back to
+  national — 11 real accounts, p25 $19.1386. The $1.29 difference is how much
+  of that "benchmark" was the group's own prices.
+- The UI now says "businesses" rather than "tenants" everywhere the count
+  surfaces, because that is now what it counts.
+
+### The feature: a negotiation sheet that needs no peers
+
+The peer basis needs 5 independent businesses buying the same SKU in the same
+metro. A customer in a thin metro may wait months for that, or never get it —
+which is exactly the customer with nothing else to show them. So the sheet
+grew a second basis, and `basis=auto` (the default) picks per SKU:
+
+- `peer` — target is peer p25, as before.
+- `history` — target is the **median of the tenant's own prior prices** for
+  that SKU. Live from the fourth delivery of an item, with zero peers.
+- Each line carries the basis it used, and the page labels it per row ("peer
+  p25 · 12 businesses" vs "your median · 7 priors"). A sheet that mixed the
+  two silently would be quoting two different claims under one header, and the
+  rep across the table finds that seam.
+
+Median, not p25, for the history target — and this was worth getting wrong
+once to find. A quartile over a handful of one tenant's own purchases is an
+interpolated number no invoice ever showed: priors of $2.00/$10.00/$10.00 (one
+spot buy, SPEC.md §4's `off_contract`) interpolate to a $6.00 p25 that a rep
+kills with "when did you ever pay that?" The median answers $10.00, which is
+both true and the number worth arguing from. It is also the same statistic
+`price_creep.py` uses for its baseline, so a SKU's Insights alert and its
+negotiation line can no longer quote two different "before" prices.
+
+The current price is excluded from the history target it is measured against,
+for the same reason the peer basis excludes the asker's own account: otherwise
+today's overpayment quietly raises the bar it is being judged by.
+
+### The annualization was wrong in the safe direction, which is still wrong
+
+`ANNUALIZATION_FACTOR = 4` ("a 90-day window is ~1 quarter") is only true once
+a customer has 90 days of invoices. Before that it took a partial window's
+quantity and multiplied it by 4 — a tenant 30 days in had a month of purchases
+projected as a third of their real annual exposure. Understating is the safe
+direction for a claim a rep will attack, but it landed hardest on new
+customers, who are precisely the ones with no peer benchmark either.
+
+Now projected from the span actually present, with the denominator floored at
+`min_annualization_days: 28` so three deliveries aren't extrapolated 100x.
+`window_days` and `annualization_factor` are returned on the sheet and printed
+under it — every dollar above is a projection from that much history, and the
+person on the other side of the table is entitled to know how much.
+
+Measured on the corpus (Riverside Trattoria, as_of 2026-08-24): 85 days of
+history, peer basis $76,213/yr, history basis $21,286/yr from the same
+invoices with no peers at all. Rewound to `as_of=2026-03-30` — a customer 29
+days in — the history sheet still returns 15 lines and $6,931/yr, at a 12.59x
+factor. The old flat 4x would have called that $2,203.
+
+### Gates
+- Backend: 112 passed (was 94). 18 new tests, covering the group-suppression
+  cases (one group of five is suppressed; a group counts once; excluding the
+  asker excludes its siblings), the history basis, and the annualization
+  floor. The suppression tests genuinely fail against the old tenant-counting
+  code — that is the point of them.
+- `validation.creep_report`: recall 93.9%, 0 false positives. PASS.
+- Playwright: 4 passed (one new — the history basis renders with no peers).
+- Frontend `tsc --noEmit` clean, vitest 4 passed.
+- Verified in the browser on both bases plus the Insights page.
+
+### Lessons
+- Two stale dev servers bit again: the API had to be restarted to pick up the
+  new `basis` param (same no-`--reload` lesson as Phase 5), and a leftover
+  Next.js on :3001 made Playwright fail with `EADDRINUSE` before a single test
+  ran.
+- The live page caught something the tests did not: an even-length median
+  averages two prices and lands on a 5th decimal, so the sheet rendered
+  "$6.03395" in a column of 4-decimal money. Quantized like everything else.

@@ -57,9 +57,26 @@ phase4_analytics:
     false_positive_max: 0  # hard zero, not tunable
   benchmark:
     lookback_days: 90
+    # Counted over distinct ACCOUNTS (businesses), not tenants (locations) —
+    # a multi-unit group would otherwise clear its own suppression threshold
+    # with its own locations. Identical to counting tenants for every
+    # single-location customer. See app/analytics/benchmark.py.
     min_distinct_tenants: 5  # hard rule, not tunable
   negotiation:
     top_n: 15
+    # History basis (target = the median of the tenant's OWN past prices, the
+    # same baseline the creep detector uses; no peers required). Counted on
+    # prior observations only, excluding the current price the line is arguing
+    # against — same reason the peer basis excludes the asker's own account.
+    # 3 priors means a 4th purchase of a SKU puts it on the sheet: roughly a
+    # month in for a weekly-delivery restaurant, against a peer basis that may
+    # never reach 5 businesses in a thin metro.
+    min_history_observations: 3
+    # Floor on the annualization denominator. Savings are annualized from the
+    # span of history actually present, not from an assumed full quarter, but
+    # a tenant two weeks in would otherwise be extrapolated 26x off two data
+    # points. Capping the denominator at 28 days caps that at ~13x.
+    min_annualization_days: 28
 
 phase5_dashboard:
   # playwright e2e must complete with zero shell commands

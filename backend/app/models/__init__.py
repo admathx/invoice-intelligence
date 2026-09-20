@@ -1,3 +1,4 @@
+from app.models.account import Account
 from app.models.canonical_sku import CanonicalSku
 from app.models.distributor import Distributor
 from app.models.invoice import Invoice
@@ -9,6 +10,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 
 __all__ = [
+    "Account",
     "CanonicalSku",
     "Distributor",
     "Invoice",

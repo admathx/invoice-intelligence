@@ -15,7 +15,9 @@ class BenchmarkPosition(BaseModel):
     p50: Decimal
     p75: Decimal
     tenant_price: Decimal
-    distinct_tenant_count: int
+    # Independent businesses in the cell, not locations — a multi-unit group
+    # counts once (app/analytics/benchmark.py).
+    distinct_account_count: int
     scope: str  # "metro" | "national"
 
 

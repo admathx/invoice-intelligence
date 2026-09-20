@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.analytics.benchmark import compute_benchmark
+from app.analytics.benchmark import account_key_for, compute_benchmark
 from app.api.deps import get_tenant_or_404
 from app.db import get_db_for_tenant
 from app.models import CanonicalSku, PriceAlert, PriceObservation
@@ -47,6 +47,10 @@ def get_insights(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant))
         ).all():
             history_by_sku.setdefault(sku_id, []).append((observed_on, price))
 
+    # Resolved once, outside the loop: the asking tenant's business is the
+    # same for every alert on the page.
+    exclude_account_key = account_key_for(db, tenant_id)
+
     cards = []
     for alert in alerts:
         sku = db.get(CanonicalSku, alert.canonical_sku_id)
@@ -57,7 +61,7 @@ def get_insights(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant))
         # alert itself covers (detect_price_creep has no as_of concept of its
         # own; it windows by observation count, see price_creep.py).
         benchmark = compute_benchmark(
-            db, alert.canonical_sku_id, tenant.metro, alert.window_end, exclude_tenant_id=tenant_id
+            db, alert.canonical_sku_id, tenant.metro, alert.window_end, exclude_account_key=exclude_account_key
         )
 
         cards.append(
@@ -82,7 +86,7 @@ def get_insights(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant))
                         p50=benchmark.p50,
                         p75=benchmark.p75,
                         tenant_price=alert.current_price,
-                        distinct_tenant_count=benchmark.distinct_tenant_count,
+                        distinct_account_count=benchmark.distinct_account_count,
                         scope=benchmark.scope,
                     )
                     if benchmark is not None

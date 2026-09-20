@@ -8,7 +8,7 @@ type BenchmarkPosition = {
   p50: string;
   p75: string;
   tenant_price: string;
-  distinct_tenant_count: number;
+  distinct_account_count: number;
   scope: string;
 };
 type InsightCard = {
@@ -65,7 +65,9 @@ function BenchmarkBar({ benchmark }: { benchmark: BenchmarkPosition }) {
       </div>
       <div className="mt-1 text-xs text-gray-500">
         Peer p25 ${benchmark.p25} · p50 ${benchmark.p50} · p75 ${benchmark.p75} ({benchmark.scope},{" "}
-        {benchmark.distinct_tenant_count} tenants) — you: ${benchmark.tenant_price}
+        {/* "businesses", not "tenants": a multi-unit group counts once, so this
+            number is how many independent operators stand behind the cell. */}
+        {benchmark.distinct_account_count} businesses) — you: ${benchmark.tenant_price}
       </div>
     </div>
   );
