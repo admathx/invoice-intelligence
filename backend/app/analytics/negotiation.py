@@ -18,11 +18,14 @@ times in a customer's life:
              least easily wave away: it is their own invoice from six weeks
              ago.
 
-`auto` (the default) picks per SKU: peer when that cell clears suppression,
-history otherwise. So the sheet is non-empty on day one and each line
-strengthens independently as benchmark density arrives. Every line carries
-the basis it used — a sheet that mixed the two silently would be quoting two
-different claims under one column header.
+`auto` (the default) picks per SKU, preferring peer whenever the peer basis
+has something to argue and falling back to history when it doesn't — either
+because the cell is suppressed or because the tenant already beats peer p25
+on that SKU while still paying well above what they used to. So the sheet is
+non-empty on day one and each line strengthens independently as benchmark
+density arrives. Every line carries the basis it used — a sheet that mixed
+the two silently would be quoting two different claims under one column
+header.
 """
 import statistics
 import uuid
@@ -36,7 +39,7 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.analytics.benchmark import account_key_for, compute_benchmark
+from app.analytics.benchmark import account_key_for, compute_benchmarks
 from app.db import bind_tenant
 from app.models.invoice_line_item import InvoiceLineItem
 from app.models.price_observation import PriceObservation
@@ -180,40 +183,48 @@ def build_negotiation_sheet(
     for sku_id, observed_on, price, line_item_id, qty in rows:
         by_sku.setdefault(sku_id, []).append((observed_on, price, line_item_id, qty))
 
+    benchmarks = (
+        compute_benchmarks(
+            db, list(by_sku), tenant.metro, as_of, volume_tier=None, exclude_account_key=exclude_account_key
+        )
+        if basis in (NegotiationBasis.peer, NegotiationBasis.auto)
+        else {}
+    )
+
     candidates: list[NegotiationLine] = []
     for sku_id, points in by_sku.items():
         current_price = points[0][1]  # points is sorted newest-first
         current_price_line_item_id = points[0][2]
 
-        line_basis: NegotiationBasis | None = None
-        target_price: Decimal | None = None
-        peer_account_count: int | None = None
-        history_observation_count: int | None = None
-
-        if basis in (NegotiationBasis.peer, NegotiationBasis.auto):
-            benchmark = compute_benchmark(
-                db, sku_id, tenant.metro, as_of, volume_tier=None, exclude_account_key=exclude_account_key
-            )
-            if benchmark is not None:
-                line_basis = NegotiationBasis.peer
-                target_price = benchmark.p25
-                peer_account_count = benchmark.distinct_account_count
-
-        if line_basis is None and basis in (NegotiationBasis.history, NegotiationBasis.auto):
+        benchmark = benchmarks.get(sku_id)
+        history_target = None
+        if basis in (NegotiationBasis.history, NegotiationBasis.auto):
             # points[1:] is every prior purchase: the current price is excluded
             # from the target it's being compared against, for the same reason
             # the peer basis excludes the asker's own account — otherwise
             # today's overpayment quietly raises the bar it's measured against.
             prior_prices = [price for _, price, _, _ in points[1:]]
-            target_price = _history_target(prior_prices)
-            if target_price is not None:
-                line_basis = NegotiationBasis.history
-                history_observation_count = len(prior_prices)
+            history_target = _history_target(prior_prices)
 
-        if line_basis is None or target_price is None:
-            continue  # no defensible target for this SKU yet, on either basis
-        if current_price <= target_price:
-            continue  # no overpay to recover
+        # A basis only counts as available for this SKU if it actually shows an
+        # overpay. Deciding on "the peer cell exists" instead meant a SKU
+        # priced under peer p25 was dropped outright and its own-history creep
+        # never looked at — so a SKU could carry an open creep alert on the
+        # Insights page and be silently missing from the default sheet. Peer
+        # still wins whenever both have something to say: it is the stronger
+        # argument, and a rep can't answer it with "that was our old price."
+        if benchmark is not None and current_price > benchmark.p25:
+            line_basis = NegotiationBasis.peer
+            target_price = benchmark.p25
+            peer_account_count: int | None = benchmark.distinct_account_count
+            history_observation_count: int | None = None
+        elif history_target is not None and current_price > history_target:
+            line_basis = NegotiationBasis.history
+            target_price = history_target
+            peer_account_count = None
+            history_observation_count = len(points) - 1
+        else:
+            continue  # nothing defensible to argue for this SKU yet
 
         trailing_qty = sum((qty for _, _, _, qty in points), Decimal(0))
         recoverable = ((current_price - target_price) * trailing_qty).quantize(Decimal("0.0001"))

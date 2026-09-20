@@ -831,3 +831,80 @@ factor. The old flat 4x would have called that $2,203.
 - The live page caught something the tests did not: an even-length median
   averages two prices and lands on a 5th decimal, so the sheet rendered
   "$6.03395" in a column of 4-decimal money. Quantized like everything else.
+
+### Code review of Phase 6 + the negotiation work (7 findings, all fixed)
+
+First review to cover Phase 6, which had shipped without one.
+
+1. **`auto` never fell back to history once a peer cell existed.** The basis
+   was decided on "a peer cell exists," not "a peer cell has something to
+   argue," so a SKU priced *under* peer p25 was dropped outright and its own
+   creep never looked at. Now both candidates are evaluated and peer wins only
+   when it actually shows an overpay. Measured across the corpus: **293 of
+   2,626 SKU-tenant pairs (11%)** sit under peer p25 while still above their
+   own median, and **5 of 20 tenants' visible top-15 sheets** gained history
+   lines — Cedar Table gained 12 of 15, including a $4,580/yr line that was
+   invisible before.
+2. **Email intake committed invoices before moving the file and enqueuing.**
+   A Redis outage threw into `scan_inbox`'s handler, whose `db.rollback()` was
+   a no-op against the already-landed commit, so the email was filed as
+   "ingest failed" with its invoices sitting in the database — and re-dropping
+   it, the documented recovery, made a second set. The email is now *claimed*
+   (moved to `processed/`) before any write, a failed write quarantines from
+   there, and enqueue is last and non-fatal: the invoices are durable by then,
+   so a queue outage is reported as a warning on an ingested result rather
+   than re-opening the question of whether the email was handled.
+3. **The failure-isolation handler could itself throw.** If `_quarantine`
+   failed *after* its rename (disk full writing the `.reason.txt`), the outer
+   handler's second `path.rename` raised `FileNotFoundError` and took down the
+   whole scan — stopping every email behind it, the exact outcome that handler
+   exists to prevent. Added `_safe_quarantine`, which reports instead.
+4. **The scan raced files still being written.** A half-copied `.eml` parses
+   without raising (MIME parsing is tolerant), yields no attachments, and was
+   moved to quarantine as "no PDF attachment" while the writer was still
+   appending. `scan_inbox` now ignores files touched within
+   `INBOX_SETTLE_SECONDS` (2s); skipping drops nothing, the file stays for the
+   next pass.
+5. **`message_id` was parsed and thrown away, so redelivery duplicated
+   invoices** — and duplicate invoices double-count into the benchmark cells
+   and creep windows the analytics depend on. Added `invoices.source_message_id`
+   (migration `0006`, indexed not unique — one email can legitimately carry
+   several invoice PDFs) and a per-(tenant, message-id) check. A redelivered
+   email is filed as `processed` with status `duplicate`, deliberately *not*
+   quarantined: quarantining invites the operator to re-drop it and try the
+   duplicate again. `subject` was the other unused field; it now rides along in
+   every quarantine reason so a human can recognise the message without
+   opening the `.eml`.
+6. **N+1 benchmark queries on the default page.** `compute_benchmark` ran
+   once per SKU inside the sheet loop. Added `compute_benchmarks` (two queries
+   for any number of SKUs, metro then national fallback over what's still
+   unresolved), with the singular form kept as a thin wrapper for the insights
+   page, which genuinely has one SKU per alert window. **5 SQL statements per
+   sheet, down from up to 239**; 319ms → ~60ms on the current corpus.
+7. **A failed fetch wedged the negotiation page on "Loading..." forever**,
+   reachable by clicking a basis button while the API restarts. Added the
+   missing `.catch`, and while verifying the fix in the browser the fallback
+   turned out to claim "No overpriced SKUs" when the truth was "couldn't
+   reach the server" — a bad thing to tell someone walking into a pricing
+   conversation, so failure is now its own state with its own message.
+
+**A correction worth recording.** The evidence I first attached to finding 1
+was wrong. I reported "6 of 15 history lines missing from the auto sheet,
+including Vegetable Oil with a live 16.7% creep alert" — but those 6 were
+missing because of the `TOP_N = 15` cap, not the basis bug, and Vegetable Oil
+had a peer line all along. The defect was real (the synthetic test fails
+against the old code, and 293 real pairs hit it), but I'd have shipped a
+confident, checkable claim that didn't hold. The habit that caught it was
+re-running the *same* measurement after the fix and not accepting "still 6"
+as noise.
+
+### Gates after the fixes
+- Backend: **121 passed** (was 112). New tests verified to fail against the
+  pre-fix code by reverting each fix in turn: 4 email-intake tests and 2
+  negotiation tests went red, then green again on restore.
+- `creep_report` 93.9% recall / 0 FP, `matching_report` 0 unparseable / 0%
+  false match — both still PASS.
+- Playwright 4 passed, vitest 4 passed, `tsc --noEmit` clean.
+- Browser: default sheet now renders a genuine peer/history mix (10 history
+  lines interleaved by dollar value), and the API-down path was exercised
+  live by killing uvicorn mid-session.

@@ -60,16 +60,32 @@ export default function NegotiationPage() {
   // backend/app/api/negotiation.py) belongs to the same sheet, and a partial
   // update would briefly show one basis's lines under another's total.
   const [sheet, setSheet] = useState<NegotiationSheet | null>(null);
+  // Distinguished from an empty sheet: "we couldn't ask" and "there is nothing
+  // to recover" are very different answers to put in front of someone about to
+  // walk into a pricing conversation.
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (!TENANT_ID) return;
     let cancelled = false;
     setSheet(null);
+    setFailed(false);
     fetch(`${API_BASE}/negotiation?tenant_id=${TENANT_ID}&basis=${basis}`, { cache: "no-store" })
-      .then((res) => (res.ok ? res.json() : EMPTY))
+      .then((res) => {
+        if (!res.ok) throw new Error(`negotiation request failed: ${res.status}`);
+        return res.json();
+      })
       .then((data) => {
         // A slower earlier request must not overwrite a newer basis's sheet.
         if (!cancelled) setSheet(data);
+      })
+      // Without this, a failed request left `sheet` at the null this effect
+      // just set and the page stuck on "Loading..." forever, with every
+      // further basis click hitting the same dead end.
+      .catch(() => {
+        if (cancelled) return;
+        setSheet(EMPTY);
+        setFailed(true);
       });
     return () => {
       cancelled = true;
@@ -84,8 +100,9 @@ export default function NegotiationPage() {
     );
   }
 
-  const emptyMessage =
-    basis === "peer"
+  const emptyMessage = failed
+    ? "Couldn't load the sheet — the server didn't respond. Nothing here is out of date; there's just nothing here yet."
+    : basis === "peer"
       ? "No overpriced SKUs with enough peer data right now. Try “Your own history” — it needs no peers."
       : "No overpriced SKUs yet. This fills in once a SKU has four deliveries to compare.";
 

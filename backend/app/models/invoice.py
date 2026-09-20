@@ -29,6 +29,13 @@ class Invoice(Base, TenantScoped):
     total: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
 
     source: Mapped[InvoiceSource] = mapped_column(Enum(InvoiceSource, name="invoice_source"), nullable=False)
+    # RFC 5322 Message-ID of the email this invoice arrived in, for email
+    # sources. The idempotency key for intake: mail delivery retries, and an
+    # operator re-dropping a quarantined email after fixing a tenant address
+    # is the documented recovery, so without it the same PDF becomes a second
+    # invoice and double-counts into every benchmark cell and creep window it
+    # feeds. NULL for uploads, which are a deliberate human action each time.
+    source_message_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     original_file_uri: Mapped[str] = mapped_column(String, nullable=False)
 
     status: Mapped[InvoiceStatus] = mapped_column(

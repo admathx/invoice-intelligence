@@ -24,7 +24,14 @@ POLL_SECONDS = 5
 def _report(results) -> None:
     for result in results:
         if result.status == "ingested":
-            print(f"  {result.source_name}: {len(result.invoice_ids)} invoice(s) for tenant {result.tenant_id}")
+            line = f"  {result.source_name}: {len(result.invoice_ids)} invoice(s) for tenant {result.tenant_id}"
+            # An ingested result can still carry a reason: the invoices are
+            # recorded but couldn't be queued for extraction (see
+            # email_stub.ingest_email_file). Not a failure of intake, but the
+            # operator has to know those invoices need a requeue.
+            print(f"{line} — WARNING: {result.reason}" if result.reason else line)
+        elif result.status == "duplicate":
+            print(f"  {result.source_name}: skipped, {result.reason}")
         else:
             print(f"  {result.source_name}: QUARANTINED — {result.reason}")
 

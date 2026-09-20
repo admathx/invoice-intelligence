@@ -158,6 +158,9 @@ def test_ranks_dollar_gap_above_percentage_gap(db_session, distributor, home_ten
 
 
 def test_skus_priced_at_or_below_peer_p25_are_excluded(db_session, distributor, home_tenant):
+    """One purchase, so there is no history to fall back to either — auto must
+    not invent a line for a SKU with nothing to argue.
+    """
     sku = _make_sku(db_session, "Fairly Priced Item")
     _seed_peer_cell(db_session, sku, distributor, home_tenant.metro, "5.00")
     _add_observation(db_session, home_tenant, sku, distributor, home_tenant.metro, "4.50", qty="100")
@@ -299,6 +302,43 @@ def test_auto_falls_back_per_sku_so_one_sheet_can_carry_both(db_session, distrib
 
     assert by_sku[benchmarked.id].basis == NegotiationBasis.peer
     assert by_sku[unbenchmarked.id].basis == NegotiationBasis.history
+
+
+def test_auto_falls_back_to_history_when_the_tenant_beats_peer_p25_but_crept(db_session, distributor, home_tenant):
+    """Beating your peers on a SKU doesn't mean your own price didn't move.
+
+    Deciding the basis on "a peer cell exists" rather than "a peer cell shows
+    an overpay" dropped these SKUs entirely, so a SKU could carry an open
+    creep alert on the Insights page and be silently absent from the default
+    negotiation sheet.
+    """
+    sku = _make_sku(db_session, "Cheap But Creeping Item")
+    _seed_peer_cell(db_session, sku, distributor, home_tenant.metro, "10.00")
+    # Still under the $10.00 peer p25, but up 50% on what this tenant used to pay.
+    _add_weekly_history(db_session, home_tenant, sku, distributor, home_tenant.metro, ["6.00", "6.00", "6.00", "9.00"])
+
+    sheet = build_negotiation_sheet(db_session, home_tenant.id, AS_OF, NegotiationBasis.auto)
+
+    line = next(l for l in sheet.lines if l.canonical_sku_id == sku.id)
+    assert line.basis == NegotiationBasis.history
+    assert line.target_price == Decimal("6.0000")
+    assert line.peer_account_count is None
+    assert line.history_observation_count == 3
+
+
+def test_auto_still_prefers_peer_when_both_bases_have_something_to_argue(db_session, distributor, home_tenant):
+    """Peer is the stronger claim: a rep can't answer it with "that was our
+    old price." It must win whenever it is available, not merely be tried first.
+    """
+    sku = _make_sku(db_session, "Both Bases Item")
+    _seed_peer_cell(db_session, sku, distributor, home_tenant.metro, "5.00")
+    _add_weekly_history(db_session, home_tenant, sku, distributor, home_tenant.metro, ["8.00", "8.00", "8.00", "12.00"])
+
+    sheet = build_negotiation_sheet(db_session, home_tenant.id, AS_OF, NegotiationBasis.auto)
+
+    line = next(l for l in sheet.lines if l.canonical_sku_id == sku.id)
+    assert line.basis == NegotiationBasis.peer
+    assert line.target_price == Decimal("5.0000")  # the $5.00 peer p25, not the $8.00 own median
 
 
 # --- annualization ---------------------------------------------------------

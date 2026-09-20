@@ -7,6 +7,8 @@ every rejection path below asserts the email ended up in quarantine with a
 readable reason, not just that no invoice was created.
 """
 import io
+import os
+import time
 import uuid
 from email.message import EmailMessage
 
@@ -16,6 +18,7 @@ from sqlalchemy import select
 
 from app.db import bind_tenant
 from app.ingest.email_stub import (
+    INBOX_SETTLE_SECONDS,
     QUARANTINE_DIRNAME,
     inbox_address_for,
     ingest_email_file,
@@ -225,7 +228,7 @@ def test_scan_processes_every_email_and_isolates_failures(db_session, inbox, ten
     _write_eml(inbox, to=tenant.inbox_address, attachments=[("a.pdf", "pdf", _pdf_bytes())], name="good.eml")
     _write_eml(inbox, to="nobody@invoices.example.com", attachments=[("b.pdf", "pdf", _pdf_bytes())], name="bad.eml")
 
-    results = scan_inbox(db_session, inbox)
+    results = scan_inbox(db_session, inbox, settle_seconds=0)
 
     by_name = {r.source_name: r for r in results}
     assert by_name["good.eml"].status == "ingested"
@@ -236,14 +239,160 @@ def test_scan_processes_every_email_and_isolates_failures(db_session, inbox, ten
 
 
 def test_reprocessing_the_same_filename_does_not_clobber_the_first(db_session, inbox, tenant):
-    for _ in range(2):
+    for i in range(2):
+        # Distinct Message-IDs: this is about filename collisions, not
+        # redelivery of one message (covered below).
         _write_eml(
-            inbox, to=tenant.inbox_address, attachments=[("a.pdf", "pdf", _pdf_bytes())], name="same.eml"
+            inbox,
+            to=tenant.inbox_address,
+            attachments=[("a.pdf", "pdf", _pdf_bytes())],
+            name="same.eml",
+            message_id=f"<distinct-{i}@sysco.example.com>",
         )
-        scan_inbox(db_session, inbox)
+        scan_inbox(db_session, inbox, settle_seconds=0)
 
     processed = list((inbox / "processed").glob("*.eml"))
     assert len(processed) == 2, "second email with the same filename overwrote the first"
+
+
+def test_a_file_still_being_written_is_left_for_the_next_pass(db_session, inbox, tenant):
+    """A watch directory can't distinguish "finished" from "still arriving".
+    A half-written email parses to zero attachments and would be quarantined
+    as "no PDF attachment" while the writer is still appending to it.
+    """
+    path = _write_eml(inbox, to=tenant.inbox_address, attachments=[("invoice.pdf", "pdf", _pdf_bytes())])
+
+    assert scan_inbox(db_session, inbox) == []
+    assert path.exists(), "a too-fresh file must be left in the inbox, not moved"
+
+    # Backdate it past the settle window; the next pass picks it up normally.
+    old = time.time() - (INBOX_SETTLE_SECONDS + 1)
+    os.utime(path, (old, old))
+
+    results = scan_inbox(db_session, inbox)
+    assert [r.status for r in results] == ["ingested"]
+
+
+# --- idempotency -----------------------------------------------------------
+
+
+def test_the_same_message_delivered_twice_makes_one_set_of_invoices(db_session, inbox, tenant):
+    """Mail providers retry, and re-dropping a quarantined email after fixing
+    a tenant address is the documented recovery. Either way the second copy
+    must not become a second invoice, which would double-count into every
+    benchmark cell and creep window it feeds.
+    """
+    for name in ("first.eml", "redelivered.eml"):
+        _write_eml(
+            inbox,
+            to=tenant.inbox_address,
+            attachments=[("invoice.pdf", "pdf", _pdf_bytes())],
+            name=name,
+            message_id="<retry-me@sysco.example.com>",
+        )
+        scan_inbox(db_session, inbox, settle_seconds=0)
+
+    assert len(_invoices_for(db_session, tenant)) == 1
+
+
+def test_a_redelivered_message_is_filed_as_processed_not_quarantined(db_session, inbox, tenant):
+    """Quarantining it would invite the operator to re-drop it and try the
+    duplicate all over again.
+    """
+    for name in ("first.eml", "again.eml"):
+        path = _write_eml(
+            inbox,
+            to=tenant.inbox_address,
+            attachments=[("invoice.pdf", "pdf", _pdf_bytes())],
+            name=name,
+            message_id="<seen-before@sysco.example.com>",
+        )
+        result = ingest_email_file(db_session, path, inbox)
+
+    assert result.status == "duplicate"
+    assert "already ingested" in result.reason
+    assert (inbox / "processed" / "again.eml").exists()
+    assert not (inbox / QUARANTINE_DIRNAME / "again.eml").exists()
+
+
+def test_two_different_emails_to_one_tenant_both_ingest(db_session, inbox, tenant):
+    """Guards the dedupe against over-matching: distinct messages must not be
+    mistaken for redelivery just because they share a tenant.
+    """
+    for i in range(2):
+        path = _write_eml(
+            inbox,
+            to=tenant.inbox_address,
+            attachments=[("invoice.pdf", "pdf", _pdf_bytes())],
+            name=f"mail-{i}.eml",
+            message_id=f"<week-{i}@sysco.example.com>",
+        )
+        assert ingest_email_file(db_session, path, inbox).status == "ingested"
+
+    assert len(_invoices_for(db_session, tenant)) == 2
+
+
+# --- failure ordering ------------------------------------------------------
+
+
+def test_a_failed_enqueue_still_counts_as_ingested(db_session, inbox, tenant, monkeypatch):
+    """The invoices are committed and durable by then. Reporting failure would
+    send the operator to re-drop the email and create a second set.
+    """
+    monkeypatch.setattr(
+        "app.ingest.email_stub.invoice_queue.enqueue",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ConnectionError("redis is down")),
+    )
+    path = _write_eml(inbox, to=tenant.inbox_address, attachments=[("invoice.pdf", "pdf", _pdf_bytes())])
+
+    result = ingest_email_file(db_session, path, inbox)
+
+    assert result.status == "ingested"
+    assert "could not be queued" in result.reason  # surfaced, not swallowed
+    assert len(_invoices_for(db_session, tenant)) == 1
+    # Filed as processed, so the next scan can't ingest it a second time.
+    assert (inbox / "processed" / "mail.eml").exists()
+    assert not (inbox / QUARANTINE_DIRNAME / "mail.eml").exists()
+
+
+def test_a_failed_database_write_leaves_no_invoices_and_quarantines(db_session, inbox, tenant, monkeypatch):
+    monkeypatch.setattr(
+        "app.ingest.email_stub.save_invoice_bytes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no space left on device")),
+    )
+    path = _write_eml(inbox, to=tenant.inbox_address, attachments=[("invoice.pdf", "pdf", _pdf_bytes())])
+
+    result = ingest_email_file(db_session, path, inbox)
+
+    assert result.status == "quarantined"
+    assert "could not record invoices" in result.reason
+    assert result.source_name == "mail.eml"  # the name that arrived, not the claimed one
+    assert _invoices_for(db_session, tenant) == []
+    assert (inbox / QUARANTINE_DIRNAME / "mail.eml").exists()
+
+
+def test_scan_survives_an_email_that_was_already_moved_aside(db_session, inbox, tenant, monkeypatch):
+    """scan_inbox's failure handler must not itself throw: the exception it is
+    handling may have come from a quarantine that already renamed the file,
+    and a second rename would raise FileNotFoundError and abort the scan —
+    stopping every email queued behind this one.
+    """
+    def _move_then_fail(path, inbox_dir, reason, source_name=None):
+        path.rename(inbox_dir / QUARANTINE_DIRNAME / path.name)
+        raise OSError("no space left on device")
+
+    (inbox / QUARANTINE_DIRNAME).mkdir()
+    _write_eml(inbox, to="nobody@invoices.example.com", attachments=[("a.pdf", "pdf", _pdf_bytes())], name="bad.eml")
+    _write_eml(inbox, to=tenant.inbox_address, attachments=[("b.pdf", "pdf", _pdf_bytes())], name="good.eml")
+    monkeypatch.setattr("app.ingest.email_stub._quarantine", _move_then_fail)
+
+    results = scan_inbox(db_session, inbox, settle_seconds=0)
+
+    by_name = {r.source_name: r for r in results}
+    assert by_name["bad.eml"].status == "quarantined"
+    assert "already moved out of the inbox" in by_name["bad.eml"].reason
+    # The whole point: the email behind it was still processed.
+    assert by_name["good.eml"].status == "ingested"
 
 
 # --- parsing ---------------------------------------------------------------

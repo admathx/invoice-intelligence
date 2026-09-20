@@ -16,6 +16,8 @@ benchmark cells, or does it fragment the data too much early on? Leaning:
 make it a query parameter, default off until tenant density supports it."
 """
 import uuid
+from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
@@ -92,18 +94,28 @@ def _percentile(sorted_values: list[Decimal], pct: Decimal) -> Decimal:
     return (sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * frac).quantize(Decimal("0.0001"))
 
 
-def _cell(
+def _cells(
     db: Session,
-    canonical_sku_id: uuid.UUID,
+    canonical_sku_ids: Sequence[uuid.UUID],
     metro: str | None,
     volume_tier: VolumeTier | None,
     window_start: date,
     as_of: date,
     exclude_account_key: uuid.UUID | None,
-) -> BenchmarkResult | None:
+) -> dict[uuid.UUID, BenchmarkResult]:
+    """One scope (metro or national) for many SKUs in a single query.
+
+    Batched rather than one query per SKU: the negotiation sheet asks about
+    every SKU a tenant buys — 118 of them for a mid-size tenant on the current
+    corpus — and a per-SKU call meant up to 236 cross-tenant scans for one page
+    load. Suppressed SKUs are simply absent from the returned dict.
+    """
+    if not canonical_sku_ids:
+        return {}
+
     account_key = _account_key_column()
     conditions = [
-        PriceObservation.canonical_sku_id == canonical_sku_id,
+        PriceObservation.canonical_sku_id.in_(canonical_sku_ids),
         PriceObservation.observed_on >= window_start,
         PriceObservation.observed_on <= as_of,
     ]
@@ -123,37 +135,46 @@ def _cell(
     # would keep quietly counting them separately. tenants is small and this
     # is a hash join on an indexed FK.
     rows = db.execute(
-        select(account_key, PriceObservation.unit_price_base)
+        select(PriceObservation.canonical_sku_id, account_key, PriceObservation.unit_price_base)
         .join(Tenant, Tenant.id == PriceObservation.tenant_id)
         .where(*conditions)
     ).all()
 
-    distinct_accounts = {key for key, _ in rows}
-    if len(distinct_accounts) < MIN_DISTINCT_ACCOUNTS:
-        return None
+    by_sku: dict[uuid.UUID, list[tuple[uuid.UUID, Decimal]]] = defaultdict(list)
+    for sku_id, key, price in rows:
+        by_sku[sku_id].append((key, price))
 
-    prices = sorted(price for _, price in rows)
-    return BenchmarkResult(
-        canonical_sku_id=canonical_sku_id,
-        p25=_percentile(prices, Decimal("0.25")),
-        p50=_percentile(prices, Decimal("0.50")),
-        p75=_percentile(prices, Decimal("0.75")),
-        distinct_account_count=len(distinct_accounts),
-        scope="metro" if metro is not None else "national",
-    )
+    results: dict[uuid.UUID, BenchmarkResult] = {}
+    for sku_id, pairs in by_sku.items():
+        distinct_accounts = {key for key, _ in pairs}
+        if len(distinct_accounts) < MIN_DISTINCT_ACCOUNTS:
+            continue
+        prices = sorted(price for _, price in pairs)
+        results[sku_id] = BenchmarkResult(
+            canonical_sku_id=sku_id,
+            p25=_percentile(prices, Decimal("0.25")),
+            p50=_percentile(prices, Decimal("0.50")),
+            p75=_percentile(prices, Decimal("0.75")),
+            distinct_account_count=len(distinct_accounts),
+            scope="metro" if metro is not None else "national",
+        )
+    return results
 
 
-def compute_benchmark(
+def compute_benchmarks(
     db: Session,
-    canonical_sku_id: uuid.UUID,
+    canonical_sku_ids: Sequence[uuid.UUID],
     metro: str,
     as_of: date,
     volume_tier: VolumeTier | None = None,
     exclude_account_key: uuid.UUID | None = None,
-) -> BenchmarkResult | None:
-    """Suppresses the cell below MIN_DISTINCT_ACCOUNTS, falls back metro ->
-    national -> None. Never falls back to something narrower than metro (that
-    would risk identifying a specific competitor, not protect against it).
+) -> dict[uuid.UUID, BenchmarkResult]:
+    """Benchmarks for many SKUs at once: two queries total, not two per SKU.
+
+    Each SKU independently suppresses below MIN_DISTINCT_ACCOUNTS and falls
+    back metro -> national -> absent. Never falls back to something narrower
+    than metro (that would risk identifying a specific competitor, not protect
+    against it).
 
     `exclude_account_key`: pass account_key_for(db, tenant_id) when the caller
     is that tenant asking "how do I compare to peers" (e.g. a negotiation
@@ -164,6 +185,23 @@ def compute_benchmark(
     whose prices are the asker's own company's.
     """
     window_start = as_of - timedelta(days=LOOKBACK_DAYS)
-    return _cell(db, canonical_sku_id, metro, volume_tier, window_start, as_of, exclude_account_key) or _cell(
-        db, canonical_sku_id, None, volume_tier, window_start, as_of, exclude_account_key
-    )
+    cells = _cells(db, canonical_sku_ids, metro, volume_tier, window_start, as_of, exclude_account_key)
+    unresolved = [sku_id for sku_id in canonical_sku_ids if sku_id not in cells]
+    cells.update(_cells(db, unresolved, None, volume_tier, window_start, as_of, exclude_account_key))
+    return cells
+
+
+def compute_benchmark(
+    db: Session,
+    canonical_sku_id: uuid.UUID,
+    metro: str,
+    as_of: date,
+    volume_tier: VolumeTier | None = None,
+    exclude_account_key: uuid.UUID | None = None,
+) -> BenchmarkResult | None:
+    """One SKU, for callers that genuinely have only one (e.g. an insights card
+    anchored to its own alert's window). Batching callers use compute_benchmarks.
+    """
+    return compute_benchmarks(
+        db, [canonical_sku_id], metro, as_of, volume_tier, exclude_account_key
+    ).get(canonical_sku_id)

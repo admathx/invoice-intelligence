@@ -14,6 +14,7 @@ to `inbox/quarantine/` with a `.reason.txt` beside it, so a human can see
 exactly what arrived and why it didn't become an invoice.
 """
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from email import message_from_bytes, policy
@@ -40,6 +41,11 @@ RECIPIENT_HEADERS = ("to", "cc", "bcc", "delivered-to", "x-original-to", "x-forw
 
 PROCESSED_DIRNAME = "processed"
 QUARANTINE_DIRNAME = "quarantine"
+
+# How long a file must sit untouched before it's considered fully written.
+# See scan_inbox. Short enough that `make watch-inbox ONCE=1` still picks up
+# something a human just dropped, long enough to cover a local file copy.
+INBOX_SETTLE_SECONDS = 2.0
 
 
 @dataclass
@@ -68,7 +74,7 @@ class ParsedEmail:
 @dataclass
 class IngestResult:
     source_name: str
-    status: str  # "ingested" | "quarantined"
+    status: str  # "ingested" | "duplicate" | "quarantined"
     reason: str | None = None
     tenant_id: uuid.UUID | None = None
     invoice_ids: list[uuid.UUID] = field(default_factory=list)
@@ -139,78 +145,186 @@ def _unique_destination(directory: Path, name: str) -> Path:
     return directory / f"{stem}-{uuid.uuid4().hex[:8]}{suffix}"
 
 
-def _quarantine(path: Path, inbox_dir: Path, reason: str) -> IngestResult:
+def _quarantine(path: Path, inbox_dir: Path, reason: str, source_name: str | None = None) -> IngestResult:
+    """Move an email aside with a readable explanation beside it.
+
+    `source_name` overrides the reported name for a file that has already been
+    moved once (claimed into processed/, then quarantined when the database
+    write failed) — the caller still wants to hear about the name that arrived.
+    """
     destination = _unique_destination(inbox_dir / QUARANTINE_DIRNAME, path.name)
     path.rename(destination)
     destination.with_suffix(destination.suffix + ".reason.txt").write_text(reason + "\n")
-    return IngestResult(source_name=path.name, status="quarantined", reason=reason, destination=destination)
+    return IngestResult(
+        source_name=source_name or path.name, status="quarantined", reason=reason, destination=destination
+    )
+
+
+def _safe_quarantine(path: Path, inbox_dir: Path, reason: str) -> IngestResult:
+    """_quarantine that reports rather than raises.
+
+    Used only from scan_inbox's per-email failure handler, which must never
+    itself throw: the exception it is handling may have come from a
+    _quarantine call that already renamed the file away, in which case a second
+    rename raises FileNotFoundError and takes down the whole scan — stopping
+    every email queued behind this one, which is the exact outcome that handler
+    exists to prevent.
+    """
+    if not path.exists():
+        return IngestResult(
+            source_name=path.name,
+            status="quarantined",
+            reason=f"{reason} (already moved out of the inbox before it could be quarantined)",
+        )
+    try:
+        return _quarantine(path, inbox_dir, reason)
+    except OSError as exc:
+        return IngestResult(
+            source_name=path.name, status="quarantined", reason=f"{reason} (could not be moved aside: {exc})"
+        )
+
+
+def _already_ingested(db: Session, tenant_id: uuid.UUID, message_id: str) -> bool:
+    bind_tenant(db, tenant_id)
+    return (
+        db.scalar(
+            select(Invoice.id).where(Invoice.tenant_id == tenant_id, Invoice.source_message_id == message_id).limit(1)
+        )
+        is not None
+    )
 
 
 def ingest_email_file(db: Session, path: Path, inbox_dir: Path | None = None) -> IngestResult:
     """Turns one `.eml` into invoices, or quarantines it with a reason."""
     inbox_dir = inbox_dir or Path(settings.inbox_dir)
+    source_name = path.name
 
     try:
         parsed = parse_email(path.read_bytes())
     except Exception as exc:  # malformed mail must not take down the whole scan
         return _quarantine(path, inbox_dir, f"could not parse email: {exc}")
 
+    # Carried into every rejection below: a human reading quarantine/ needs to
+    # recognise which message this was without opening the .eml.
+    context = f' (subject: "{parsed.subject}")' if parsed.subject else ""
+
     if not parsed.recipients:
-        return _quarantine(path, inbox_dir, "no recipient address found in headers")
+        return _quarantine(path, inbox_dir, f"no recipient address found in headers{context}")
 
     tenant = find_tenant_for_recipients(db, parsed.recipients)
     if tenant is None:
         return _quarantine(
-            path, inbox_dir, f"no tenant for recipient address(es): {', '.join(parsed.recipients)}"
+            path, inbox_dir, f"no tenant for recipient address(es): {', '.join(parsed.recipients)}{context}"
         )
 
     pdfs = parsed.pdf_attachments
     if not pdfs:
         other = ", ".join(a.filename for a in parsed.attachments) or "none"
-        return _quarantine(path, inbox_dir, f"no PDF attachment (attachments: {other})")
+        return _quarantine(path, inbox_dir, f"no PDF attachment (attachments: {other}){context}")
+
+    if parsed.message_id and _already_ingested(db, tenant.id, parsed.message_id):
+        # Filed as processed, not quarantined: nothing is wrong with this
+        # email, it simply already became invoices. Quarantining it would
+        # invite the operator to re-drop it and create the duplicates all over.
+        destination = _unique_destination(inbox_dir / PROCESSED_DIRNAME, path.name)
+        path.rename(destination)
+        return IngestResult(
+            source_name=source_name,
+            status="duplicate",
+            reason=f"already ingested (message-id {parsed.message_id}){context}",
+            tenant_id=tenant.id,
+            destination=destination,
+        )
+
+    # Claim the email BEFORE writing anything: moving it out of the inbox is
+    # the only thing that stops the next scan from ingesting it again, so it
+    # has to happen before the step a rerun would duplicate. Committing first
+    # and moving afterwards meant a failed move (or a failed enqueue, which
+    # threw into scan_inbox's handler) left committed invoices behind an email
+    # reported and filed as "ingest failed" — and re-dropping it, the
+    # documented recovery, produced a second full set of invoices.
+    try:
+        claimed = _unique_destination(inbox_dir / PROCESSED_DIRNAME, path.name)
+        path.rename(claimed)
+    except OSError as exc:
+        return _quarantine(path, inbox_dir, f"could not claim email for processing: {exc}{context}")
 
     bind_tenant(db, tenant.id)
     invoice_ids: list[uuid.UUID] = []
-    for attachment in pdfs:
-        # One invoice per PDF: a distributor mailing a week's invoices as
-        # several attachments is a single email but several invoices.
-        invoice = Invoice(
-            id=uuid.uuid4(),
-            tenant_id=tenant.id,
-            source=InvoiceSource.email,
-            status=InvoiceStatus.received,
-            original_file_uri="",
-        )
-        invoice.original_file_uri = save_invoice_bytes(invoice.id, attachment.filename, attachment.content)
-        db.add(invoice)
-        invoice_ids.append(invoice.id)
-    db.commit()
+    try:
+        for attachment in pdfs:
+            # One invoice per PDF: a distributor mailing a week's invoices as
+            # several attachments is a single email but several invoices.
+            invoice = Invoice(
+                id=uuid.uuid4(),
+                tenant_id=tenant.id,
+                source=InvoiceSource.email,
+                source_message_id=parsed.message_id,
+                status=InvoiceStatus.received,
+                original_file_uri="",
+            )
+            invoice.original_file_uri = save_invoice_bytes(invoice.id, attachment.filename, attachment.content)
+            db.add(invoice)
+            invoice_ids.append(invoice.id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return _quarantine(claimed, inbox_dir, f"could not record invoices: {exc}{context}", source_name=source_name)
 
+    # Enqueue last, and deliberately non-fatal. The invoices are committed and
+    # durable at this point; a Redis outage should leave them sitting in
+    # `received` for a requeue, not re-open the question of whether this email
+    # was ingested (it was) or move it somewhere a human might re-drop it.
+    enqueue_error: str | None = None
     for invoice_id in invoice_ids:
-        invoice_queue.enqueue(process_invoice, str(invoice_id))
+        try:
+            invoice_queue.enqueue(process_invoice, str(invoice_id))
+        except Exception as exc:
+            enqueue_error = f"invoices recorded but could not be queued for extraction: {exc}"
+            break
 
-    destination = _unique_destination(inbox_dir / PROCESSED_DIRNAME, path.name)
-    path.rename(destination)
     return IngestResult(
-        source_name=path.name,
+        source_name=source_name,
         status="ingested",
+        reason=enqueue_error,
         tenant_id=tenant.id,
         invoice_ids=invoice_ids,
-        destination=destination,
+        destination=claimed,
     )
 
 
-def scan_inbox(db: Session, inbox_dir: Path | None = None) -> list[IngestResult]:
-    """Processes every `.eml` sitting in the watch directory, oldest first."""
+def scan_inbox(db: Session, inbox_dir: Path | None = None, settle_seconds: float | None = None) -> list[IngestResult]:
+    """Processes every settled `.eml` in the watch directory, oldest first.
+
+    `settle_seconds`: ignore files written within this many seconds, because
+    a watch directory has no way to tell "finished" from "still arriving". A
+    multi-megabyte email caught mid-write parses without raising — MIME
+    parsing is tolerant — yields no complete attachments, and gets moved to
+    quarantine as "no PDF attachment" while the writer is still appending to
+    it, so the finished message never gets processed at all. Skipping a
+    too-fresh file drops nothing: it stays in the inbox for the next pass.
+    Tests pass 0 to make the scan deterministic.
+    """
     inbox_dir = inbox_dir or Path(settings.inbox_dir)
+    settle_seconds = INBOX_SETTLE_SECONDS if settle_seconds is None else settle_seconds
     inbox_dir.mkdir(parents=True, exist_ok=True)
 
+    now = time.time()
+    settled: list[tuple[float, Path]] = []
+    for path in inbox_dir.glob("*.eml"):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:  # vanished between glob and stat
+            continue
+        if now - mtime >= settle_seconds:
+            settled.append((mtime, path))
+
     results = []
-    for path in sorted(inbox_dir.glob("*.eml"), key=lambda p: p.stat().st_mtime):
+    for _, path in sorted(settled):
         try:
             results.append(ingest_email_file(db, path, inbox_dir))
         except Exception as exc:
             # One bad email must not stop the ones behind it in the directory.
             db.rollback()
-            results.append(_quarantine(path, inbox_dir, f"ingest failed: {exc}"))
+            results.append(_safe_quarantine(path, inbox_dir, f"ingest failed: {exc}"))
     return results
