@@ -1405,3 +1405,50 @@ and creep windows in between. A new `cleanup` command runs in the suite's
 - Backend **195 passed** (was 188); with the source fixes stashed, all 8 new
   tests fail. Frontend 20 unit, `tsc` clean, Playwright 6.
 - `creep_report` 93.9% / 0 FP, `matching_report` 0/38709.
+
+## Phase 2 validated against the real API
+
+API credit is in place, and Phase 2's gate has finally been measured rather
+than assumed. **20-invoice sample (`claude-sonnet-4-6`): PASS on every gate.**
+
+| Gate | Target | Measured |
+|---|---|---|
+| Line-item accuracy, clean (18) | >= 95% | **100%** |
+| Line-item accuracy, noisy (2) | >= 85% | **100%** |
+| Arithmetic catch rate | >= 90% | **100%** (1,035/1,035) |
+| Mean cost per invoice | < $0.15 | **$0.086** (max $0.142, 114 lines) |
+
+Field accuracy 99.8-100%; review routing 10%. Spend for the whole effort
+~$3.20.
+
+### What the first real run found (and would have shipped)
+- **Large invoices were truncated.** `MAX_TOKENS = 8000` cut a 114-line
+  invoice's JSON off mid-string; the retry hit the same cap; in production
+  every large invoice would have been marked `failed`. Output is ~150-180
+  tokens per line. The extractor now streams (the SDK requires it for large
+  caps) with `max_tokens=64000` (Sonnet 4.6 allows 128K; unused headroom
+  isn't billed), and fails fast on `stop_reason` `max_tokens` / `refusal`
+  instead of retrying into the same wall and paying twice.
+- **The report died on the first failure,** discarding the 12 invoices
+  already paid for. A failed extraction is now scored as extracting nothing
+  and the run continues; the report prints line count, recall and cost per
+  invoice, and writes them to the results file.
+- **The catch-rate metric counted corruptions the validator is designed to
+  tolerate.** The corpus prints money to four decimals, so ~20% of random
+  digit swaps moved a line by under a cent, inside the deliberate one-cent
+  rounding tolerance. Measured offline over 15,045 corruptions, every miss
+  moved a line by <= $0.01. The metric now counts only corruptions larger
+  than the tolerance and reports how many it excluded (301 in this run); the
+  0.90 threshold is unchanged. Documented in `thresholds.yaml`.
+
+### Caveats worth carrying forward
+- **Noisy scans are under-sampled** (2 of 20). Their weakest field was pack
+  size, 85.7% — the one field arithmetic can't check and the one that skews
+  price per base unit. The full 200-invoice gate should settle it.
+- **Cost scales with line count.** Output tokens dominate; an invoice beyond
+  ~120 lines exceeds $0.15 on its own. The gate is on the mean, which has
+  room, but real customers' invoice sizes decide the unit economics. Levers if
+  needed: Batch API (50%), a leaner output schema, or a cheaper model
+  (`claude-sonnet-5`, $2/$10 vs $3/$15; the spec pins `sonnet-4-6`).
+- **The corpus PDFs are clean renders,** so this validates the pipeline, not
+  accuracy on real photos and faxes.

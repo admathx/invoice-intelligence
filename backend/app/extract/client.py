@@ -15,7 +15,14 @@ MODEL_PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-sonnet-4-6": (3.00, 15.00),
 }
 
-MAX_TOKENS = 8000
+# Room for the largest invoices. Output grows with line count (every line is
+# a JSON object of nine fields, ~150-180 tokens), and 8,000 truncated a
+# ~120-line invoice mid-string during the first real Phase 2 run. The retry
+# hit the same cap, so every large invoice would have been marked `failed`.
+# Sonnet 4.6 allows up to 128K output; the SDK requires streaming for caps
+# this large, which is why extract() streams. Only tokens actually generated
+# are billed, so the higher cap costs nothing on small invoices.
+MAX_TOKENS = 64000
 
 
 class ExtractionFailedError(Exception):
@@ -90,14 +97,26 @@ class AnthropicExtractorClient:
         last_error: Exception | None = None
 
         for attempt in range(2):  # one retry per SPEC.md §5
-            response = self.client.messages.create(
+            with self.client.messages.stream(
                 model=self.model,
                 max_tokens=MAX_TOKENS,
                 system=EXTRACTION_SYSTEM_PROMPT,
                 messages=messages,
                 output_config={"format": {"type": "json_schema", "schema": self._schema}},
-            )
+            ) as stream:
+                response = stream.get_final_message()
             total_cost += cost_usd(self.model, response.usage)
+
+            # Stop reasons a retry can't fix. A truncated answer at the cap
+            # would be truncated at the same point again (asking to "fix" half
+            # a document doesn't make room for the rest), and a refusal isn't a
+            # formatting error. Retrying either just doubles the spend.
+            if response.stop_reason in ("max_tokens", "refusal"):
+                raise ExtractionFailedError(
+                    f"extraction stopped with stop_reason={response.stop_reason!r} "
+                    f"after {response.usage.output_tokens} output tokens",
+                    cost_usd=total_cost,
+                )
 
             text = next((b.text for b in response.content if b.type == "text"), "")
             try:

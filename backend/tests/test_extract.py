@@ -172,6 +172,7 @@ class _FakeUsage:
 class _FakeResponse:
     content: list
     usage: _FakeUsage
+    stop_reason: str = "end_turn"
 
 
 def _valid_payload_text() -> str:
@@ -179,16 +180,31 @@ def _valid_payload_text() -> str:
     return json.dumps(json.loads(invoice.model_dump_json()))
 
 
+class _StubStream:
+    def __init__(self, response: _FakeResponse):
+        self._response = response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_final_message(self) -> _FakeResponse:
+        return self._response
+
+
 class _StubMessages:
-    """Stands in for client.messages, returning queued responses in order."""
+    """Stands in for client.messages, returning queued responses in order
+    through the same stream()/get_final_message() shape the extractor uses."""
 
     def __init__(self, responses: list[_FakeResponse]):
         self._responses = list(responses)
         self.calls: list[dict] = []
 
-    def create(self, **kwargs):
+    def stream(self, **kwargs):
         self.calls.append(kwargs)
-        return self._responses.pop(0)
+        return _StubStream(self._responses.pop(0))
 
 
 @pytest.fixture()
@@ -253,3 +269,34 @@ def test_extract_schema_response_format_is_json_schema(extractor_client):
     output_config = stub.calls[0]["output_config"]
     assert output_config["format"]["type"] == "json_schema"
     assert output_config["format"]["schema"]["additionalProperties"] is False
+
+
+def test_a_truncated_answer_fails_fast_instead_of_retrying_into_the_same_cap(extractor_client):
+    """The first real Phase 2 run truncated a large invoice's JSON at the
+    output cap, then retried into the same cap. A second attempt can't fit
+    what the first couldn't, so it only doubled the spend."""
+    cut_off = _FakeResponse(
+        content=[_FakeTextBlock('{"distributor": "sysco", "line_items": [{"raw_desc')],
+        usage=_FakeUsage(3000, 64000),
+        stop_reason="max_tokens",
+    )
+    stub = _StubMessages([cut_off])
+    extractor_client.client.messages = stub
+
+    with pytest.raises(ExtractionFailedError) as exc:
+        extractor_client.extract([])
+
+    assert len(stub.calls) == 1
+    assert "max_tokens" in str(exc.value)
+    assert exc.value.cost_usd == pytest.approx(cost_usd("claude-sonnet-4-6", cut_off.usage))
+
+
+def test_the_output_cap_leaves_room_for_the_largest_invoices(extractor_client):
+    """~150-180 output tokens per line; the corpus has invoices of 120 lines."""
+    resp = _FakeResponse(content=[_FakeTextBlock(_valid_payload_text())], usage=_FakeUsage(100, 50))
+    stub = _StubMessages([resp])
+    extractor_client.client.messages = stub
+
+    extractor_client.extract([])
+
+    assert stub.calls[0]["max_tokens"] >= 180 * 120

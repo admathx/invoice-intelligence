@@ -15,6 +15,15 @@ phase1_corpus:
 phase2_extraction:
   line_item_accuracy_clean: 0.95
   line_item_accuracy_noisy: 0.85
+  # Measured only over corruptions that move a line's arithmetic by MORE than
+  # the validator's one-cent rounding tolerance. The synthetic corpus prints
+  # money to four decimals, so ~20% of random digit swaps change a line by
+  # less than a cent; counting those reported ~0.80 for a validator that, on
+  # the full corpus, catches every corruption above its tolerance (checked
+  # offline over 15,045 corruptions: every miss moved a line by <= $0.01).
+  # Real invoices print two decimals, where sub-cent changes can't occur.
+  # The report prints how many corruptions were excluded. The threshold
+  # itself is unchanged.
   arithmetic_error_catch_rate: 0.90
   max_cost_per_invoice_usd: 0.15
   failed_arithmetic_reaching_extracted: 0  # hard zero, not tunable
