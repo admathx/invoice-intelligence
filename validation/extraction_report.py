@@ -22,6 +22,7 @@ import tempfile
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+import anthropic
 import yaml
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -151,6 +152,13 @@ def main() -> int:
     parser.add_argument("--sample", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="Skip the first N invoices of the (seeded) sample: resume a run the "
+        "API cut short without paying again for invoices already measured.",
+    )
+    parser.add_argument(
         "--fake",
         action="store_true",
         help="Use the deterministic fake extractor instead of the real API — "
@@ -167,15 +175,18 @@ def main() -> int:
         return 1
 
     rng = random.Random(args.seed)
-    sample = rng.sample(gt_files, min(args.sample, len(gt_files)))
+    sample = rng.sample(gt_files, min(args.sample, len(gt_files)))[args.start :]
 
     extractor = FakeExtractorClient() if args.fake else AnthropicExtractorClient()
     print(f"Extractor: {type(extractor).__name__}, model={getattr(extractor, 'model', 'n/a')}")
     print(f"Sample size: {len(sample)}")
 
     per_invoice = []
+    stopped_early = None
     with tempfile.TemporaryDirectory() as tmp:
         for i, gt_path in enumerate(sample):
+            if stopped_early:
+                break
             truth, meta = _load_ground_truth(gt_path)
             pdf_path = gt_path.with_suffix(".pdf")
             page_paths = render_pdf_to_pngs(f"file://{pdf_path.resolve()}", Path(tmp) / f"inv_{i}")
@@ -187,6 +198,14 @@ def main() -> int:
             failed_reason = None
             try:
                 extracted, cost = extractor.extract(page_paths)
+            except anthropic.APIError as exc:
+                # The API itself refusing (credit exhausted, rate limit,
+                # network) is not an extraction failure and says nothing about
+                # accuracy. Stop, and still report on everything already paid
+                # for: a crash here used to lose the whole summary.
+                stopped_early = f"{type(exc).__name__}: {getattr(exc, 'message', exc)}"
+                print(f"  [{i+1}/{len(sample)}] STOPPED: {stopped_early}", flush=True)
+                break
             except ExtractionFailedError as exc:
                 failed_reason, cost = str(exc), exc.cost_usd
                 extracted = ExtractedInvoice(
@@ -247,7 +266,12 @@ def main() -> int:
     clean_summary = _summarize(clean_rows)
     noisy_summary = _summarize(noisy_rows)
 
+    if not per_invoice:
+        print(f"\nNo invoices completed ({stopped_early}).")
+        return 1
     print("\n=== Phase 2 extraction report ===")
+    if stopped_early:
+        print(f"PARTIAL: stopped after {len(per_invoice)} of {len(sample)} invoices ({stopped_early})")
     print(f"Clean ({len(clean_rows)}): {clean_summary}")
     print(f"Noisy ({len(noisy_rows)}): {noisy_summary}")
     print(f"Mean cost/invoice: ${mean_cost:.4f}  (threshold < ${thresholds['max_cost_per_invoice_usd']})")
@@ -280,6 +304,8 @@ def main() -> int:
         json.dumps(
             {
                 "sample_size": len(per_invoice),
+                "requested_sample_size": len(sample),
+                "stopped_early": stopped_early,
                 "clean": clean_summary,
                 "noisy": noisy_summary,
                 "mean_cost_usd": mean_cost,
@@ -296,6 +322,10 @@ def main() -> int:
         )
     )
 
+    if stopped_early:
+        # Numbers over a partial sample are reported, but a run that didn't
+        # finish can't pass the gate it was asked to measure.
+        failures.append(f"incomplete run: {len(per_invoice)} of {len(sample)} invoices ({stopped_early})")
     if failures:
         print("\nFAIL:")
         for f in failures:
