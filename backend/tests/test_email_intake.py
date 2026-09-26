@@ -408,3 +408,19 @@ def test_parse_collects_recipients_from_every_relevant_header():
     parsed = parse_email(message.as_bytes())
 
     assert parsed.recipients == ["a@example.com", "b@example.com", "c@example.com"]
+
+
+def test_an_attachment_merely_labelled_pdf_is_not_treated_as_one(db_session, inbox, tenant):
+    """PDF-ness is decided by the bytes, not the sender's filename or
+    Content-Type. A renamed file used to become an invoice row that only failed
+    later in the renderer.
+    """
+    path = _write_eml(
+        inbox, to=tenant.inbox_address, attachments=[("invoice.pdf", "pdf", b"PK\x03\x04 a renamed .docx")]
+    )
+
+    result = ingest_email_file(db_session, path, inbox)
+
+    assert result.status == "quarantined"
+    assert "no PDF attachment" in result.reason
+    assert _invoices_for(db_session, tenant) == []

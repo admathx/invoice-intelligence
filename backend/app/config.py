@@ -21,6 +21,9 @@ class Settings(BaseSettings):
 
     upload_dir: str = str(BACKEND_DIR / "uploads")
     inbox_dir: str = str(BACKEND_DIR.parent / "inbox")
+    # A multi-page scanned invoice is a few MB; 25 MB is generous headroom
+    # while still refusing to read a runaway file into API memory.
+    max_upload_bytes: int = 25 * 1024 * 1024
     # Domain half of a tenant's forwarding address (see
     # app/ingest/email_stub.py's inbox_address_for). Configurable because the
     # real deployment's inbound domain won't be this placeholder.

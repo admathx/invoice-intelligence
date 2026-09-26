@@ -53,6 +53,7 @@ function ReviewQueueInner() {
   const [error, setError] = useState<string | null>(null);
   const [startedAt] = useState(() => Date.now());
   const inputRef = useRef<HTMLInputElement>(null);
+  const latestSearch = useRef(0);
 
   useEffect(() => {
     if (!TENANT_ID) return;
@@ -86,6 +87,9 @@ function ReviewQueueInner() {
   const current = queue?.[index] ?? null;
 
   useEffect(() => {
+    // Also retires any search still in flight for the previous item, so its
+    // results can't appear under this one.
+    latestSearch.current += 1;
     setQuery("");
     setResults([]);
     setSelected(0);
@@ -94,14 +98,25 @@ function ReviewQueueInner() {
   }, [index]);
 
   async function runSearch(q: string) {
+    // Every keystroke fires a search, and responses can land out of order.
+    // Only the newest request may set `results`: a late response for "mo"
+    // replacing the one for "mozz" put Mops at the top of the list, one Enter
+    // away from correcting the line to the wrong SKU (and writing an alias
+    // and a price observation for it).
+    const requestId = ++latestSearch.current;
     setQuery(q);
     setSelected(0);
     if (!q.trim()) {
       setResults([]);
       return;
     }
-    const res = await fetch(`${API_BASE}/skus?q=${encodeURIComponent(q)}`);
-    setResults(res.ok ? await res.json() : []);
+    try {
+      const res = await fetch(`${API_BASE}/skus?q=${encodeURIComponent(q)}`);
+      const data = res.ok ? await res.json() : [];
+      if (requestId === latestSearch.current) setResults(data);
+    } catch {
+      if (requestId === latestSearch.current) setResults([]);
+    }
   }
 
   function advance() {

@@ -20,7 +20,7 @@ from app.models.sku_alias import SkuAlias
 from app.models.tenant import Tenant, account_key_column
 from app.normalize.description_expansion import description_similarity, normalize_for_embedding
 from app.normalize.embeddings import embed_text
-from app.normalize.pack_size import ParsedPackSize, PackSizeParseError, parse_pack_size
+from app.normalize.pack_size import BilledUnitMismatchError, ParsedPackSize, PackSizeParseError, billed_unit_token, parse_pack_size
 
 # Loaded from validation/thresholds.yaml rather than hardcoded literals kept
 # in sync by comment: that pattern (which originated here) lets the live
@@ -231,6 +231,19 @@ def _apply_pack_size(
     # UOM="LB") already prices per base unit, so dividing by the pack size
     # again would silently understate normalized_unit_price by that factor.
     if uom.strip().upper() != "CS":
+        # But only when the billed unit IS the pack's base unit. This used to
+        # pass any non-case line straight through, which is right for "LB"
+        # against a "4/5 LB" pack and wrong for a broken case: one 5 lb bag
+        # billed "EA" at $12.50 was recorded as $12.50/lb, five times the real
+        # $2.50/lb, and "LB" against a "6/#10 CAN" pack put a per-pound price
+        # on an ounce-denominated SKU (16x). Nothing on the line says how much
+        # base unit one EA of that pack holds, so this routes to review rather
+        # than inventing a divisor.
+        if billed_unit_token(uom) != pack.unit:
+            raise BilledUnitMismatchError(
+                f"line billed per {uom!r} but pack is denominated in {pack.unit!r}; "
+                "can't convert to a per-base-unit price without guessing"
+            )
         return quantity, unit_price.quantize(Decimal("0.0001"))
     normalized_qty_base = quantity * pack.base_units_per_case
     normalized_unit_price = (unit_price / pack.base_units_per_case).quantize(Decimal("0.0001"))
@@ -310,7 +323,15 @@ def match_line_item(
             method="unparseable_pack_size",
         )
 
-    qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom)
+    try:
+        qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom)
+    except BilledUnitMismatchError:
+        # The item can still be identified (the pack parsed, so the UOM band
+        # is known and the embedding search below is valid); only its price
+        # per base unit can't be. Keep the suggestion for the reviewer, but
+        # with no normalized price the line can never auto-resolve below and
+        # can never produce a price observation.
+        qty_base = price_base = None
     candidate, similarity = match_by_embedding(db, raw_description, pack.compatible_base_uoms)
     # A singleton compatible-UOM set (everything but the "oz" weight/fluid
     # ambiguity) is already unambiguous from the pack string alone; only the
@@ -319,7 +340,14 @@ def match_line_item(
         next(iter(pack.compatible_base_uoms)) if len(pack.compatible_base_uoms) == 1 else (candidate.base_uom if candidate else None)
     )
 
-    if candidate is not None and similarity is not None and similarity >= AUTO_MATCH_CONFIDENCE_THRESHOLD:
+    if (
+        candidate is not None
+        and similarity is not None
+        and similarity >= AUTO_MATCH_CONFIDENCE_THRESHOLD
+        # `auto` means "fully resolved, no human needed", which a line with no
+        # usable price isn't (same rule _exact_match_result applies).
+        and price_base is not None
+    ):
         return MatchResult(
             canonical_sku_id=candidate.id,
             match_confidence=similarity,

@@ -19,7 +19,17 @@ MAX_TOKENS = 8000
 
 
 class ExtractionFailedError(Exception):
-    """The model's output didn't validate against the schema, twice in a row (SPEC.md §5)."""
+    """The model's output didn't validate against the schema, twice in a row (SPEC.md §5).
+
+    Carries what both attempts cost. They are real, billed calls, and in
+    practice the most expensive invoices the system handles, since they are
+    the hard-to-read ones. Raising without the cost would drop exactly the
+    spend that SPEC.md's per-invoice cost gate most needs to see.
+    """
+
+    def __init__(self, message: str, cost_usd: float) -> None:
+        super().__init__(message)
+        self.cost_usd = cost_usd
 
 
 def _image_block(page_path: Path) -> dict[str, Any]:
@@ -100,7 +110,9 @@ class AnthropicExtractorClient:
                     messages.append({"role": "assistant", "content": text})
                     messages.append({"role": "user", "content": build_retry_prompt(str(e))})
 
-        raise ExtractionFailedError(f"extraction did not validate after retry: {last_error}") from last_error
+        raise ExtractionFailedError(
+            f"extraction did not validate after retry: {last_error}", cost_usd=total_cost
+        ) from last_error
 
 
 class FakeExtractorClient:

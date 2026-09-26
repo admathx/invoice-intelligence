@@ -49,7 +49,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import yaml
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -157,9 +157,35 @@ def upsert_creep_alerts(db: Session, tenant_id: uuid.UUID) -> list[PriceAlert]:
     both observe "no open alert yet" and both insert one, producing two open
     creep alerts for the same SKU that only one of them would ever update
     again — a code-review finding on Phase 5.
+
+    Also resolves any open creep alert whose SKU no longer shows creep. This
+    function used to only ever add or update, so an alert outlived its cause
+    indefinitely: a distributor rolling a price back, a reviewer reopening the
+    line whose misread price triggered the alert, or a reseed replacing the
+    data underneath it all left the alert open on the Insights page, spectrum
+    and all, with no path to clear it. reopen_line_item calls this precisely
+    to recompute alerts after deleting a disputed observation, and for the
+    alert that observation caused, that recompute did nothing.
     """
     findings = detect_price_creep(db, tenant_id)
+
+    # Resolved rather than deleted: the alert was true when raised, and a
+    # dismissed-by-the-data history is worth keeping. Only `open` alerts are
+    # touched; anything a person already acknowledged or dismissed is theirs.
+    still_creeping = [finding.canonical_sku_id for finding in findings]
+    db.execute(
+        update(PriceAlert)
+        .where(
+            PriceAlert.tenant_id == tenant_id,
+            PriceAlert.alert_type == AlertType.creep,
+            PriceAlert.status == AlertStatus.open,
+            PriceAlert.canonical_sku_id.not_in(still_creeping),
+        )
+        .values(status=AlertStatus.resolved)
+    )
+
     if not findings:
+        db.commit()
         return []
 
     values = [

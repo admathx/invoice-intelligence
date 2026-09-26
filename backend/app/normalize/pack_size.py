@@ -57,6 +57,22 @@ class PackSizeParseError(ValueError):
     """
 
 
+class BilledUnitMismatchError(PackSizeParseError):
+    """The line is billed in a unit the pack size can't convert to its base unit.
+
+    A subclass of PackSizeParseError on purpose: every caller already routes
+    that to review instead of guessing, which is exactly the right handling
+    here too. The pack string parsed fine; what can't be trusted is the price
+    per base unit.
+    """
+
+
+def billed_unit_token(uom: str) -> str | None:
+    """The physical unit a line's billing UOM names, or None if it names none
+    (a container such as BG, BX or PK, whose size the invoice doesn't state)."""
+    return _UNIT_TO_TOKEN.get(uom.strip().upper())
+
+
 @dataclass(frozen=True)
 class ParsedPackSize:
     unit: str  # "lb" | "oz" | "gal" | "dz" | "ea"

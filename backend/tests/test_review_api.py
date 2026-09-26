@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy import delete
 
 from app.db import SessionLocal, bind_tenant
-from app.extract.client import FakeExtractorClient
+from app.extract.client import FAKE_PAYLOAD, ExtractionFailedError, FakeExtractorClient
 from app.main import app
 from app.models import (
     CanonicalSku,
@@ -154,6 +154,66 @@ def _auto_matched_line(db, tenant, distributor, sku) -> InvoiceLineItem:
     return line
 
 
+def _pin_fake_line_to_auto(db_session, tenant) -> None:
+    """Pin the fake extractor's mozzarella line to the auto tier deterministically.
+
+    A tenant-owned alias makes match_line_item short-circuit with confidence
+    1.0 / review_status=auto, rather than depending on where the embedding
+    matcher happens to score the fake extractor's canned descriptions. Owned
+    by this tenant rather than left NULL: a NULL alias is the system-curated
+    tier, trusted everywhere without a second confirmation; attributing it
+    exercises the path a real correction takes (match_by_alias rule 1).
+    """
+    sysco = db_session.scalar(select(Distributor).where(Distributor.slug == "sysco"))
+    sku = db_session.scalar(select(CanonicalSku).where(CanonicalSku.name == "Mozzarella Shredded Whole Milk"))
+    assert sysco is not None and sku is not None, "catalog/distributors not seeded — run `make seed`"
+    db_session.add(
+        SkuAlias(
+            id=uuid.uuid4(),
+            tenant_id=tenant.id,
+            canonical_sku_id=sku.id,
+            distributor_id=sysco.id,
+            raw_description="MOZZ SHRD WHL MLK 4/5 LB",
+            raw_sku="4001122",
+            pack_size="4/5 LB",
+        )
+    )
+    db_session.commit()
+
+
+def _upload(tenant) -> uuid.UUID:
+    resp = TestClient(app).post(
+        f"/invoices?tenant_id={tenant.id}",
+        files={"file": ("test.pdf", _make_test_pdf(), "application/pdf")},
+    )
+    assert resp.status_code == 201, resp.text
+    return uuid.UUID(resp.json()["id"])
+
+
+def _line_ids(db_session, invoice_id) -> list[uuid.UUID]:
+    return list(db_session.scalars(select(InvoiceLineItem.id).where(InvoiceLineItem.invoice_id == invoice_id)))
+
+
+def _observations_for(db_session, invoice_id) -> list[PriceObservation]:
+    return list(
+        db_session.scalars(
+            select(PriceObservation).where(PriceObservation.invoice_line_item_id.in_(_line_ids(db_session, invoice_id)))
+        )
+    )
+
+
+class _FixedExtractor:
+    """Returns a given payload, or raises a given error, like the real client."""
+
+    def __init__(self, payload=None, error: Exception | None = None) -> None:
+        self.payload, self.error = payload, error
+
+    def extract(self, page_image_paths):
+        if self.error is not None:
+            raise self.error
+        return self.payload, 0.0
+
+
 def test_worker_writes_price_observations_for_auto_matched_lines(db_session, tenant, monkeypatch):
     """The whole analytics stack reads exclusively from price_observations —
     if the live pipeline doesn't write them, real invoices never show up in
@@ -162,37 +222,8 @@ def test_worker_writes_price_observations_for_auto_matched_lines(db_session, ten
     monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
     monkeypatch.setattr("app.workers.tasks.extractor", FakeExtractorClient())
 
-    # Pin one line to the auto tier deterministically: a confirmed alias makes
-    # match_line_item short-circuit with confidence 1.0 / review_status=auto,
-    # rather than depending on where the embedding matcher happens to score
-    # the fake extractor's canned descriptions.
-    sysco = db_session.scalar(select(Distributor).where(Distributor.slug == "sysco"))
-    sku = db_session.scalar(select(CanonicalSku).where(CanonicalSku.name == "Mozzarella Shredded Whole Milk"))
-    assert sysco is not None and sku is not None, "catalog/distributors not seeded — run `make seed`"
-    alias = SkuAlias(
-        id=uuid.uuid4(),
-        # Owned by this tenant rather than left NULL: a NULL alias is the
-        # system-curated tier, which is trusted everywhere without a second
-        # confirmation. Attributing it keeps the pin explicit and exercises
-        # the path a real correction takes (matcher.match_by_alias rule 1).
-        tenant_id=tenant.id,
-        canonical_sku_id=sku.id,
-        distributor_id=sysco.id,
-        raw_description="MOZZ SHRD WHL MLK 4/5 LB",
-        raw_sku="4001122",
-        pack_size="4/5 LB",
-    )
-    db_session.add(alias)
-    db_session.commit()
-    db_session.info["_created"]["aliases"].append(alias.id)
-
-    client = TestClient(app)
-    resp = client.post(
-        f"/invoices?tenant_id={tenant.id}",
-        files={"file": ("test.pdf", _make_test_pdf(), "application/pdf")},
-    )
-    assert resp.status_code == 201, resp.text
-    invoice_id = uuid.UUID(resp.json()["id"])
+    _pin_fake_line_to_auto(db_session, tenant)
+    invoice_id = _upload(tenant)
 
     process_invoice(str(invoice_id))
 
@@ -276,3 +307,155 @@ def test_endpoints_404_on_an_unknown_tenant():
     ]:
         resp = client.get(path, params=params)
         assert resp.status_code == 404, f"{path} returned {resp.status_code}, expected 404"
+
+
+# --- worker: what may feed analytics, and retry safety ---------------------
+
+
+def test_an_invoice_that_fails_arithmetic_writes_no_price_observations(db_session, tenant, monkeypatch):
+    """A misread price must not reach benchmarks just because the line's
+    identity was certain. The mozzarella line still auto-matches through the
+    alias, but its extended price no longer equals qty x unit price, so the
+    invoice lands in needs_review — and used to write the observation anyway,
+    because observations were written before the arithmetic check ran.
+    """
+    misread = FAKE_PAYLOAD.model_copy(deep=True)
+    misread.line_items[0].unit_price = "74.50"  # 47.50 read as 74.50; extended still 95.00
+    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.workers.tasks.extractor", _FixedExtractor(misread))
+    _pin_fake_line_to_auto(db_session, tenant)
+    invoice_id = _upload(tenant)
+
+    process_invoice(str(invoice_id))
+
+    db_session.expire_all()
+    assert db_session.get(Invoice, invoice_id).status == InvoiceStatus.needs_review
+    auto_lines = db_session.scalars(
+        select(InvoiceLineItem).where(
+            InvoiceLineItem.invoice_id == invoice_id, InvoiceLineItem.review_status == ReviewStatus.auto
+        )
+    ).all()
+    assert auto_lines, "the alias should still identify the line — identity isn't what's in doubt"
+    assert _observations_for(db_session, invoice_id) == []
+
+
+def test_confirming_a_line_on_an_unverified_invoice_writes_no_observation(db_session, tenant, distributor, canonical_sku):
+    """The review queue's half of the same gap: confirming the SKU is a
+    statement about identity, not about whether the price was read right.
+    """
+    line = _auto_matched_line(db_session, tenant, distributor, canonical_sku)
+    line.review_status = ReviewStatus.pending
+    db_session.get(Invoice, line.invoice_id).status = InvoiceStatus.needs_review
+    db_session.commit()
+
+    resp = TestClient(app).post(f"/review/{line.id}/confirm", params={"tenant_id": str(tenant.id)})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["wrote_price_observation"] is False
+
+
+def test_rerunning_the_job_does_not_duplicate_line_items(db_session, tenant, monkeypatch):
+    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.workers.tasks.extractor", FakeExtractorClient())
+    invoice_id = _upload(tenant)
+
+    process_invoice(str(invoice_id))
+    first = len(_line_ids(db_session, invoice_id))
+    # The same id enqueued twice: a completed invoice is left alone.
+    process_invoice(str(invoice_id))
+    assert len(_line_ids(db_session, invoice_id)) == first
+
+    # A retry after a failure: whatever the earlier attempt left is replaced.
+    db_session.expire_all()
+    db_session.get(Invoice, invoice_id).status = InvoiceStatus.failed
+    db_session.commit()
+    process_invoice(str(invoice_id))
+    assert len(_line_ids(db_session, invoice_id)) == first
+
+
+def test_an_alert_refresh_failure_does_not_fail_a_committed_invoice(db_session, tenant, monkeypatch):
+    """The invoice is durably committed before alerts are refreshed. A failure
+    in that derived step used to flip it to `failed` while its observations
+    kept feeding analytics.
+    """
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("transient database error")
+
+    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.workers.tasks.extractor", FakeExtractorClient())
+    monkeypatch.setattr("app.workers.tasks.upsert_creep_alerts", _boom)
+    _pin_fake_line_to_auto(db_session, tenant)
+    invoice_id = _upload(tenant)
+
+    process_invoice(str(invoice_id))  # must not raise
+
+    db_session.expire_all()
+    assert db_session.get(Invoice, invoice_id).status == InvoiceStatus.extracted
+    assert _observations_for(db_session, invoice_id), "the committed observations stand"
+
+
+def test_a_failed_extraction_still_records_what_it_cost(db_session, tenant, monkeypatch):
+    """Both attempts were billed. Dropping the cost undercounts exactly the
+    hard invoices SPEC.md's per-invoice cost gate most needs to see.
+    """
+    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "app.workers.tasks.extractor",
+        _FixedExtractor(error=ExtractionFailedError("did not validate", cost_usd=0.0731)),
+    )
+    invoice_id = _upload(tenant)
+
+    with pytest.raises(ExtractionFailedError):
+        process_invoice(str(invoice_id))
+
+    db_session.expire_all()
+    invoice = db_session.get(Invoice, invoice_id)
+    assert invoice.status == InvoiceStatus.failed
+    assert invoice.extraction_cost_usd == Decimal("0.0731")
+
+
+# --- reopen, and upload validation -----------------------------------------
+
+
+def test_reopen_removes_the_disputed_alias_too(db_session, tenant, distributor, canonical_sku):
+    """Otherwise the tenant's own alias re-applies the disputed mapping at
+    confidence 1.0 on the very next invoice.
+    """
+    line = _auto_matched_line(db_session, tenant, distributor, canonical_sku)
+    db_session.add(
+        SkuAlias(
+            id=uuid.uuid4(),
+            tenant_id=tenant.id,
+            canonical_sku_id=canonical_sku.id,
+            distributor_id=distributor.id,
+            raw_description=line.raw_description,
+            raw_sku=line.raw_sku,
+        )
+    )
+    db_session.commit()
+
+    resp = TestClient(app).post(f"/review/{line.id}/reopen", params={"tenant_id": str(tenant.id)})
+
+    assert resp.status_code == 200, resp.text
+    db_session.expire_all()
+    remaining = db_session.scalars(
+        select(SkuAlias).where(SkuAlias.tenant_id == tenant.id, SkuAlias.raw_sku == line.raw_sku)
+    ).all()
+    assert remaining == []
+
+
+def test_upload_rejects_a_file_that_is_not_a_pdf(tenant):
+    resp = TestClient(app).post(
+        f"/invoices?tenant_id={tenant.id}",
+        files={"file": ("invoice.pdf", b"PK\x03\x04 this is a renamed docx", "application/pdf")},
+    )
+    assert resp.status_code == 415, resp.text
+
+
+def test_upload_rejects_an_oversized_file_before_writing_it(tenant, monkeypatch):
+    monkeypatch.setattr("app.api.invoices.settings.max_upload_bytes", 1024)
+    resp = TestClient(app).post(
+        f"/invoices?tenant_id={tenant.id}",
+        files={"file": ("big.pdf", b"%PDF-1.4" + b"0" * 4096, "application/pdf")},
+    )
+    assert resp.status_code == 413, resp.text

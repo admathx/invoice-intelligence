@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_tenant_or_404
 from app.config import settings
 from app.db import get_db_for_tenant
-from app.ingest.upload import save_uploaded_file
+from app.ingest.upload import InvalidInvoiceFileError, save_invoice_bytes, validate_invoice_bytes
 from app.models import Invoice, InvoiceLineItem
 from app.models.enums import InvoiceSource, InvoiceStatus
 from app.queue import invoice_queue as queue
@@ -24,9 +24,17 @@ def upload_invoice(
     file: UploadFile,
     db: Session = Depends(get_db_for_tenant),
 ) -> InvoiceUploadResponse:
-    # Before save_uploaded_file writes anything to disk: an unknown tenant_id
-    # would otherwise fail on the FK at flush time, after the bytes landed.
+    # Before anything is written to disk: an unknown tenant_id would otherwise
+    # fail on the FK at flush time, after the bytes landed.
     get_tenant_or_404(db, tenant_id)
+
+    # Read one byte past the limit rather than the whole stream, so an
+    # oversized upload is refused without first being pulled into memory.
+    data = file.file.read(settings.max_upload_bytes + 1)
+    try:
+        validate_invoice_bytes(data)
+    except InvalidInvoiceFileError as exc:
+        raise HTTPException(status_code=413 if exc.too_large else 415, detail=str(exc)) from exc
 
     invoice = Invoice(
         tenant_id=tenant_id,
@@ -37,7 +45,7 @@ def upload_invoice(
     db.add(invoice)
     db.flush()
 
-    invoice.original_file_uri = save_uploaded_file(invoice.id, file)
+    invoice.original_file_uri = save_invoice_bytes(invoice.id, file.filename, data)
     db.commit()
     db.refresh(invoice)
 

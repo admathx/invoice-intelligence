@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import bind_tenant
-from app.ingest.upload import save_invoice_bytes
+from app.ingest.upload import is_pdf_bytes, save_invoice_bytes
 from app.models import Invoice, Tenant
 from app.models.enums import InvoiceSource, InvoiceStatus
 from app.queue import invoice_queue
@@ -56,7 +56,11 @@ class EmailAttachment:
 
     @property
     def is_pdf(self) -> bool:
-        return self.content_type == "application/pdf" or self.filename.lower().endswith(".pdf")
+        # Decided by the bytes, not by the sender's label: a signature image or
+        # a .docx named "invoice.pdf" used to become an invoice row that only
+        # failed later in the renderer. A mislabelled attachment now counts as
+        # a non-PDF, so an email carrying only that quarantines with a reason.
+        return is_pdf_bytes(self.content)
 
 
 @dataclass

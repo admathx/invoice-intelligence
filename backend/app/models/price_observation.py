@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
-from app.models.enums import VolumeTier
+from app.models.enums import InvoiceStatus, VolumeTier
 
 if TYPE_CHECKING:
     from app.models.invoice import Invoice
@@ -75,8 +75,23 @@ def build_price_observation(
 
     Returns None when the line isn't actually resolvable to a comparable
     price yet (no canonical_sku_id, no normalized price, or the invoice
-    itself is missing a date/distributor).
+    itself is missing a date/distributor), or when the invoice's numbers
+    haven't passed arithmetic validation.
+
+    That last gate lives here, in the one factory every writer goes through,
+    rather than at each call site. SPEC.md §5 makes arithmetic the confidence
+    signal for extracted numbers, and an invoice that fails it lands in
+    needs_review precisely because its prices can't be trusted. A line on such
+    an invoice can still be confidently *identified* (an alias match, or a
+    reviewer confirming the SKU), but identity says nothing about whether the
+    price was read correctly. The worker used to write observations for
+    auto-matched lines before the arithmetic check even ran, and the review
+    queue would write one for any confirmed line regardless of its invoice,
+    so an OCR-misread $74.50 for $47.50 went straight into benchmarks and
+    creep alerts.
     """
+    if invoice.status != InvoiceStatus.extracted:
+        return None
     if line.canonical_sku_id is None or line.normalized_unit_price is None:
         return None
     if invoice.invoice_date is None or invoice.distributor_id is None:

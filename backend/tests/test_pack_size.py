@@ -145,3 +145,38 @@ def test_multiple_decimal_points_raises_cleanly():
 def test_leading_decimal_point_raises_cleanly():
     with pytest.raises(PackSizeParseError):
         parse_pack_size("4/.5 LB")
+
+
+# --- billed unit vs pack unit (matcher._apply_pack_size) -------------------
+
+from app.normalize.matcher import _apply_pack_size  # noqa: E402
+from app.normalize.pack_size import BilledUnitMismatchError  # noqa: E402
+
+
+def test_a_line_billed_in_the_packs_own_unit_passes_through():
+    qty, price = _apply_pack_size(parse_pack_size("4/5 LB"), Decimal("12"), Decimal("2.50"), "LB")
+    assert (qty, price) == (Decimal("12"), Decimal("2.5000"))
+
+
+def test_a_broken_case_billed_per_each_is_not_recorded_as_a_per_pound_price():
+    """One 5 lb bag billed "EA" at $12.50 used to be recorded as $12.50/lb —
+    five times the real $2.50/lb. Nothing on the line says how many pounds one
+    EA holds, so it must refuse rather than guess a divisor.
+    """
+    with pytest.raises(BilledUnitMismatchError):
+        _apply_pack_size(parse_pack_size("4/5 LB"), Decimal("1"), Decimal("12.50"), "EA")
+
+
+def test_a_per_pound_line_against_a_can_pack_is_refused():
+    """A per-pound price on an ounce-denominated SKU would be off by 16x."""
+    with pytest.raises(BilledUnitMismatchError):
+        _apply_pack_size(parse_pack_size("6/#10 CAN"), Decimal("1"), Decimal("3.00"), "LB")
+
+
+def test_a_mismatch_is_a_pack_size_error_so_every_caller_routes_it_to_review():
+    assert issubclass(BilledUnitMismatchError, PackSizeParseError)
+
+
+def test_case_billing_is_unchanged():
+    qty, price = _apply_pack_size(parse_pack_size("4/5 LB"), Decimal("2"), Decimal("50.00"), "CS")
+    assert (qty, price) == (Decimal("40"), Decimal("2.5000"))

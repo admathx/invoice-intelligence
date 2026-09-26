@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.analytics.price_creep import RECENT_WINDOW_SIZE, upsert_creep_alerts
 from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceAlert, PriceObservation, Tenant
@@ -136,3 +136,46 @@ def test_rerun_updates_the_existing_alert_instead_of_duplicating(db_session, ten
         )
     )
     assert len(open_alerts) == 1
+
+
+def test_an_alert_resolves_when_its_creep_is_gone(db_session, tenant, canonical_sku, distributor):
+    """Alerts used to be add-or-update only, so one outlived its cause forever.
+
+    The concrete case is reopen_line_item: it deletes the disputed
+    observations and recomputes alerts, but an alert raised by them stayed
+    open. Deleting the observations behind the creep reproduces that exactly.
+    """
+    _seed_creep(db_session, tenant, canonical_sku, distributor)
+    [alert] = upsert_creep_alerts(db_session, tenant.id)
+
+    db_session.execute(
+        delete(PriceObservation).where(
+            PriceObservation.tenant_id == tenant.id, PriceObservation.unit_price_base == Decimal("15.00")
+        )
+    )
+    db_session.commit()
+    assert upsert_creep_alerts(db_session, tenant.id) == []
+
+    db_session.refresh(alert)
+    assert alert.status == AlertStatus.resolved
+
+
+def test_resolving_leaves_alerts_a_person_already_handled_alone(db_session, tenant, canonical_sku, distributor):
+    """Only `open` alerts are the system's to resolve. An acknowledged or
+    dismissed one reflects a decision someone made and keeps its status.
+    """
+    _seed_creep(db_session, tenant, canonical_sku, distributor)
+    [alert] = upsert_creep_alerts(db_session, tenant.id)
+    alert.status = AlertStatus.dismissed
+    db_session.commit()
+
+    db_session.execute(
+        delete(PriceObservation).where(
+            PriceObservation.tenant_id == tenant.id, PriceObservation.unit_price_base == Decimal("15.00")
+        )
+    )
+    db_session.commit()
+    upsert_creep_alerts(db_session, tenant.id)
+
+    db_session.refresh(alert)
+    assert alert.status == AlertStatus.dismissed

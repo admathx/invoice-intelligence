@@ -1,21 +1,29 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.analytics.price_creep import upsert_creep_alerts
 from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS, SessionLocal, bind_tenant
-from app.extract.client import AnthropicExtractorClient, get_extractor
+from app.extract.client import AnthropicExtractorClient, ExtractionFailedError, get_extractor
 from app.extract.confidence import assess_extraction
 from app.ingest.render import render_pdf_to_pngs
-from app.models import Distributor, Invoice, InvoiceLineItem, Tenant, build_price_observation
+from app.models import Distributor, Invoice, InvoiceLineItem, PriceObservation, Tenant, build_price_observation
 from app.models.enums import InvoiceStatus, ReviewStatus
 from app.normalize.matcher import match_line_item
 
+logger = logging.getLogger(__name__)
+
 extractor = get_extractor()
+
+# Statuses that mean this job already ran to completion. A second run (an RQ
+# retry, or the same id enqueued twice) must not insert a second copy of the
+# invoice's line items.
+_ALREADY_PROCESSED = {InvoiceStatus.extracted, InvoiceStatus.needs_review, InvoiceStatus.confirmed}
 
 
 def _get_invoice_bypassing_tenant_scope(db, invoice_id: uuid.UUID) -> Invoice | None:
@@ -27,8 +35,21 @@ def _get_invoice_bypassing_tenant_scope(db, invoice_id: uuid.UUID) -> Invoice | 
     return db.get(Invoice, invoice_id, execution_options={TENANT_SCOPE_BYPASS: True})
 
 
+def _clear_prior_attempt(db, invoice_id: uuid.UUID) -> None:
+    """Remove what an earlier, interrupted run of this job may have left.
+
+    A run that failed partway (or crashed after committing) can leave line
+    items behind. Without this, retrying the job appended a second full set:
+    duplicated review-queue items, and quantities double-counted in every
+    negotiation sheet that sums them.
+    """
+    line_ids = select(InvoiceLineItem.id).where(InvoiceLineItem.invoice_id == invoice_id)
+    db.execute(delete(PriceObservation).where(PriceObservation.invoice_line_item_id.in_(line_ids)))
+    db.execute(delete(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id))
+
+
 def process_invoice(invoice_id: str) -> None:
-    """RQ job: render -> extract -> persist -> route by arithmetic confidence.
+    """RQ job: render -> extract -> assess -> persist.
 
     Uses AnthropicExtractorClient when ANTHROPIC_API_KEY is set, otherwise the
     deterministic FakeExtractorClient (see app.extract.client.get_extractor).
@@ -36,9 +57,11 @@ def process_invoice(invoice_id: str) -> None:
     db = SessionLocal()
     try:
         invoice = _get_invoice_bypassing_tenant_scope(db, uuid.UUID(invoice_id))
-        if invoice is None:
+        if invoice is None or invoice.status in _ALREADY_PROCESSED:
+            db.close()
             return
         bind_tenant(db, invoice.tenant_id)
+        _clear_prior_attempt(db, invoice.id)
 
         invoice.status = InvoiceStatus.rendering
         db.commit()
@@ -73,6 +96,15 @@ def process_invoice(invoice_id: str) -> None:
         invoice.extraction_cost_usd = Decimal(str(cost_usd))
         invoice.extracted_at = datetime.now(timezone.utc)
 
+        # SPEC.md §5: arithmetic validation is the confidence signal, not the
+        # model's own self-reported certainty. Assessed BEFORE any line is
+        # persisted, because the verdict decides whether this invoice's prices
+        # may feed analytics at all: build_price_observation refuses anything
+        # that isn't `extracted`. Doing it after (as this used to) meant
+        # auto-matched lines on an invoice with a misread price had already
+        # written observations by the time the arithmetic caught the error.
+        invoice.status = assess_extraction(extracted).status
+
         # Needed for the denormalized metro/volume_tier on any price
         # observation this invoice produces (see below).
         tenant = db.get(Tenant, invoice.tenant_id)
@@ -99,7 +131,7 @@ def process_invoice(invoice_id: str) -> None:
             # SPEC.md §6 normalization — only possible once we know which
             # distributor's alias table to check; an unrecognized distributor
             # ('other') already routes the whole invoice to needs_review via
-            # assess_extraction below, so leaving these fields unset here is
+            # assess_extraction above, so leaving these fields unset here is
             # honest, not a gap.
             if invoice.distributor_id is not None:
                 match = match_line_item(
@@ -123,36 +155,38 @@ def process_invoice(invoice_id: str) -> None:
             db.add(line_item)
 
             # SPEC.md §6's auto tier (>=0.92 confidence) means "resolved, no
-            # human needed" — so it feeds analytics immediately, exactly as
-            # seed_corpus_pipeline.py does for the synthetic corpus. Without
-            # this, the ~99% of real lines that auto-match would never
-            # produce a price_observations row at all (app/api/review.py only
-            # ever acts on lines in the `pending` review band), leaving
-            # price creep / benchmarks / negotiation sheets with no live
-            # data source.
+            # human needed", so it feeds analytics immediately, exactly as
+            # seed_corpus_pipeline.py does for the synthetic corpus. The
+            # factory returns None for an invoice that failed arithmetic.
             if line_item.review_status == ReviewStatus.auto:
                 observation = build_price_observation(line_item, invoice, tenant)
                 if observation is not None:
                     db.add(observation)
                     wrote_any_observation = True
 
-        # SPEC.md §5: arithmetic validation is the confidence signal, not the
-        # model's own self-reported certainty. Any failure routes to needs_review
-        # rather than extracted — never silently ships a wrong number.
-        assessment = assess_extraction(extracted)
-        invoice.status = assessment.status
         db.commit()
-
-        # Only after the observations above are durably committed, so
-        # detect_price_creep's fresh SELECT actually sees them.
-        if wrote_any_observation:
-            upsert_creep_alerts(db, invoice.tenant_id)
-    except Exception:
+    except Exception as exc:
         db.rollback()
         invoice = _get_invoice_bypassing_tenant_scope(db, uuid.UUID(invoice_id))
         if invoice is not None:
             invoice.status = InvoiceStatus.failed
+            if isinstance(exc, ExtractionFailedError):
+                # Both attempts were billed; record them even though nothing
+                # validated (see ExtractionFailedError).
+                invoice.extraction_cost_usd = Decimal(str(exc.cost_usd))
             db.commit()
+        db.close()
         raise
+
+    # Outside the failure handler on purpose. The invoice and its line items
+    # are durably committed above; refreshing alerts is derived work. It used
+    # to sit inside the try, so a transient error here flipped a committed,
+    # live invoice to `failed` while its observations kept feeding analytics.
+    try:
+        if wrote_any_observation:
+            upsert_creep_alerts(db, invoice.tenant_id)
+    except Exception:
+        db.rollback()
+        logger.exception("creep alert refresh failed for invoice %s; alerts will refresh on the next write", invoice_id)
     finally:
         db.close()

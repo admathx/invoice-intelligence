@@ -222,7 +222,8 @@ def reopen_line_item(
 
     Any price observation this line produced is deleted on the way out — the
     number is disputed, so it should stop feeding analytics immediately
-    rather than linger until someone re-resolves the line.
+    rather than linger until someone re-resolves the line. So is the alias the
+    line's resolution wrote (see below).
     """
     tenant = get_tenant_or_404(db, tenant_id)
     line = db.get(InvoiceLineItem, line_item_id)
@@ -232,6 +233,24 @@ def reopen_line_item(
         raise HTTPException(status_code=409, detail="line item is already pending review")
 
     db.execute(delete(PriceObservation).where(PriceObservation.invoice_line_item_id == line.id))
+
+    # And the alias this line's confirm/correct wrote, for the same reason:
+    # the mapping is what's disputed. Leaving it meant the tenant's own alias
+    # (match_by_alias rule 1) auto-matched the same code to the same wrong SKU
+    # at confidence 1.0 on the very next invoice, and it kept counting as this
+    # business's vote for that mapping toward cross-tenant promotion. Scoped
+    # to this tenant's own row: other businesses' corrections are theirs.
+    invoice = db.get(Invoice, line.invoice_id)
+    if invoice is not None and invoice.distributor_id is not None and line.canonical_sku_id is not None:
+        db.execute(
+            delete(SkuAlias).where(
+                SkuAlias.tenant_id == line.tenant_id,
+                SkuAlias.distributor_id == invoice.distributor_id,
+                SkuAlias.raw_sku == line.raw_sku,
+                SkuAlias.canonical_sku_id == line.canonical_sku_id,
+            )
+        )
+
     line.review_status = ReviewStatus.pending
     db.commit()
     db.refresh(line)

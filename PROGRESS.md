@@ -1159,3 +1159,51 @@ a stray grouping would sit in every future benchmark computation.
   Real distributor variation is probably wider; the failure mode of being too
   strict is benign (one embedding call), so erring strict was the right call,
   but this is worth re-measuring on real invoices.
+
+## Full-codebase review, all phases (8 findings, all fixed)
+
+The three most serious put wrong numbers into analytics, and all three were
+invisible to every gate: the corpus substitutes ground truth for extraction and
+bills every line by the case, so none of these paths ever ran on bad input.
+
+1. **Unverified prices fed analytics.** The worker wrote observations for
+   auto-matched lines *before* the arithmetic check, so an OCR-misread price on
+   an invoice headed for `needs_review` still reached benchmarks and creep
+   alerts. Confirming a line from such an invoice in the review queue did the
+   same. Fixed in `build_price_observation`, the one factory every writer uses:
+   it now refuses anything whose invoice isn't `extracted`, and the worker
+   assesses before it persists. Identity can be certain while the price isn't.
+2. **Creep alerts never closed.** `upsert_creep_alerts` only added or updated,
+   so an alert outlived its cause forever — including the one `reopen` was
+   meant to clear by recomputing. Open creep alerts whose SKU no longer shows
+   creep are now `resolved`; acknowledged or dismissed ones are left alone.
+3. **Broken-case billing recorded at the wrong unit.** Any non-case line was
+   assumed to be priced per base unit, so one 5 lb bag billed "EA" at $12.50
+   became $12.50/lb (5x), and "LB" against a can pack 16x. Pass-through now
+   requires the billed unit to *be* the pack's unit; otherwise the line keeps
+   its SKU suggestion but gets no price, can't auto-resolve, and can't write an
+   observation (`BilledUnitMismatchError`, a `PackSizeParseError` so every
+   caller already routes it to review).
+4. **A post-commit failure marked a live invoice `failed`,** and retries
+   duplicated line items. The alert refresh now runs outside the failure
+   handler and is non-fatal; completed invoices are skipped and a retry clears
+   what an interrupted attempt left.
+5. **Reopen kept the disputed alias,** which re-applied the wrong mapping at
+   confidence 1.0 on the next invoice. Now removed with the observation.
+6. **Review search race:** a late response for an earlier keystroke could
+   replace the results, one Enter from a wrong correction. Only the newest
+   request may set results now.
+7. **Spend on failed extractions was never recorded** — two billed calls on
+   exactly the hard invoices the cost gate most needs to see.
+   `ExtractionFailedError` carries the cost and the worker persists it.
+8. **Uploads had no size or type check.** Now refused before touching disk
+   (413 over `max_upload_bytes`, 415 if the bytes aren't a PDF). Email intake
+   decides PDF-ness from the bytes too, not the sender's label.
+
+### Gates
+- Backend **160 passed** (was 144). 16 new tests; with the source fixes stashed
+  and the tests kept, all 10 behavioural ones fail, and the pack-size file
+  can't import. The remaining new tests are guards that pass either way.
+- Seeded observations unchanged at 38,713 — the new gate doesn't touch
+  validated invoices. `creep_report` 93.9% / 0 FP, `matching_report` 0/38709.
+- Playwright 4 (exercises the changed search path), frontend 15 unit, `tsc` clean.
