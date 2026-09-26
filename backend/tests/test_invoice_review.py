@@ -498,3 +498,32 @@ def test_suggestions_never_include_another_businesss_purchases(client, db, empty
     codes = {s["raw_sku"] for s in client.get(_url(empty_invoice, tenant, "/line-item-suggestions")).json()}
 
     assert "SECRET-9" not in codes
+
+
+def test_re_attributing_an_invoice_withdraws_corrections_made_on_it_and_only_those(
+    client, db, misread_invoice, tenant, distributor
+):
+    """Corrections made on a misattributed invoice's lines were recorded as the
+    wrong distributor's item codes. They go; the same tenant's identical
+    correction from a genuine invoice of that distributor stays."""
+    invoice, lines = misread_invoice
+    sku = _sku(db, "Mozzarella")
+    from_this_invoice = SkuAlias(tenant_id=tenant.id, canonical_sku_id=sku.id, distributor_id=distributor.id,
+                                 raw_description=lines[0].raw_description, raw_sku=lines[0].raw_sku,
+                                 source_invoice_line_item_id=lines[0].id)
+    genuine = SkuAlias(tenant_id=tenant.id, canonical_sku_id=sku.id, distributor_id=distributor.id,
+                       raw_description=lines[0].raw_description, raw_sku=lines[0].raw_sku)
+    db.add_all([from_this_invoice, genuine])
+    right = Distributor(name="The Right Distributor", slug=f"invoice-review-right-{uuid.uuid4().hex[:8]}")
+    db.add(right)
+    db.commit()
+    db.info["_created"]["distributors"].append(right.id)
+
+    withdrawn_id, kept_id = from_this_invoice.id, genuine.id
+
+    resp = client.patch(_url(invoice, tenant), json={"distributor_id": str(right.id)})
+
+    assert resp.status_code == 200, resp.text
+    db.expire_all()
+    assert db.get(SkuAlias, withdrawn_id) is None
+    assert db.get(SkuAlias, kept_id) is not None

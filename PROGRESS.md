@@ -1310,3 +1310,46 @@ and creep windows in between. A new `cleanup` command runs in the suite's
   line and totals, confirm). Frontend 15 unit, `tsc` clean.
 - `creep_report` 93.9% / 0 FP, `matching_report` 0/38709.
 - Driven by hand in the browser against real purchase history.
+
+## Second full review (8 findings, all fixed)
+
+1. **The PDF check rejected valid PDFs.** It required `%PDF-` at byte 0, but
+   readers accept it anywhere in the first 1024 bytes, and real files arrive
+   with a BOM or a stray newline in front. Uploads got 415 and emails were
+   quarantined as "no PDF attachment". Now searches the first 1024 bytes.
+2. **"other" was matched and aliased as if it were a catalog.** The worker
+   stores extraction's "other" as a real row, then matched lines against it,
+   and line-queue corrections wrote aliases under it, pooling item codes from
+   every distributor that ever reached "other". Both paths now skip it, as the
+   review screen already did.
+3. **Re-attributing an invoice left corrections under the wrong distributor.**
+   Fixed at the root rather than by guessing: aliases now record the line they
+   were written from (`sku_aliases.source_invoice_line_item_id`, migration
+   `0008`, ON DELETE SET NULL). Changing an invoice's distributor withdraws
+   exactly the aliases its own lines produced, and leaves the same tenant's
+   identical correction from a genuine invoice alone — deleting by
+   (distributor, item code) would have taken both.
+4. **A retry already in flight could wipe hand-entered lines.** Moving a
+   failed invoice to `needs_review` on edit only stopped retries that started
+   after the edit. The worker now takes the invoice row `FOR UPDATE`, the same
+   lock the review endpoints take, so the status check and the clear are one
+   step. Tested with two real sessions: the worker blocks on the reviewer's
+   lock, then sees `needs_review` and leaves the lines alone.
+5. **Email skipped the upload size limit.** Both entry points now go through
+   `validate_invoice_bytes`; an oversized attachment quarantines the email
+   with a reason naming the file.
+6. **The upload form said only "Upload failed."**, discarding the API's
+   reason (not a PDF, too large). It shows the reason now.
+7. **The review screen hid which cell failed validation.** A shared, tested
+   `formatApiError` (used by the upload form, review screen and modal) names
+   the field, maps `line_items[i]` back to the line number on screen, and
+   rewords "valid decimal" as "enter a plain number, like 1234.50 (no $ or
+   commas)". Checked live: typing `1,234.50` says "line 2 unit price: ...".
+8. **Match application was duplicated** in the worker and the review screen;
+   now one `apply_match` in the matcher.
+
+### Gates
+- Backend **188 passed** (was 181). With the source fixes stashed and the
+  tests kept, all 7 new backend tests fail. Frontend **20** unit (was 15),
+  `tsc` clean, Playwright 6.
+- `creep_report` 93.9% / 0 FP, `matching_report` 0/38709.

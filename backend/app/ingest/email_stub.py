@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import bind_tenant
-from app.ingest.upload import is_pdf_bytes, save_invoice_bytes
+from app.ingest.upload import InvalidInvoiceFileError, is_pdf_bytes, save_invoice_bytes, validate_invoice_bytes
 from app.models import Invoice, Tenant
 from app.models.enums import InvoiceSource, InvoiceStatus
 from app.queue import invoice_queue
@@ -225,6 +225,17 @@ def ingest_email_file(db: Session, path: Path, inbox_dir: Path | None = None) ->
     if not pdfs:
         other = ", ".join(a.filename for a in parsed.attachments) or "none"
         return _quarantine(path, inbox_dir, f"no PDF attachment (attachments: {other}){context}")
+
+    # The same gate the upload endpoint applies, so the two entry points can't
+    # disagree about what's acceptable. Email used to skip the size limit and
+    # write a 300 MB scan to disk, invoice it, and hand it to the renderer.
+    # Quarantined as a whole, not dropped attachment by attachment: nothing in
+    # an email is silently discarded (SPEC.md §10 Phase 6).
+    for attachment in pdfs:
+        try:
+            validate_invoice_bytes(attachment.content)
+        except InvalidInvoiceFileError as exc:
+            return _quarantine(path, inbox_dir, f"attachment {attachment.filename!r} rejected: {exc}{context}")
 
     if parsed.message_id and _already_ingested(db, tenant.id, parsed.message_id):
         # Filed as processed, not quarantined: nothing is wrong with this

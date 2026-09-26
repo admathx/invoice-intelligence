@@ -3,10 +3,15 @@ from pathlib import Path
 
 from app.config import settings
 
-# Every PDF starts with this. Checking it is what makes "this is a PDF" a fact
-# about the bytes rather than about a filename or a Content-Type header, both
-# of which the sender controls.
+# The PDF header. Checking for it is what makes "this is a PDF" a fact about
+# the bytes rather than about a filename or a Content-Type header, both of
+# which the sender controls.
 PDF_MAGIC = b"%PDF-"
+# Where the header may sit. The spec puts it at byte 0, but readers (Acrobat's
+# implementation notes, pdf.js, poppler) accept it anywhere in the first 1024
+# bytes, and real files arrive with a BOM, a stray newline or a MIME remnant in
+# front of it. Requiring byte 0 rejected invoices every viewer opens.
+PDF_HEADER_WINDOW = 1024
 
 
 class InvalidInvoiceFileError(ValueError):
@@ -18,7 +23,7 @@ class InvalidInvoiceFileError(ValueError):
 
 
 def is_pdf_bytes(data: bytes) -> bool:
-    return data.startswith(PDF_MAGIC)
+    return PDF_MAGIC in data[:PDF_HEADER_WINDOW]
 
 
 def validate_invoice_bytes(data: bytes) -> None:

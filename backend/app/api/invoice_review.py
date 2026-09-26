@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.analytics.price_creep import upsert_creep_alerts
@@ -35,9 +35,18 @@ from app.config import settings
 from app.db import get_db_for_tenant
 from app.extract.confidence import check_arithmetic
 from app.models.distributor import UNRECOGNIZED_SLUG
-from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceObservation, Tenant, build_price_observation
+from app.models import (
+    CanonicalSku,
+    Distributor,
+    Invoice,
+    InvoiceLineItem,
+    PriceObservation,
+    SkuAlias,
+    Tenant,
+    build_price_observation,
+)
 from app.models.enums import InvoiceStatus, ReviewStatus
-from app.normalize.matcher import match_line_item, normalize_price
+from app.normalize.matcher import apply_match, match_line_item, normalize_price
 from app.schemas.invoices import (
     InvoiceCheckOut,
     InvoiceDetailOut,
@@ -191,12 +200,7 @@ def _match(db: Session, invoice: Invoice, line: InvoiceLineItem) -> None:
         uom=line.uom,
         tenant_id=invoice.tenant_id,
     )
-    line.canonical_sku_id = match.canonical_sku_id
-    line.match_confidence = match.match_confidence
-    line.normalized_qty_base = match.normalized_qty_base
-    line.normalized_unit_price = match.normalized_unit_price
-    line.base_uom = match.base_uom
-    line.review_status = match.review_status
+    apply_match(line, match)
 
 
 def _get_reviewable_invoice(db: Session, invoice_id: uuid.UUID, *, editing: bool) -> Invoice:
@@ -275,6 +279,16 @@ def edit_invoice(
             )
 
     if distributor_changed:
+        # Corrections reviewers made on this invoice's lines were recorded as
+        # the OLD distributor's item codes. Withdrawn by provenance (the line
+        # each was written from), not by (distributor, item code): the same
+        # tenant may have made the identical correction on a genuine invoice
+        # from that distributor, and that one is still true. Leaving these
+        # meant a later real invoice from the old distributor auto-matched
+        # the misattributed product through the tenant's own alias.
+        db.execute(
+            delete(SkuAlias).where(SkuAlias.source_invoice_line_item_id.in_(list(lines)))
+        )
         invoice.distributor_id = body.distributor_id
         # Item codes only mean something within one distributor's catalog, so
         # every match made under the old (or no) distributor is void, even a

@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { formatApiError } from "@/lib/apiError";
+
 import type { InvoiceDetail } from "./InvoiceReview";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -124,14 +126,7 @@ export default function AddLineModal({
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        const detail = data?.detail;
-        setError(
-          typeof detail === "string"
-            ? detail
-            : Array.isArray(detail)
-              ? detail.map((d: { loc: string[]; msg: string }) => `${d.loc.at(-1)}: ${d.msg}`).join("; ")
-              : "Couldn't add the line."
-        );
+        setError(formatApiError(data?.detail, "Couldn't add the line."));
         return;
       }
       onAdded(data);

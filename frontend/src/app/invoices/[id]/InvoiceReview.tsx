@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from "react";
 
+import { formatApiError } from "@/lib/apiError";
+
 import AddLineModal from "./AddLineModal";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -98,13 +100,18 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        const detail = data?.detail;
+        // A validation error points at line_items[i], a position in the list
+        // of edits just sent, not a line number. Map it back so the message
+        // names the row the person is looking at.
+        const sentLines = edits.lines;
         setError(
-          typeof detail === "string"
-            ? detail
-            : detail?.reasons
-              ? `${detail.message}: ${detail.reasons.join("; ")}`
-              : "Request failed — check the values and try again."
+          formatApiError(data?.detail, "Request failed — check the values and try again.", (loc) => {
+            const i = loc.indexOf("line_items");
+            if (i === -1 || typeof loc[i + 1] !== "number") return null;
+            const line = invoice.line_items.find((li) => li.id === sentLines[loc[i + 1] as number]?.id);
+            const field = loc[i + 2];
+            return line ? `line ${line.line_number} ${String(field ?? "").replaceAll("_", " ")}`.trim() : null;
+          })
         );
         return;
       }
@@ -128,7 +135,7 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        setError(typeof data?.detail === "string" ? data.detail : "Couldn't remove the line.");
+        setError(formatApiError(data?.detail, "Couldn't remove the line."));
         return;
       }
       setInvoice(data);

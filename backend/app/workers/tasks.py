@@ -13,8 +13,9 @@ from app.extract.client import AnthropicExtractorClient, ExtractionFailedError, 
 from app.extract.confidence import assess_extraction
 from app.ingest.render import render_pdf_to_pngs
 from app.models import Distributor, Invoice, InvoiceLineItem, PriceObservation, Tenant, build_price_observation
+from app.models.distributor import UNRECOGNIZED_SLUG
 from app.models.enums import InvoiceStatus, ReviewStatus
-from app.normalize.matcher import match_line_item
+from app.normalize.matcher import apply_match, match_line_item
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +27,13 @@ extractor = get_extractor()
 _ALREADY_PROCESSED = {InvoiceStatus.extracted, InvoiceStatus.needs_review, InvoiceStatus.confirmed}
 
 
-def _get_invoice_bypassing_tenant_scope(db, invoice_id: uuid.UUID) -> Invoice | None:
+def _get_invoice_bypassing_tenant_scope(db, invoice_id: uuid.UUID, *, lock: bool = False) -> Invoice | None:
     """The worker looks up an invoice by opaque id with no tenant known yet — the
     one legitimate case for bypassing the tenant guard (app.db.TenantScoped).
     Callers must bind_tenant(db, ...) from the result before running any other
     query against a tenant-scoped table.
     """
-    return db.get(Invoice, invoice_id, execution_options={TENANT_SCOPE_BYPASS: True})
+    return db.get(Invoice, invoice_id, execution_options={TENANT_SCOPE_BYPASS: True}, with_for_update=lock)
 
 
 def _clear_prior_attempt(db, invoice_id: uuid.UUID) -> None:
@@ -56,7 +57,15 @@ def process_invoice(invoice_id: str) -> None:
     """
     db = SessionLocal()
     try:
-        invoice = _get_invoice_bypassing_tenant_scope(db, uuid.UUID(invoice_id))
+        # Locked from here until the `rendering` commit below, which makes the
+        # status check and the clear one step. The invoice review endpoints
+        # lock the same row, so a person editing a failed invoice and a retry
+        # of its extraction job can no longer interleave: either the edit lands
+        # first (status becomes needs_review, which this skips) or the job does
+        # (status becomes rendering, which the review screen refuses). Without
+        # it, a retry that had already read `failed` went on to clear lines
+        # someone had typed in by hand in the meantime.
+        invoice = _get_invoice_bypassing_tenant_scope(db, uuid.UUID(invoice_id), lock=True)
         if invoice is None or invoice.status in _ALREADY_PROCESSED:
             db.close()
             return
@@ -129,11 +138,15 @@ def process_invoice(invoice_id: str) -> None:
             )
 
             # SPEC.md §6 normalization — only possible once we know which
-            # distributor's alias table to check; an unrecognized distributor
-            # ('other') already routes the whole invoice to needs_review via
-            # assess_extraction above, so leaving these fields unset here is
-            # honest, not a gap.
-            if invoice.distributor_id is not None:
+            # distributor's catalog the item codes belong to. Extraction's
+            # 'other' is stored as a real row but is not a catalog: matching
+            # against it pooled item codes from every distributor that ever
+            # reached 'other' into one alias namespace, so a Sysco code
+            # corrected on one unattributed invoice auto-matched a different
+            # US Foods product with the same code on the next. The invoice is
+            # already held (assess_extraction flags 'other'), and choosing the
+            # real distributor on the review screen re-matches every line.
+            if distributor is not None and distributor.slug != UNRECOGNIZED_SLUG:
                 match = match_line_item(
                     db,
                     distributor_id=invoice.distributor_id,
@@ -145,12 +158,7 @@ def process_invoice(invoice_id: str) -> None:
                     uom=line.uom,
                     tenant_id=invoice.tenant_id,
                 )
-                line_item.canonical_sku_id = match.canonical_sku_id
-                line_item.match_confidence = match.match_confidence
-                line_item.normalized_qty_base = match.normalized_qty_base
-                line_item.normalized_unit_price = match.normalized_unit_price
-                line_item.base_uom = match.base_uom
-                line_item.review_status = match.review_status
+                apply_match(line_item, match)
 
             db.add(line_item)
 

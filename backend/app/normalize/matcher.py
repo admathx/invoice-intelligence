@@ -250,6 +250,20 @@ def _apply_pack_size(
     return normalized_qty_base, normalized_unit_price
 
 
+def apply_match(line, match: MatchResult) -> None:
+    """Copy a MatchResult onto an InvoiceLineItem. The one place that knows
+    which line fields a match decides, shared by the worker and the invoice
+    review screen so a field added to MatchResult can't reach one and not the
+    other (which would make hand-entered lines quietly differ from extracted
+    ones in exactly that field)."""
+    line.canonical_sku_id = match.canonical_sku_id
+    line.match_confidence = match.match_confidence
+    line.normalized_qty_base = match.normalized_qty_base
+    line.normalized_unit_price = match.normalized_unit_price
+    line.base_uom = match.base_uom
+    line.review_status = match.review_status
+
+
 def normalize_price(
     raw_pack_size: str | None, quantity: Decimal, unit_price: Decimal, uom: str
 ) -> tuple[Decimal | None, Decimal | None]:

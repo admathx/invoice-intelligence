@@ -459,3 +459,83 @@ def test_upload_rejects_an_oversized_file_before_writing_it(tenant, monkeypatch)
         files={"file": ("big.pdf", b"%PDF-1.4" + b"0" * 4096, "application/pdf")},
     )
     assert resp.status_code == 413, resp.text
+
+
+def test_upload_accepts_a_pdf_whose_header_isnt_at_byte_zero(tenant, monkeypatch):
+    """Readers accept the header anywhere in the first 1024 bytes, and real
+    files arrive with a BOM or a stray newline in front of it."""
+    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    resp = TestClient(app).post(
+        f"/invoices?tenant_id={tenant.id}",
+        files={"file": ("invoice.pdf", b"\xef\xbb\xbf\r\n" + _make_test_pdf(), "application/pdf")},
+    )
+    assert resp.status_code == 201, resp.text
+
+
+def test_the_worker_does_not_match_lines_against_the_other_pseudo_distributor(db_session, tenant, monkeypatch):
+    """'other' is extraction's "couldn't tell", not a catalog. Matching against
+    it pooled item codes from every distributor that ever landed there."""
+    other = db_session.scalar(select(Distributor).where(Distributor.slug == "other"))
+    sku = db_session.scalar(select(CanonicalSku).where(CanonicalSku.name == "Mozzarella Shredded Whole Milk"))
+    assert other is not None and sku is not None, "seed data missing — run `make seed`"
+    # A correction pooled under 'other' from some earlier unattributed invoice.
+    db_session.add(SkuAlias(tenant_id=tenant.id, canonical_sku_id=sku.id, distributor_id=other.id,
+                            raw_description="MOZZ SHRD WHL MLK 4/5 LB", raw_sku="4001122"))
+    db_session.commit()
+    unattributed = FAKE_PAYLOAD.model_copy(update={"distributor": "other"})
+    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.workers.tasks.extractor", _FixedExtractor(unattributed))
+    invoice_id = _upload(tenant)
+
+    process_invoice(str(invoice_id))
+
+    db_session.expire_all()
+    lines = db_session.scalars(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id)).all()
+    assert db_session.get(Invoice, invoice_id).status == InvoiceStatus.needs_review
+    assert lines and all(line.canonical_sku_id is None for line in lines)
+    assert all(line.review_status == ReviewStatus.pending for line in lines)
+
+
+def test_a_correction_on_an_unattributed_invoice_writes_no_alias(db_session, tenant, canonical_sku):
+    other = db_session.scalar(select(Distributor).where(Distributor.slug == "other"))
+    line = _auto_matched_line(db_session, tenant, other, canonical_sku)
+    line.review_status = ReviewStatus.pending
+    db_session.commit()
+
+    resp = TestClient(app).post(
+        f"/review/{line.id}/correct",
+        params={"tenant_id": str(tenant.id)},
+        json={"canonical_sku_id": str(canonical_sku.id)},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["wrote_alias"] is False
+
+
+def test_a_running_retry_cant_wipe_lines_typed_into_a_failed_invoice(db_session, tenant, distributor, canonical_sku):
+    """The review screen and the worker lock the same invoice row. A person
+    who takes a failed invoice under review first wins: the worker, blocked
+    on the lock until then, sees needs_review and leaves the lines alone."""
+    import threading
+
+    line = _auto_matched_line(db_session, tenant, distributor, canonical_sku)
+    invoice_id = line.invoice_id
+    db_session.get(Invoice, invoice_id).status = InvoiceStatus.failed
+    db_session.commit()
+
+    reviewer = SessionLocal()
+    bind_tenant(reviewer, tenant.id)
+    held = reviewer.get(Invoice, invoice_id, with_for_update=True)  # the edit, in progress
+    worker = threading.Thread(target=process_invoice, args=(str(invoice_id),))
+    worker.start()
+    worker.join(timeout=1.0)
+    assert worker.is_alive(), "the worker must wait for the reviewer's lock, not race past it"
+
+    held.status = InvoiceStatus.needs_review  # what _take_under_review does
+    reviewer.commit()
+    reviewer.close()
+    worker.join(timeout=10)
+
+    db_session.expire_all()
+    assert db_session.get(InvoiceLineItem, line.id) is not None
+    assert db_session.get(Invoice, invoice_id).status == InvoiceStatus.needs_review

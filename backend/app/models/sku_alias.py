@@ -37,6 +37,12 @@ class SkuAlias(Base):
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True, index=True
     )
+    # The line the correction was made on (migration 0008). Lets a correction
+    # be withdrawn precisely when the invoice it came from turns out to have
+    # been attributed to the wrong distributor — see invoice_review.edit_invoice.
+    source_invoice_line_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invoice_line_items.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     canonical_sku_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("canonical_skus.id"), nullable=False, index=True
     )

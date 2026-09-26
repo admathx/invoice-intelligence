@@ -424,3 +424,23 @@ def test_an_attachment_merely_labelled_pdf_is_not_treated_as_one(db_session, inb
     assert result.status == "quarantined"
     assert "no PDF attachment" in result.reason
     assert _invoices_for(db_session, tenant) == []
+
+
+def test_a_pdf_with_bytes_before_its_header_is_still_a_pdf(db_session, inbox, tenant):
+    path = _write_eml(
+        inbox, to=tenant.inbox_address, attachments=[("invoice.pdf", "pdf", b"\r\n" + _pdf_bytes())]
+    )
+
+    assert ingest_email_file(db_session, path, inbox).status == "ingested"
+
+
+def test_an_oversized_attachment_is_quarantined_like_an_oversized_upload(db_session, inbox, tenant, monkeypatch):
+    """Email used to skip the upload endpoint's size limit entirely."""
+    monkeypatch.setattr("app.ingest.upload.settings.max_upload_bytes", 256)
+    path = _write_eml(inbox, to=tenant.inbox_address, attachments=[("huge.pdf", "pdf", _pdf_bytes())])
+
+    result = ingest_email_file(db_session, path, inbox)
+
+    assert result.status == "quarantined"
+    assert "huge.pdf" in result.reason and "limit" in result.reason
+    assert _invoices_for(db_session, tenant) == []

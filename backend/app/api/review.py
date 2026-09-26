@@ -26,6 +26,7 @@ from app.models import (
     Tenant,
     build_price_observation,
 )
+from app.models.distributor import UNRECOGNIZED_SLUG
 from app.models.enums import ReviewStatus
 from app.normalize.matcher import _exact_match_result
 from app.schemas.review import CorrectRequest, ReviewActionResponse, ReviewQueueItem
@@ -48,12 +49,21 @@ def _get_pending_line_or_404(db: Session, line_item_id: uuid.UUID) -> InvoiceLin
 def _write_alias(db: Session, line: InvoiceLineItem, invoice: Invoice, canonical_sku_id: uuid.UUID) -> bool:
     if invoice.distributor_id is None:
         return False
+    # Extraction's 'other' is a real row but not a catalog. An alias under it
+    # would pool item codes from every distributor that ever reached 'other',
+    # so one tenant's Sysco correction would match a US Foods code next time.
+    distributor = db.get(Distributor, invoice.distributor_id)
+    if distributor is None or distributor.slug == UNRECOGNIZED_SLUG:
+        return False
     db.add(
         SkuAlias(
             id=uuid.uuid4(),
             # Who corrected it, so matcher.match_by_alias can count how many
             # independent businesses agree before trusting this everywhere.
             tenant_id=line.tenant_id,
+            # And on which line, so it can be withdrawn if that invoice turns
+            # out to belong to another distributor (invoice_review).
+            source_invoice_line_item_id=line.id,
             canonical_sku_id=canonical_sku_id,
             distributor_id=invoice.distributor_id,
             raw_description=line.raw_description,
