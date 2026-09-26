@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.analytics.price_creep import upsert_creep_alerts
@@ -35,10 +35,18 @@ from app.config import settings
 from app.db import get_db_for_tenant
 from app.extract.confidence import check_arithmetic
 from app.models.distributor import UNRECOGNIZED_SLUG
-from app.models import Distributor, Invoice, InvoiceLineItem, PriceObservation, Tenant, build_price_observation
+from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceObservation, Tenant, build_price_observation
 from app.models.enums import InvoiceStatus, ReviewStatus
 from app.normalize.matcher import match_line_item, normalize_price
-from app.schemas.invoices import InvoiceCheckOut, InvoiceDetailOut, InvoiceEdit, InvoiceOut, LineItemOut
+from app.schemas.invoices import (
+    InvoiceCheckOut,
+    InvoiceDetailOut,
+    InvoiceEdit,
+    InvoiceOut,
+    LineItemCreate,
+    LineItemOut,
+    LineItemSuggestion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +74,11 @@ class InvoiceCheck:
             out.append("no line items")
         if self.failed_line_numbers:
             out.append(f"quantity x unit price doesn't equal the extended price on line(s) {self.failed_line_numbers}")
-        if not self.lines_sum_to_subtotal:
+        if self.no_line_items:
+            # With nothing to add up, "lines don't sum to the subtotal" is
+            # noise on top of the one thing to do: enter the lines.
+            pass
+        elif not self.lines_sum_to_subtotal:
             out.append("line totals don't add up to the subtotal")
         elif not self.totals_reconcile:
             # Only reported once the lines reconcile: until then the subtotal
@@ -154,13 +166,54 @@ def build_invoice_detail(db: Session, invoice: Invoice) -> InvoiceDetailOut:
     )
 
 
-def _get_reviewable_invoice(db: Session, invoice_id: uuid.UUID) -> Invoice:
+def _match(db: Session, invoice: Invoice, line: InvoiceLineItem) -> None:
+    """Run the normal matcher on a line and apply the result — the same path
+    an extracted line takes, so a hand-entered or re-attributed line gets no
+    special treatment. Without a recognized distributor there is no catalog to
+    match against; the line waits as pending until one is chosen, and choosing
+    one re-matches every line (edit_invoice)."""
+    distributor = _distributor(db, invoice)
+    if distributor is None or distributor.slug == UNRECOGNIZED_SLUG:
+        line.canonical_sku_id = line.match_confidence = line.base_uom = None
+        line.normalized_qty_base, line.normalized_unit_price = normalize_price(
+            line.raw_pack_size, line.quantity, line.unit_price, line.uom
+        )
+        line.review_status = ReviewStatus.pending
+        return
+    match = match_line_item(
+        db,
+        distributor_id=distributor.id,
+        raw_sku=line.raw_sku,
+        raw_description=line.raw_description,
+        raw_pack_size=line.raw_pack_size,
+        quantity=line.quantity,
+        unit_price=line.unit_price,
+        uom=line.uom,
+        tenant_id=invoice.tenant_id,
+    )
+    line.canonical_sku_id = match.canonical_sku_id
+    line.match_confidence = match.match_confidence
+    line.normalized_qty_base = match.normalized_qty_base
+    line.normalized_unit_price = match.normalized_unit_price
+    line.base_uom = match.base_uom
+    line.review_status = match.review_status
+
+
+def _get_reviewable_invoice(db: Session, invoice_id: uuid.UUID, *, editing: bool) -> Invoice:
+    """The invoice, locked, if a person may work on it.
+
+    Editing also accepts `failed`: extraction produced nothing usable, and
+    entering the lines by hand from the page image is the way to recover it.
+    Confirming doesn't; a failed invoice is confirmed through needs_review
+    like any other (see _take_under_review).
+    """
     # FOR UPDATE: two people confirming the same invoice at once would
     # otherwise both see needs_review and both write its observations.
     invoice = db.get(Invoice, invoice_id, with_for_update=True)
     if invoice is None:
         raise HTTPException(status_code=404, detail="invoice not found")
-    if invoice.status != InvoiceStatus.needs_review:
+    allowed = {InvoiceStatus.needs_review, InvoiceStatus.failed} if editing else {InvoiceStatus.needs_review}
+    if invoice.status not in allowed:
         raise HTTPException(
             status_code=409,
             detail=f"invoice is {invoice.status.value}; only invoices that need review can be edited or confirmed",
@@ -168,12 +221,24 @@ def _get_reviewable_invoice(db: Session, invoice_id: uuid.UUID) -> Invoice:
     return invoice
 
 
+def _take_under_review(invoice: Invoice) -> None:
+    """A failed invoice becomes needs_review the moment a person edits it.
+
+    Not just a label: the worker skips needs_review invoices, but retries
+    `failed` ones, and a retry clears whatever lines an earlier attempt left
+    before re-extracting (tasks._clear_prior_attempt). Left as `failed`, a
+    re-enqueued job would delete lines someone had just typed in by hand.
+    """
+    if invoice.status == InvoiceStatus.failed:
+        invoice.status = InvoiceStatus.needs_review
+
+
 @router.patch("/{invoice_id}", response_model=InvoiceDetailOut)
 def edit_invoice(
     invoice_id: uuid.UUID, tenant_id: uuid.UUID, body: InvoiceEdit, db: Session = Depends(get_db_for_tenant)
 ) -> InvoiceDetailOut:
     get_tenant_or_404(db, tenant_id)
-    invoice = _get_reviewable_invoice(db, invoice_id)
+    invoice = _get_reviewable_invoice(db, invoice_id, editing=True)
     lines = {line.id: line for line in _lines(db, invoice.id)}
 
     # All validation before any mutation, so a bad request changes nothing.
@@ -216,24 +281,9 @@ def edit_invoice(
         # line a person already confirmed: that confirmation was of a code
         # read against the wrong catalog.
         for line in lines.values():
-            match = match_line_item(
-                db,
-                distributor_id=invoice.distributor_id,
-                raw_sku=line.raw_sku,
-                raw_description=line.raw_description,
-                raw_pack_size=line.raw_pack_size,
-                quantity=line.quantity,
-                unit_price=line.unit_price,
-                uom=line.uom,
-                tenant_id=invoice.tenant_id,
-            )
-            line.canonical_sku_id = match.canonical_sku_id
-            line.match_confidence = match.match_confidence
-            line.normalized_qty_base = match.normalized_qty_base
-            line.normalized_unit_price = match.normalized_unit_price
-            line.base_uom = match.base_uom
-            line.review_status = match.review_status
+            _match(db, invoice, line)
 
+    _take_under_review(invoice)
     db.commit()
     return build_invoice_detail(db, invoice)
 
@@ -243,7 +293,7 @@ def confirm_invoice(
     invoice_id: uuid.UUID, tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)
 ) -> InvoiceDetailOut:
     get_tenant_or_404(db, tenant_id)
-    invoice = _get_reviewable_invoice(db, invoice_id)
+    invoice = _get_reviewable_invoice(db, invoice_id, editing=False)
     lines = _lines(db, invoice.id)
 
     check = check_stored_invoice(invoice, lines, _distributor(db, invoice))
@@ -281,3 +331,131 @@ def confirm_invoice(
             logger.exception("creep alert refresh failed after confirming invoice %s", invoice_id)
 
     return build_invoice_detail(db, invoice)
+
+
+@router.post("/{invoice_id}/line-items", response_model=InvoiceDetailOut, status_code=201)
+def add_line_item(
+    invoice_id: uuid.UUID, tenant_id: uuid.UUID, body: LineItemCreate, db: Session = Depends(get_db_for_tenant)
+) -> InvoiceDetailOut:
+    """Add a line a person read off the invoice image.
+
+    The recovery path for an invoice where extraction found nothing (it lands
+    in needs_review with "no line items", or in `failed`), and for a single
+    line extraction skipped. Matched by the ordinary matcher, so a line that
+    was picked from this tenant's past purchases resolves the same way it did
+    then, through the tenant's own alias or the same embedding match.
+    """
+    get_tenant_or_404(db, tenant_id)
+    invoice = _get_reviewable_invoice(db, invoice_id, editing=True)
+    existing = _lines(db, invoice.id)
+
+    line = InvoiceLineItem(
+        id=uuid.uuid4(),
+        tenant_id=invoice.tenant_id,
+        invoice_id=invoice.id,
+        # Appended after whatever is there. Never reuses a number: line
+        # numbers are what the check's reasons and the screen refer to.
+        line_number=max((existing_line.line_number for existing_line in existing), default=0) + 1,
+        raw_description=body.raw_description.strip(),
+        raw_sku=(body.raw_sku or "").strip() or None,
+        raw_pack_size=(body.raw_pack_size or "").strip() or None,
+        uom=body.uom.strip().upper(),
+        quantity=body.quantity,
+        unit_price=body.unit_price,
+        extended_price=body.extended_price,
+        # No extraction confidence: nothing was extracted. A person typed it.
+        extraction_confidence=None,
+    )
+    _match(db, invoice, line)
+    db.add(line)
+    _take_under_review(invoice)
+    db.commit()
+    return build_invoice_detail(db, invoice)
+
+
+@router.delete("/{invoice_id}/line-items/{line_item_id}", response_model=InvoiceDetailOut)
+def remove_line_item(
+    invoice_id: uuid.UUID, line_item_id: uuid.UUID, tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)
+) -> InvoiceDetailOut:
+    """Remove a line that isn't on the page: a mistyped manual entry, or one
+    extraction hallucinated. Only on an invoice under review, whose lines by
+    definition haven't fed analytics, so there's no observation to unwind."""
+    get_tenant_or_404(db, tenant_id)
+    invoice = _get_reviewable_invoice(db, invoice_id, editing=True)
+    line = db.get(InvoiceLineItem, line_item_id)
+    if line is None or line.invoice_id != invoice.id:
+        raise HTTPException(status_code=404, detail="line item not on this invoice")
+    db.delete(line)
+    _take_under_review(invoice)
+    db.commit()
+    return build_invoice_detail(db, invoice)
+
+
+SUGGESTION_LIMIT = 10
+
+
+@router.get("/{invoice_id}/line-item-suggestions", response_model=list[LineItemSuggestion])
+def suggest_line_items(
+    invoice_id: uuid.UUID, tenant_id: uuid.UUID, q: str = "", db: Session = Depends(get_db_for_tenant)
+) -> list[LineItemSuggestion]:
+    """Lines this tenant has bought before, to fill a hand-entered one from.
+
+    Scoped to the invoice's distributor when it's recognized, since an item
+    code means nothing outside its own catalog; across all of the tenant's
+    distributors when it isn't. Drawn only from invoices whose numbers passed
+    the check (`extracted` or `confirmed`), because the last price comes along
+    as a hint, and a hint read off a misread invoice would mislead the person
+    typing. One entry per item, its most recent purchase.
+    """
+    get_tenant_or_404(db, tenant_id)
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="invoice not found")
+
+    identity = func.coalesce(InvoiceLineItem.raw_sku, InvoiceLineItem.raw_description)
+    conditions = [
+        Invoice.status.in_([InvoiceStatus.extracted, InvoiceStatus.confirmed]),
+        Invoice.id != invoice.id,
+    ]
+    distributor = _distributor(db, invoice)
+    if distributor is not None and distributor.slug != UNRECOGNIZED_SLUG:
+        conditions.append(Invoice.distributor_id == distributor.id)
+    if q.strip():
+        pattern = f"%{q.strip()}%"
+        conditions.append(or_(InvoiceLineItem.raw_description.ilike(pattern), InvoiceLineItem.raw_sku.ilike(pattern)))
+
+    # DISTINCT ON keeps each item's most recent purchase: identity first to
+    # satisfy Postgres' ordering rule, then newest-first within it.
+    latest = (
+        select(
+            InvoiceLineItem.raw_description,
+            InvoiceLineItem.raw_sku,
+            InvoiceLineItem.raw_pack_size,
+            InvoiceLineItem.uom,
+            InvoiceLineItem.unit_price,
+            InvoiceLineItem.canonical_sku_id,
+            Invoice.invoice_date,
+        )
+        .join(Invoice, Invoice.id == InvoiceLineItem.invoice_id)
+        .where(*conditions, Invoice.invoice_date.is_not(None))
+        .distinct(identity, InvoiceLineItem.raw_pack_size, InvoiceLineItem.uom)
+        .order_by(identity, InvoiceLineItem.raw_pack_size, InvoiceLineItem.uom, Invoice.invoice_date.desc())
+    ).subquery()
+    rows = db.execute(
+        select(latest, CanonicalSku.name)
+        .outerjoin(CanonicalSku, CanonicalSku.id == latest.c.canonical_sku_id)
+        .order_by(latest.c.invoice_date.desc(), latest.c.raw_description)
+        .limit(SUGGESTION_LIMIT)
+    ).all()
+    return [
+        LineItemSuggestion(
+            raw_description=row.raw_description,
+            raw_sku=row.raw_sku,
+            raw_pack_size=row.raw_pack_size,
+            uom=row.uom,
+            canonical_sku_name=row.name,
+            last_unit_price=row.unit_price,
+            last_seen=row.invoice_date,
+        )
+        for row in rows
+    ]

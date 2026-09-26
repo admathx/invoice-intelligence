@@ -317,3 +317,184 @@ def test_other_cant_be_chosen_as_the_correction(client, db, misread_invoice, ten
     other = db.scalar(select(Distributor).where(Distributor.slug == "other"))
 
     assert client.patch(_url(invoice, tenant), json={"distributor_id": str(other.id)}).status_code == 422
+
+
+# --- entering lines by hand --------------------------------------------------
+
+
+def _invoice(db, tenant, distributor, status, *, number, day, subtotal=None, total=None) -> Invoice:
+    invoice = Invoice(
+        id=uuid.uuid4(),
+        tenant_id=tenant.id,
+        distributor_id=distributor.id if distributor else None,
+        invoice_number=number,
+        invoice_date=date(2026, 4, day),
+        subtotal=Decimal(subtotal) if subtotal else None,
+        tax=Decimal("0.00") if subtotal else None,
+        total=Decimal(total) if total else None,
+        source=InvoiceSource.upload,
+        original_file_uri="file:///dev/null",
+        status=status,
+    )
+    db.add(invoice)
+    db.commit()
+    return invoice
+
+
+def _bought(db, tenant, invoice, *, sku_code, unit, sku=None) -> None:
+    db.add(
+        InvoiceLineItem(
+            id=uuid.uuid4(),
+            tenant_id=tenant.id,
+            invoice_id=invoice.id,
+            line_number=1,
+            raw_description=f"MOZZ SHRD WHL MLK {sku_code}",
+            raw_sku=sku_code,
+            raw_pack_size="4/5 LB",
+            quantity=Decimal("1"),
+            unit_price=Decimal(unit),
+            extended_price=Decimal(unit),
+            uom="CS",
+            canonical_sku_id=sku.id if sku else None,
+            review_status=ReviewStatus.auto,
+        )
+    )
+    db.commit()
+
+
+@pytest.fixture()
+def empty_invoice(db, tenant, distributor):
+    """Extraction found no line items: the worker sends this to needs_review
+    with 'no line items', and until now nothing could add the first one."""
+    return _invoice(db, tenant, distributor, InvoiceStatus.needs_review, number="EMPTY-1", day=20)
+
+
+def _new_line(**overrides):
+    body = {
+        "raw_description": "MOZZ SHRD WHL MLK MOZ-1",
+        "raw_sku": "MOZ-1",
+        "raw_pack_size": "4/5 LB",
+        "uom": "cs",
+        "quantity": "2",
+        "unit_price": "47.50",
+        "extended_price": "95.00",
+    }
+    body.update(overrides)
+    return body
+
+
+def test_the_first_line_can_be_added_to_an_invoice_extraction_found_empty(client, db, empty_invoice, tenant, distributor):
+    sku = _sku(db, "Mozzarella")
+    # This tenant corrected MOZ-1 before, so the hand-entered line should
+    # resolve the way that purchase did, through the tenant's own alias.
+    db.add(SkuAlias(tenant_id=tenant.id, canonical_sku_id=sku.id, distributor_id=distributor.id,
+                    raw_description="MOZZ SHRD WHL MLK MOZ-1", raw_sku="MOZ-1"))
+    db.commit()
+
+    resp = client.post(_url(empty_invoice, tenant, "/line-items"), json=_new_line())
+
+    assert resp.status_code == 201, resp.text
+    [line] = resp.json()["line_items"]
+    assert line["line_number"] == 1
+    assert line["uom"] == "CS"
+    assert line["canonical_sku_id"] == str(sku.id)
+    assert Decimal(line["normalized_unit_price"]) == Decimal("2.3750")  # $47.50 per 20 lb case
+    assert line["extraction_confidence"] is None  # typed, not extracted
+    # Now the only thing missing is the totals the page prints.
+    assert not any("no line items" in r for r in resp.json()["check"]["reasons"])
+
+
+def test_hand_entered_lines_are_checked_like_extracted_ones(client, empty_invoice, tenant):
+    """Every printed number is typed in and nothing is derived, so a typo in
+    the extended price is caught rather than agreed with."""
+    resp = client.post(_url(empty_invoice, tenant, "/line-items"), json=_new_line(extended_price="59.00"))
+
+    assert resp.json()["check"]["failed_line_numbers"] == [1]
+
+
+def test_a_failed_invoice_recovered_by_hand_can_be_confirmed(client, db, tenant, distributor):
+    invoice = _invoice(db, tenant, distributor, InvoiceStatus.failed, number="FAILED-1", day=21)
+
+    added = client.post(_url(invoice, tenant, "/line-items"), json=_new_line())
+    # Editing takes it under review, which also stops a retry of the
+    # extraction job from clearing the lines just typed in.
+    assert added.json()["status"] == InvoiceStatus.needs_review.value
+
+    client.patch(_url(invoice, tenant), json={"subtotal": "95.00", "tax": "0.00", "total": "95.00"})
+    resp = client.post(_url(invoice, tenant, "/confirm"))
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == InvoiceStatus.confirmed.value
+
+
+def test_a_worker_retry_leaves_hand_entered_lines_alone(client, db, tenant, distributor):
+    from app.workers.tasks import process_invoice
+
+    invoice = _invoice(db, tenant, distributor, InvoiceStatus.failed, number="FAILED-2", day=22)
+    client.post(_url(invoice, tenant, "/line-items"), json=_new_line())
+
+    process_invoice(str(invoice.id))  # e.g. RQ retrying the original job
+
+    db.expire_all()
+    assert len(db.scalars(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice.id)).all()) == 1
+
+
+def test_lines_cant_be_added_to_an_invoice_that_already_feeds_analytics(client, db, tenant, distributor):
+    invoice = _invoice(db, tenant, distributor, InvoiceStatus.extracted, number="DONE-1", day=23)
+
+    assert client.post(_url(invoice, tenant, "/line-items"), json=_new_line()).status_code == 409
+
+
+def test_a_hand_entered_line_needs_its_printed_numbers(client, empty_invoice, tenant):
+    body = _new_line()
+    del body["extended_price"]
+    assert client.post(_url(empty_invoice, tenant, "/line-items"), json=body).status_code == 422
+    assert client.post(_url(empty_invoice, tenant, "/line-items"), json=_new_line(raw_description="")).status_code == 422
+
+
+def test_a_mistaken_line_can_be_removed(client, empty_invoice, tenant):
+    line_id = client.post(_url(empty_invoice, tenant, "/line-items"), json=_new_line()).json()["line_items"][0]["id"]
+
+    resp = client.delete(_url(empty_invoice, tenant, f"/line-items/{line_id}"))
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["line_items"] == []
+    assert client.delete(_url(empty_invoice, tenant, f"/line-items/{line_id}")).status_code == 404
+
+
+# --- suggestions from past invoices -----------------------------------------
+
+
+def test_suggestions_offer_the_tenants_past_purchases_with_the_last_trusted_price(
+    client, db, empty_invoice, tenant, distributor
+):
+    older = _invoice(db, tenant, distributor, InvoiceStatus.extracted, number="PAST-1", day=1)
+    _bought(db, tenant, older, sku_code="MOZ-1", unit="45.00")
+    newer = _invoice(db, tenant, distributor, InvoiceStatus.confirmed, number="PAST-2", day=8)
+    _bought(db, tenant, newer, sku_code="MOZ-1", unit="47.50")
+    # A later purchase whose numbers never passed the check: its price must
+    # not become the hint, because it may be the misread one.
+    misread = _invoice(db, tenant, distributor, InvoiceStatus.needs_review, number="PAST-3", day=15)
+    _bought(db, tenant, misread, sku_code="MOZ-1", unit="74.50")
+
+    [suggestion] = client.get(_url(empty_invoice, tenant, "/line-item-suggestions"), params={"q": "moz"}).json()
+
+    assert suggestion["raw_sku"] == "MOZ-1"
+    assert suggestion["raw_pack_size"] == "4/5 LB"
+    assert Decimal(suggestion["last_unit_price"]) == Decimal("47.50")
+    assert suggestion["last_seen"] == "2026-04-08"
+
+
+def test_suggestions_never_include_another_businesss_purchases(client, db, empty_invoice, tenant, distributor):
+    other = Tenant(name=f"Other Business {uuid.uuid4().hex[:8]}", metro="invoice-review-metro", volume_tier=VolumeTier.under_500k)
+    db.add(other)
+    db.commit()
+    db.info["_created"]["tenants"].append(other.id)
+    bind_tenant(db, other.id)
+    theirs = _invoice(db, other, distributor, InvoiceStatus.extracted, number="THEIRS-1", day=2)
+    _bought(db, other, theirs, sku_code="SECRET-9", unit="1.00")
+    bind_tenant(db, tenant.id)
+
+    codes = {s["raw_sku"] for s in client.get(_url(empty_invoice, tenant, "/line-item-suggestions")).json()}
+
+    assert "SECRET-9" not in codes

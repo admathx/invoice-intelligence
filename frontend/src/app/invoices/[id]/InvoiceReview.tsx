@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from "react";
 
+import AddLineModal from "./AddLineModal";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 const TENANT_ID = process.env.NEXT_PUBLIC_DEV_TENANT_ID ?? "";
 
@@ -56,7 +58,11 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const editable = invoice.status === "needs_review";
+  // `failed` is editable too: extraction produced nothing usable, and typing
+  // the lines in from the image is how it's recovered. The server moves it to
+  // needs_review on the first edit.
+  const editable = invoice.status === "needs_review" || invoice.status === "failed";
+  const [adding, setAdding] = useState(false);
   // Extraction's "other" is stored as a real distributor row but isn't in the
   // picker (it isn't a choice), so it reads as unrecognized here, same as NULL.
   const recognized = distributors.some((d) => d.id === invoice.distributor_id);
@@ -112,6 +118,28 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
     }
   }
 
+  async function removeLine(li: LineItem) {
+    if (!window.confirm(`Remove line ${li.line_number} (${li.raw_description})?`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/invoices/${invoice.id}/line-items/${li.id}?tenant_id=${TENANT_ID}`, {
+        method: "DELETE",
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setError(typeof data?.detail === "string" ? data.detail : "Couldn't remove the line.");
+        return;
+      }
+      setInvoice(data);
+      setLineDrafts(({ [li.id]: _removed, ...rest }) => rest);
+    } catch {
+      setError("Couldn't reach the server. Nothing was removed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function save() {
     const body: Record<string, unknown> = { line_items: edits.lines };
     for (const f of edits.header) body[f] = headerDrafts[f];
@@ -136,9 +164,11 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
       {editable && (
         <div className="mb-4 rounded border border-amber-200 bg-amber-50 px-4 py-3 text-sm">
           <p className="font-medium text-amber-900">
-            {invoice.check.passes
-              ? "The numbers add up now. Confirm to let this invoice's prices into your analytics."
-              : "This invoice's numbers don't add up, so its prices are being kept out of your analytics."}
+            {invoice.status === "failed"
+              ? "This invoice couldn't be read automatically, so nothing from it is in your analytics. Enter its lines from the invoice image."
+              : invoice.check.passes
+                ? "The numbers add up now. Confirm to let this invoice's prices into your analytics."
+                : "This invoice's numbers don't add up, so its prices are being kept out of your analytics."}
           </p>
           {!invoice.check.passes && (
             <>
@@ -148,7 +178,9 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
                 ))}
               </ul>
               <p className="mt-2 text-amber-800">
-                Compare the highlighted lines with the invoice image, correct what was misread, then save.
+                {invoice.line_items.length === 0
+                  ? "Add each line from the invoice image, enter its totals, then save."
+                  : "Compare the highlighted lines with the invoice image, correct what was misread, then save."}
               </p>
             </>
           )}
@@ -214,6 +246,7 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
                 <th className="py-2 pr-3 text-right">Unit price</th>
                 <th className="py-2 pr-3 text-right">Extended</th>
                 <th className="py-2 pr-3">Review</th>
+                {editable && <th className="py-2" />}
               </tr>
             </thead>
             <tbody>
@@ -262,11 +295,37 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
                       </td>
                     ))}
                     <td className="py-1.5 pr-3 text-gray-500">{li.review_status}</td>
+                    {editable && (
+                      <td className="py-1.5 text-right">
+                        <button
+                          onClick={() => void removeLine(li)}
+                          disabled={busy}
+                          aria-label={`Remove line ${li.line_number}`}
+                          className="text-xs text-gray-400 hover:text-red-700 disabled:opacity-50"
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 );
               })}
             </tbody>
           </table>
+          {invoice.line_items.length === 0 && (
+            <p className="py-4 text-sm text-gray-500">
+              No line items were detected on this invoice.{editable && " Add them from the invoice image."}
+            </p>
+          )}
+          {editable && (
+            <button
+              onClick={() => setAdding(true)}
+              disabled={busy}
+              className="mt-2 text-sm font-medium text-blue-700 hover:underline disabled:opacity-50"
+            >
+              + Add line item
+            </button>
+          )}
 
           <div className="mt-4 flex flex-wrap items-center gap-4 text-sm text-gray-700">
             {(["subtotal", "tax", "total"] as HeaderField[]).map((f) => (
@@ -310,6 +369,19 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
           {error && <p className="mt-3 text-sm text-red-700">{error}</p>}
         </div>
       </div>
+
+      {adding && (
+        <AddLineModal
+          invoiceId={invoice.id}
+          onClose={() => setAdding(false)}
+          // Keeps any unsaved edits to other lines: they're keyed by line id,
+          // which a new line doesn't disturb.
+          onAdded={(updated) => {
+            setInvoice(updated);
+            setAdding(false);
+          }}
+        />
+      )}
     </div>
   );
 }

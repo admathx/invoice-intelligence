@@ -21,6 +21,7 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
   }
   // Only a reviewable invoice offers a distributor picker, so don't fetch the
   // list for every other invoice detail view.
-  const distributors = invoice.status === "needs_review" ? await getDistributors() : [];
+  const reviewable = invoice.status === "needs_review" || invoice.status === "failed";
+  const distributors = reviewable ? await getDistributors() : [];
   return <InvoiceReview initial={invoice} distributors={distributors} />;
 }

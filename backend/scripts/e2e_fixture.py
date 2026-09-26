@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import sqlalchemy  # noqa: E402
 
+from app.analytics.price_creep import upsert_creep_alerts  # noqa: E402
 from app.db import SessionLocal, bind_tenant  # noqa: E402
 from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceObservation, SkuAlias  # noqa: E402
 from app.models.enums import InvoiceSource, InvoiceStatus, ReviewStatus  # noqa: E402
@@ -54,6 +55,21 @@ def _cleanup_prior_fixtures(db, tenant_id: uuid.UUID) -> None:
             .distinct()
         ).all()
     ]
+    # The empty-invoice fixture uses the tenant's REAL distributor (so its
+    # suggestions come from real purchase history), which the slug-based
+    # sweep below can't see. Found by its invoice number instead.
+    empty_ids = [
+        row[0]
+        for row in db.execute(
+            sqlalchemy.select(Invoice.id).where(Invoice.tenant_id == tenant_id, Invoice.invoice_number.like("E2E-EMPTY-%"))
+        ).all()
+    ]
+    if empty_ids:
+        empty_lines = sqlalchemy.select(InvoiceLineItem.id).where(InvoiceLineItem.invoice_id.in_(empty_ids))
+        db.execute(sqlalchemy.delete(PriceObservation).where(PriceObservation.invoice_line_item_id.in_(empty_lines)))
+        db.execute(sqlalchemy.delete(InvoiceLineItem).where(InvoiceLineItem.invoice_id.in_(empty_ids)))
+        db.execute(sqlalchemy.delete(Invoice).where(Invoice.id.in_(empty_ids)))
+        db.commit()
     if not prior_ids:
         return
     invoice_ids = [
@@ -260,6 +276,50 @@ def cmd_setup_needs_review(tenant_id: str) -> None:
     print(json.dumps({"invoice_id": str(invoice.id), "invoice_number": invoice.invoice_number}))
 
 
+def cmd_setup_empty_invoice(tenant_id: str) -> None:
+    """An invoice where extraction found no line items at all, from the
+    tenant's own most-used distributor, so the add-line modal's suggestions
+    are this tenant's real purchase history."""
+    db = SessionLocal()
+    bind_tenant(db, uuid.UUID(tenant_id))
+    _cleanup_prior_fixtures(db, uuid.UUID(tenant_id))
+
+    distributor_id = db.execute(
+        sqlalchemy.select(Invoice.distributor_id, sqlalchemy.func.count())
+        .where(Invoice.tenant_id == uuid.UUID(tenant_id), Invoice.distributor_id.is_not(None))
+        .group_by(Invoice.distributor_id)
+        .order_by(sqlalchemy.func.count().desc())
+        .limit(1)
+    ).scalar()
+    tag = uuid.uuid4().hex[:8]
+    invoice = Invoice(
+        id=uuid.uuid4(),
+        tenant_id=uuid.UUID(tenant_id),
+        distributor_id=distributor_id,
+        invoice_number=f"E2E-EMPTY-{tag}",
+        invoice_date=date(2026, 9, 1),
+        source=InvoiceSource.upload,
+        original_file_uri="file:///dev/null",
+        status=InvoiceStatus.needs_review,
+    )
+    db.add(invoice)
+    db.commit()
+    print(json.dumps({"invoice_id": str(invoice.id), "invoice_number": invoice.invoice_number}))
+
+
+def cmd_cleanup(tenant_id: str) -> None:
+    """Remove every fixture this script created for the tenant, and refresh
+    its creep alerts. Run after the suite, not only before the next one: the
+    fixtures confirm invoices whose lines are real catalog SKUs in the tenant's
+    real metro, so until they're gone their prices sit in real benchmark cells
+    and creep windows."""
+    db = SessionLocal()
+    bind_tenant(db, uuid.UUID(tenant_id))
+    _cleanup_prior_fixtures(db, uuid.UUID(tenant_id))
+    upsert_creep_alerts(db, uuid.UUID(tenant_id))
+    print(json.dumps({"cleaned": tenant_id}))
+
+
 def cmd_verify_alias(tenant_id: str, distributor_id: str, raw_sku: str, raw_description: str) -> None:
     """Asks the matcher what THIS tenant now gets for a (distributor, raw_sku).
 
@@ -303,6 +363,12 @@ def main() -> None:
     review_p = sub.add_parser("setup-needs-review")
     review_p.add_argument("tenant_id")
 
+    empty_p = sub.add_parser("setup-empty-invoice")
+    empty_p.add_argument("tenant_id")
+
+    cleanup_p = sub.add_parser("cleanup")
+    cleanup_p.add_argument("tenant_id")
+
     verify_p = sub.add_parser("verify-alias")
     verify_p.add_argument("tenant_id")
     verify_p.add_argument("distributor_id")
@@ -316,6 +382,10 @@ def main() -> None:
         cmd_setup_bulk(args.tenant_id, args.count)
     elif args.command == "setup-needs-review":
         cmd_setup_needs_review(args.tenant_id)
+    elif args.command == "setup-empty-invoice":
+        cmd_setup_empty_invoice(args.tenant_id)
+    elif args.command == "cleanup":
+        cmd_cleanup(args.tenant_id)
     elif args.command == "verify-alias":
         cmd_verify_alias(args.tenant_id, args.distributor_id, args.raw_sku, args.raw_description)
 

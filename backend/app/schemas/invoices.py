@@ -80,6 +80,39 @@ class LineItemEdit(BaseModel):
     extended_price: Money | None = None
 
 
+class LineItemCreate(BaseModel):
+    """A line typed in by hand from the invoice image, when extraction missed
+    it or found nothing at all. Every printed number is required: the invoice
+    is checked with the same arithmetic as extracted lines, so nothing here is
+    derived (no extended = qty x price) that the check would then trivially
+    agree with."""
+
+    raw_description: str = Field(min_length=1, max_length=500)
+    raw_sku: str | None = Field(default=None, max_length=100)
+    raw_pack_size: str | None = Field(default=None, max_length=100)
+    uom: str = Field(min_length=1, max_length=20)
+    quantity: Money
+    unit_price: Money
+    extended_price: Money
+
+
+class LineItemSuggestion(BaseModel):
+    """A line this tenant has bought before, offered while entering one by hand.
+
+    Carries the last price only as a hint for the person typing (see
+    InvoiceReview.tsx): prefilling it would let an unchanged field record
+    "no increase" and erase the very creep the product exists to catch.
+    """
+
+    raw_description: str
+    raw_sku: str | None
+    raw_pack_size: str | None
+    uom: str
+    canonical_sku_name: str | None
+    last_unit_price: Decimal
+    last_seen: date
+
+
 class InvoiceEdit(BaseModel):
     """Corrections a person makes while reading the invoice page. Only fields
     actually sent are applied; there is no way to blank a value from here."""

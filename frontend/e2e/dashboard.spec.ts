@@ -43,6 +43,12 @@ function runFixture(...args: string[]) {
 test.describe("ingest -> review -> negotiation sheet", () => {
   test.skip(!TENANT_ID, "NEXT_PUBLIC_DEV_TENANT_ID not set in frontend/.env.local");
 
+  // Fixtures confirm invoices on real catalog SKUs, so they'd otherwise sit in
+  // this tenant's real benchmarks and creep alerts until the next run.
+  test.afterAll(() => {
+    if (TENANT_ID) runFixture("cleanup", TENANT_ID);
+  });
+
   test("review queue confirms and corrects entirely by keyboard, and a correction auto-resolves the next matching line", async ({
     page,
   }) => {
@@ -167,6 +173,39 @@ test.describe("ingest -> review -> negotiation sheet", () => {
 
     await expect(page.getByText("Confirmed after review")).toBeVisible();
     await expect(page.getByText("confirmed", { exact: true })).toBeVisible();
+  });
+
+  test("lines can be entered by hand when extraction found none, starting from a past purchase", async ({ page }) => {
+    const fixture = runFixture("setup-empty-invoice", TENANT_ID) as { invoice_id: string };
+
+    await page.goto(`/invoices/${fixture.invoice_id}`);
+    await expect(page.getByText("No line items were detected")).toBeVisible();
+    await page.getByRole("button", { name: "+ Add line item" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "Add line item" });
+    await dialog.getByLabel("Search past purchases").fill("chicken");
+    await dialog.getByRole("button").filter({ hasText: /CHICKEN/ }).first().click();
+
+    // Identity comes from the past purchase; the price deliberately doesn't.
+    // A prefilled price left untouched would record "no increase" and hide
+    // exactly the creep the product exists to catch.
+    await expect(dialog.getByLabel("Description")).not.toHaveValue("");
+    await expect(dialog.getByLabel("Unit price", { exact: true })).toHaveValue("");
+    await expect(dialog.getByText(/Last paid/)).toBeVisible();
+
+    await dialog.getByLabel("Quantity").fill("1");
+    await dialog.getByLabel("Unit price", { exact: true }).fill("612.00");
+    await dialog.getByLabel("Extended price").fill("612.00");
+    await dialog.getByRole("button", { name: "Add line" }).click();
+    await expect(dialog).toBeHidden();
+
+    for (const [label, value] of [["subtotal", "612.00"], ["tax", "0.00"], ["total", "612.00"]]) {
+      await page.getByLabel(label, { exact: true }).fill(value);
+    }
+    await page.getByRole("button", { name: "Save & re-check" }).click();
+    await page.getByRole("button", { name: "Confirm invoice" }).click();
+
+    await expect(page.getByText("Confirmed after review")).toBeVisible();
   });
 });
 

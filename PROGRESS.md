@@ -1266,3 +1266,47 @@ correction.
 - `failed` invoices (no line items at all) still have no recovery path beyond
   re-uploading.
 - No audit trail of who corrected which number — worth adding with auth.
+
+## Entering line items by hand
+
+The invoice review screen could only edit lines that already existed, which
+left two dead ends: an invoice where extraction found no line items (held for
+review as "no line items", with no way to add the first one) and a `failed`
+invoice (not editable at all). Both are the "nothing was detected" case.
+
+- **"+ Add line item" opens a modal** on any invoice under review, and now on
+  `failed` ones. A type-ahead searches this tenant's own past purchases from
+  the same distributor (all of the tenant's distributors if it's
+  unrecognized), one entry per item at its most recent purchase. Picking one
+  fills description, item code, pack size and unit.
+- **Price is a hint, never prefilled** (the user's call, on my
+  recommendation): "Last paid $587.71 per CS on 2026-08-17. Type the price
+  this invoice shows, even if it's the same." A prefilled price left untouched
+  would record "no increase" and hide exactly the creep the product exists to
+  catch. The hint comes only from invoices whose numbers passed the check, so
+  it can't be a misread price. The extended price isn't computed either:
+  every printed number is typed, so the arithmetic check can catch a typo
+  rather than agree with a value derived from it.
+- **Hand-entered lines go through the ordinary matcher**, so a line picked
+  from history resolves the way that purchase did (the tenant's own alias, or
+  the same embedding match). No client-supplied "copy this match" id to trust.
+  Lines can also be removed, for a mistyped entry or one extraction invented.
+- **Editing a `failed` invoice moves it to `needs_review`.** Not cosmetic: the
+  worker retries `failed` invoices and clears leftover lines before
+  re-extracting, so a re-enqueued job would have deleted lines someone just
+  typed in. `needs_review` is one the worker leaves alone (tested).
+- With no lines yet, the check reports only "no line items" instead of also
+  "lines don't add up to the subtotal", and the guidance says to add lines.
+
+**Fixture hygiene this surfaced:** the e2e fixtures confirm invoices on real
+catalog SKUs in the tenant's real metro, and were only cleaned up at the
+*start* of the next run, so the last run's prices sat in real benchmark cells
+and creep windows in between. A new `cleanup` command runs in the suite's
+`afterAll`; zero E2E invoices remain after a run.
+
+### Gates
+- Backend **181 passed** (was 172; 9 new). Playwright **6** (new: open the
+  modal, pick a past purchase, assert the price field is empty, enter the
+  line and totals, confirm). Frontend 15 unit, `tsc` clean.
+- `creep_report` 93.9% / 0 FP, `matching_report` 0/38709.
+- Driven by hand in the browser against real purchase history.
