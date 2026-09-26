@@ -201,6 +201,65 @@ def cmd_setup_bulk(tenant_id: str, count: int) -> None:
     print(json.dumps({"distributor_id": str(distributor.id), "invoice_date": "2020-01-01", "line_ids": line_ids}))
 
 
+def cmd_setup_needs_review(tenant_id: str) -> None:
+    """An invoice the worker would have sent to needs_review: line 1's unit
+    price was misread as $74.50 when the page says $47.50, so 2 x 74.50 is not
+    the printed $95.00 extended. Exercises the invoice review screen, which
+    synthetic data never reaches on its own (it never fails arithmetic).
+    """
+    db = SessionLocal()
+    bind_tenant(db, uuid.UUID(tenant_id))
+    _cleanup_prior_fixtures(db, uuid.UUID(tenant_id))
+
+    tag = uuid.uuid4().hex[:8]
+    distributor = Distributor(id=uuid.uuid4(), name=f"E2E Review Distributor {tag}", slug=f"e2e-review-{tag}")
+    db.add(distributor)
+    mozzarella = db.scalar(sqlalchemy.select(CanonicalSku).where(CanonicalSku.name == "Mozzarella Shredded Whole Milk"))
+    avocado = db.scalar(sqlalchemy.select(CanonicalSku).where(CanonicalSku.name == "Avocado"))
+
+    invoice = Invoice(
+        id=uuid.uuid4(),
+        tenant_id=uuid.UUID(tenant_id),
+        distributor_id=distributor.id,
+        invoice_number=f"E2E-REVIEW-{tag}",
+        invoice_date=date(2020, 1, 2),
+        subtotal=Decimal("142.50"),
+        tax=Decimal("0.00"),
+        total=Decimal("142.50"),
+        source=InvoiceSource.upload,
+        original_file_uri="file:///dev/null",
+        status=InvoiceStatus.needs_review,
+    )
+    db.add(invoice)
+    for number, sku, unit, extended, normalized in (
+        (1, mozzarella, "74.50", "95.00", "3.7250"),
+        (2, avocado, "47.50", "47.50", "2.3750"),
+    ):
+        qty = Decimal("2") if number == 1 else Decimal("1")
+        db.add(
+            InvoiceLineItem(
+                id=uuid.uuid4(),
+                tenant_id=uuid.UUID(tenant_id),
+                invoice_id=invoice.id,
+                line_number=number,
+                raw_description=f"E2E REVIEW LINE {number}",
+                raw_sku=f"E2E-REVIEW-{tag}-{number}",
+                raw_pack_size="4/5 LB",
+                quantity=qty,
+                unit_price=Decimal(unit),
+                extended_price=Decimal(extended),
+                uom="CS",
+                canonical_sku_id=sku.id,
+                normalized_qty_base=qty * 20,
+                normalized_unit_price=Decimal(normalized),
+                base_uom=sku.base_uom,
+                review_status=ReviewStatus.auto,
+            )
+        )
+    db.commit()
+    print(json.dumps({"invoice_id": str(invoice.id), "invoice_number": invoice.invoice_number}))
+
+
 def cmd_verify_alias(tenant_id: str, distributor_id: str, raw_sku: str, raw_description: str) -> None:
     """Asks the matcher what THIS tenant now gets for a (distributor, raw_sku).
 
@@ -241,6 +300,9 @@ def main() -> None:
     bulk_p = sub.add_parser("setup-bulk")
     bulk_p.add_argument("tenant_id")
     bulk_p.add_argument("count", type=int)
+    review_p = sub.add_parser("setup-needs-review")
+    review_p.add_argument("tenant_id")
+
     verify_p = sub.add_parser("verify-alias")
     verify_p.add_argument("tenant_id")
     verify_p.add_argument("distributor_id")
@@ -252,6 +314,8 @@ def main() -> None:
         cmd_setup(args.tenant_id)
     elif args.command == "setup-bulk":
         cmd_setup_bulk(args.tenant_id, args.count)
+    elif args.command == "setup-needs-review":
+        cmd_setup_needs_review(args.tenant_id)
     elif args.command == "verify-alias":
         cmd_verify_alias(args.tenant_id, args.distributor_id, args.raw_sku, args.raw_description)
 

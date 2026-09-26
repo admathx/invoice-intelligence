@@ -250,6 +250,20 @@ def _apply_pack_size(
     return normalized_qty_base, normalized_unit_price
 
 
+def normalize_price(
+    raw_pack_size: str | None, quantity: Decimal, unit_price: Decimal, uom: str
+) -> tuple[Decimal | None, Decimal | None]:
+    """(qty_base, price_per_base_unit) for a line, or (None, None) when that
+    can't be computed without guessing (unparseable pack, or billed in a unit
+    the pack can't convert). For re-pricing a line whose identity is already
+    settled, e.g. after a human corrects a misread unit price.
+    """
+    try:
+        return _apply_pack_size(parse_pack_size(raw_pack_size), quantity, unit_price, uom)
+    except PackSizeParseError:
+        return None, None
+
+
 def _exact_match_result(
     db: Session,
     canonical_sku_id: uuid.UUID,

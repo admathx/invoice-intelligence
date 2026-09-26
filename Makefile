@@ -67,7 +67,7 @@ validate:
 	cd backend && $(VENV)/pytest -q tests/test_synthetic.py
 	PYTHONPATH=backend backend/$(VENV)/python -m validation.corpus_report
 	@echo "--- Phase 2 gate (pytest only — extraction-report costs real API spend, run it separately) ---"
-	cd backend && $(VENV)/pytest -q tests/test_extract.py
+	cd backend && $(VENV)/pytest -q tests/test_extract.py tests/test_invoice_review.py
 	@echo "--- Phase 3 gate ---"
 	cd backend && $(VENV)/pytest -q tests/test_pack_size.py tests/test_alias.py
 	PYTHONPATH=backend backend/$(VENV)/python -m validation.matching_report

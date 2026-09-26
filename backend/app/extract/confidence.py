@@ -50,36 +50,70 @@ def _to_decimal_or_none(value: str) -> Decimal | None:
         return None
 
 
-def assess_extraction(extracted: ExtractedInvoice) -> ExtractionAssessment:
-    failed_line_numbers: list[int] = []
-    low_confidence_line_numbers: list[int] = []
+@dataclass
+class ArithmeticCheck:
+    failed_line_numbers: list[int]
+    lines_sum_to_subtotal: bool
+    totals_reconcile: bool
 
-    for line in extracted.line_items:
-        qty = _to_decimal_or_none(line.quantity)
-        unit_price = _to_decimal_or_none(line.unit_price)
-        extended = _to_decimal_or_none(line.extended_price)
-        if qty is None or unit_price is None or extended is None:
-            failed_line_numbers.append(line.line_number)
-        elif abs(qty * unit_price - extended) > ARITHMETIC_TOLERANCE:
-            failed_line_numbers.append(line.line_number)
 
-        if line.confidence < LOW_CONFIDENCE_THRESHOLD:
-            low_confidence_line_numbers.append(line.line_number)
+# (line_number, quantity, unit_price, extended_price); None means unreadable.
+ArithmeticLine = tuple[int, Decimal | None, Decimal | None, Decimal | None]
 
-    line_extended_values = [_to_decimal_or_none(li.extended_price) for li in extracted.line_items]
-    subtotal = _to_decimal_or_none(extracted.subtotal)
-    if subtotal is not None and all(v is not None for v in line_extended_values):
-        line_sum = sum(line_extended_values, Decimal(0))
-        lines_sum_to_subtotal = abs(line_sum - subtotal) <= ARITHMETIC_TOLERANCE
+
+def check_arithmetic(
+    lines: list[ArithmeticLine], subtotal: Decimal | None, tax: Decimal | None, total: Decimal | None
+) -> ArithmeticCheck:
+    """The arithmetic rules themselves, over numbers from any source.
+
+    Split out of assess_extraction so the invoice review screen re-checks a
+    human's corrections against exactly the rules that flagged the invoice in
+    the first place (app/api/invoice_review.py). Two implementations of "does
+    this invoice add up" would eventually disagree about some invoice, and
+    then an invoice could be confirmed that the worker would have rejected.
+    """
+    failed_line_numbers = [
+        line_number
+        for line_number, qty, unit_price, extended in lines
+        if qty is None or unit_price is None or extended is None
+        or abs(qty * unit_price - extended) > ARITHMETIC_TOLERANCE
+    ]
+
+    extended_values = [extended for _, _, _, extended in lines]
+    if subtotal is not None and all(v is not None for v in extended_values):
+        lines_sum_to_subtotal = abs(sum(extended_values, Decimal(0)) - subtotal) <= ARITHMETIC_TOLERANCE
     else:
         lines_sum_to_subtotal = False
 
-    tax = _to_decimal_or_none(extracted.tax)
-    total = _to_decimal_or_none(extracted.total)
     if lines_sum_to_subtotal and tax is not None and total is not None:
         totals_reconcile = abs(subtotal + tax - total) <= ARITHMETIC_TOLERANCE
     else:
         totals_reconcile = False
+
+    return ArithmeticCheck(failed_line_numbers, lines_sum_to_subtotal, totals_reconcile)
+
+
+def assess_extraction(extracted: ExtractedInvoice) -> ExtractionAssessment:
+    arithmetic = check_arithmetic(
+        [
+            (
+                line.line_number,
+                _to_decimal_or_none(line.quantity),
+                _to_decimal_or_none(line.unit_price),
+                _to_decimal_or_none(line.extended_price),
+            )
+            for line in extracted.line_items
+        ],
+        _to_decimal_or_none(extracted.subtotal),
+        _to_decimal_or_none(extracted.tax),
+        _to_decimal_or_none(extracted.total),
+    )
+    failed_line_numbers = arithmetic.failed_line_numbers
+    lines_sum_to_subtotal = arithmetic.lines_sum_to_subtotal
+    totals_reconcile = arithmetic.totals_reconcile
+    low_confidence_line_numbers = [
+        line.line_number for line in extracted.line_items if line.confidence < LOW_CONFIDENCE_THRESHOLD
+    ]
 
     distributor_is_other = extracted.distributor == "other"
 

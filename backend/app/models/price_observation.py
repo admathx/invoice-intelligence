@@ -76,7 +76,8 @@ def build_price_observation(
     Returns None when the line isn't actually resolvable to a comparable
     price yet (no canonical_sku_id, no normalized price, or the invoice
     itself is missing a date/distributor), or when the invoice's numbers
-    haven't passed arithmetic validation.
+    haven't passed arithmetic validation (by the worker, or by a person on the
+    invoice review screen).
 
     That last gate lives here, in the one factory every writer goes through,
     rather than at each call site. SPEC.md §5 makes arithmetic the confidence
@@ -90,7 +91,10 @@ def build_price_observation(
     so an OCR-misread $74.50 for $47.50 went straight into benchmarks and
     creep alerts.
     """
-    if invoice.status != InvoiceStatus.extracted:
+    # `confirmed` is the other trustworthy state: an invoice that failed the
+    # check and whose numbers a person then corrected until they reconciled
+    # (app/api/invoice_review.py).
+    if invoice.status not in (InvoiceStatus.extracted, InvoiceStatus.confirmed):
         return None
     if line.canonical_sku_id is None or line.normalized_unit_price is None:
         return None

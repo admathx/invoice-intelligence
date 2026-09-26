@@ -1207,3 +1207,62 @@ bills every line by the case, so none of these paths ever ran on bad input.
 - Seeded observations unchanged at 38,713 — the new gate doesn't touch
   validated invoices. `creep_report` 93.9% / 0 FP, `matching_report` 0/38709.
 - Playwright 4 (exercises the changed search path), frontend 15 unit, `tsc` clean.
+
+## Invoice review screen — the way back out of `needs_review`
+
+The previous fix (unverified prices no longer feed analytics) left a dead end
+behind it: an invoice whose numbers failed the arithmetic check could never
+feed analytics again. The line-level review queue settles *which SKU* a line
+is, not whether its numbers were read correctly, and `InvoiceStatus.confirmed`
+existed in the schema with nothing ever setting it. Invisible in dev (527
+`extracted`, 0 `needs_review`, because synthetic data never fails arithmetic),
+but every real invoice with one OCR error would have silently dropped out of
+every benchmark, alert and negotiation sheet.
+
+- **Same rules, one implementation.** The arithmetic core moved out of
+  `assess_extraction` into `check_arithmetic`, which the worker and the review
+  screen both call. Two versions of "does this add up" would eventually
+  disagree, and then an invoice could be confirmed that the worker rejected.
+  The stored check deliberately drops the extractor's self-reported per-line
+  confidence: a person reading the page is what replaces that.
+- **`PATCH /invoices/{id}`** corrects header and line numbers, date and
+  distributor. Re-pricing a line re-derives its price per base unit from the
+  corrected number (`normalize_price`); the match stands, since identity
+  doesn't depend on price. Changing the distributor re-matches every line —
+  item codes only mean something within one catalog, so even a line someone
+  already confirmed was confirmed against the wrong one. All validation runs
+  before any mutation; values are bounded to the columns' `Numeric(12,4)`.
+- **`POST /invoices/{id}/confirm`** requires the check to pass, sets
+  `confirmed` (which `build_price_observation` now accepts alongside
+  `extracted`), and writes the observations its settled lines would have
+  written. Pending lines get theirs when the line queue resolves them. Row
+  lock against double-confirm; the alert refresh is non-fatal.
+- **Only `needs_review` invoices are editable.** An `extracted` invoice's
+  numbers already feed analytics; rewriting them in place would silently move
+  benchmarks other tenants read.
+- **The screen:** the detail page shows why the invoice was held, highlights
+  the failing lines, and makes the numbers editable. Confirm stays disabled
+  while there are unsaved edits, because the check on screen is of the saved
+  numbers. The invoice list gets status badges and a banner naming the
+  invoices being held out of analytics. Money stays a string end to end; the
+  browser never does arithmetic on it.
+
+**A bug I caught in my own first version:** the worker stores extraction's
+"other" as a real distributor row, not NULL, so checking `distributor_id is
+None` would have let an invoice nobody could attribute be confirmed. "other"
+now counts as unrecognized, isn't offered in the picker, and is refused as a
+correction.
+
+### Gates
+- Backend **172 passed** (was 160; 12 new review tests). Playwright **5**
+  (new: correct a misread price in the UI, save, confirm).
+- Verified by hand in the browser: a misread $74.50 corrected to $47.50 wrote
+  its observation at $2.3750/lb, not the $3.7250 the misread would have given.
+- `creep_report` 93.9% / 0 FP, `matching_report` 0/38709, 15 frontend unit.
+- 108 more debris distributors from pre-conftest test runs removed from the
+  dev DB; they were cluttering the new distributor picker.
+
+### Still open
+- `failed` invoices (no line items at all) still have no recovery path beyond
+  re-uploading.
+- No audit trail of who corrected which number — worth adding with auth.

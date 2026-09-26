@@ -1,8 +1,9 @@
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import BaseUom, InvoiceSource, InvoiceStatus, ReviewStatus
 
@@ -48,9 +49,47 @@ class InvoiceOut(BaseModel):
     created_at: datetime
 
 
+class InvoiceCheckOut(BaseModel):
+    """Whether the invoice's numbers can be trusted, and if not, why.
+
+    `passes` is what the confirm endpoint requires; `reasons` is what the
+    review screen shows a person so they know what to look for on the page.
+    """
+
+    passes: bool
+    reasons: list[str]
+    failed_line_numbers: list[int]
+
+
 class InvoiceDetailOut(InvoiceOut):
+    distributor_name: str | None = None
     line_items: list[LineItemOut] = []
     page_image_urls: list[str] = []
+    check: InvoiceCheckOut
+
+
+# Same shape as the Numeric(12, 4) columns these land in, so an out-of-range
+# value is a 422 at the edge rather than a database error mid-commit.
+Money = Annotated[Decimal, Field(max_digits=12, decimal_places=4)]
+
+
+class LineItemEdit(BaseModel):
+    id: uuid.UUID
+    quantity: Money | None = None
+    unit_price: Money | None = None
+    extended_price: Money | None = None
+
+
+class InvoiceEdit(BaseModel):
+    """Corrections a person makes while reading the invoice page. Only fields
+    actually sent are applied; there is no way to blank a value from here."""
+
+    distributor_id: uuid.UUID | None = None
+    invoice_date: date | None = None
+    subtotal: Money | None = None
+    tax: Money | None = None
+    total: Money | None = None
+    line_items: list[LineItemEdit] = []
 
 
 class InvoiceUploadResponse(BaseModel):

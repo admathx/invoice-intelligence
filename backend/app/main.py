@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import accounts, insights, invoices, negotiation, review, skus, tenants
+from app.api import accounts, distributors, insights, invoice_review, invoices, negotiation, review, skus, tenants
 from app.config import settings
 
 app = FastAPI(title="Invoice Intelligence")
@@ -29,6 +29,8 @@ renders_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/renders", StaticFiles(directory=renders_dir), name="renders")
 
 app.include_router(invoices.router)
+app.include_router(invoice_review.router)
+app.include_router(distributors.router)
 app.include_router(skus.router)
 app.include_router(review.router)
 app.include_router(insights.router)

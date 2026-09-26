@@ -1,18 +1,18 @@
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_tenant_or_404
+from app.api.invoice_review import build_invoice_detail
 from app.config import settings
 from app.db import get_db_for_tenant
 from app.ingest.upload import InvalidInvoiceFileError, save_invoice_bytes, validate_invoice_bytes
-from app.models import Invoice, InvoiceLineItem
+from app.models import Invoice
 from app.models.enums import InvoiceSource, InvoiceStatus
 from app.queue import invoice_queue as queue
-from app.schemas.invoices import InvoiceDetailOut, InvoiceOut, InvoiceUploadResponse, LineItemOut
+from app.schemas.invoices import InvoiceDetailOut, InvoiceOut, InvoiceUploadResponse
 from app.workers.tasks import process_invoice
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
@@ -70,21 +70,6 @@ def get_invoice(
     invoice = db.get(Invoice, invoice_id)
     if invoice is None:
         raise HTTPException(status_code=404, detail="invoice not found")
-    line_items = list(
-        db.scalars(
-            select(InvoiceLineItem)
-            .where(InvoiceLineItem.invoice_id == invoice_id)
-            .order_by(InvoiceLineItem.line_number)
-        )
-    )
-    render_dir = Path(settings.upload_dir) / "renders" / str(invoice_id)
-    page_image_urls = (
-        [f"/renders/{invoice_id}/{p.name}" for p in sorted(render_dir.glob("page_*.png"))]
-        if render_dir.is_dir()
-        else []
-    )
-    return InvoiceDetailOut(
-        **InvoiceOut.model_validate(invoice).model_dump(),
-        line_items=[LineItemOut.model_validate(li) for li in line_items],
-        page_image_urls=page_image_urls,
-    )
+    # Shared with the review endpoints, so the detail page always carries the
+    # same arithmetic check the confirm endpoint will enforce.
+    return build_invoice_detail(db, invoice)

@@ -146,4 +146,27 @@ test.describe("ingest -> review -> negotiation sheet", () => {
       await expect(page.getByText(/annualized at/)).toBeVisible();
     }
   });
+
+  test("an invoice that doesn't add up can be corrected and confirmed back into analytics", async ({ page }) => {
+    // Line 1's unit price was misread as $74.50; the page says $47.50. Until
+    // someone fixes it, the invoice is held out of every benchmark.
+    const fixture = runFixture("setup-needs-review", TENANT_ID) as { invoice_id: string; invoice_number: string };
+
+    await page.goto(`/invoices/${fixture.invoice_id}`);
+    await expect(page.getByText("numbers don't add up")).toBeVisible();
+    const confirm = page.getByRole("button", { name: "Confirm invoice" });
+    await expect(confirm).toBeDisabled();
+
+    await page.getByLabel("Line 1 unit price").fill("47.50");
+    // The check on screen is of the SAVED numbers, so confirming must wait.
+    await expect(confirm).toBeDisabled();
+    await page.getByRole("button", { name: "Save & re-check" }).click();
+
+    await expect(page.getByText("The numbers add up now")).toBeVisible();
+    await confirm.click();
+
+    await expect(page.getByText("Confirmed after review")).toBeVisible();
+    await expect(page.getByText("confirmed", { exact: true })).toBeVisible();
+  });
 });
+

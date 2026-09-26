@@ -1,3 +1,4 @@
+import { StatusBadge } from "./[id]/InvoiceReview";
 import UploadForm from "./UploadForm";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -34,9 +35,29 @@ export default async function InvoicesPage() {
     );
   }
 
+  // Surfaced up top because these invoices are otherwise invisible in the
+  // numbers: their prices are held out of every benchmark, alert and
+  // negotiation sheet until someone reviews them.
+  const needsReview = invoices.filter((inv) => inv.status === "needs_review");
+
   return (
     <div>
       <h1 className="mb-4 text-xl font-semibold">Invoices</h1>
+      {needsReview.length > 0 && (
+        <div className="mb-4 rounded border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+          {needsReview.length} invoice{needsReview.length === 1 ? "" : "s"} didn&rsquo;t add up and{" "}
+          {needsReview.length === 1 ? "is" : "are"} being kept out of your analytics until reviewed:{" "}
+          {needsReview.slice(0, 5).map((inv, i) => (
+            <span key={inv.id}>
+              {i > 0 && ", "}
+              <a href={`/invoices/${inv.id}`} className="font-medium underline">
+                {inv.invoice_number ?? inv.id.slice(0, 8)}
+              </a>
+            </span>
+          ))}
+          {needsReview.length > 5 && ` and ${needsReview.length - 5} more`}
+        </div>
+      )}
       <UploadForm />
       <table className="w-full border-collapse text-sm">
         <thead>
@@ -58,7 +79,9 @@ export default async function InvoicesPage() {
               </td>
               <td className="py-2 pr-4">{inv.invoice_date ?? "—"}</td>
               <td className="py-2 pr-4">{inv.total ?? "—"}</td>
-              <td className="py-2 pr-4">{inv.status}</td>
+              <td className="py-2 pr-4">
+                <StatusBadge status={inv.status} />
+              </td>
               <td className="py-2 pr-4">{inv.source}</td>
             </tr>
           ))}

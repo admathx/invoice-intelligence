@@ -17,3 +17,9 @@ class Distributor(Base):
 
 # Seeded slugs (see alembic seed data / synthetic generator):
 SEED_SLUGS = ["sysco", "us_foods", "gordon", "pfg", "other"]
+
+# Extraction's "I couldn't tell whose invoice this is" answer. It is a real row
+# (the worker stores it rather than NULL), but it is not a distributor: item
+# codes only mean something within one real distributor's catalog, so an
+# invoice attributed here can't be matched or confirmed.
+UNRECOGNIZED_SLUG = "other"
