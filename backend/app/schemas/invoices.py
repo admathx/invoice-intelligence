@@ -78,6 +78,15 @@ class LineItemEdit(BaseModel):
     quantity: Money | None = None
     unit_price: Money | None = None
     extended_price: Money | None = None
+    # What identifies the item, correctable because OCR misreads these too.
+    # The arithmetic check never looks at them, so a misread pack size ('4/3 LB'
+    # for '4/5 LB') passed review and confirmed a per-pound price 67% too high.
+    # Empty string clears item code / pack size; description and unit can't be
+    # blank.
+    raw_description: str | None = Field(default=None, min_length=1, max_length=500)
+    raw_sku: str | None = Field(default=None, max_length=100)
+    raw_pack_size: str | None = Field(default=None, max_length=100)
+    uom: str | None = Field(default=None, min_length=1, max_length=20)
 
 
 class LineItemCreate(BaseModel):

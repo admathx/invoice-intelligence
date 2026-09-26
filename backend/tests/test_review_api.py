@@ -22,6 +22,7 @@ from app.db import SessionLocal, bind_tenant
 from app.extract.client import FAKE_PAYLOAD, ExtractionFailedError, FakeExtractorClient
 from app.main import app
 from app.models import (
+    Account,
     CanonicalSku,
     Distributor,
     Invoice,
@@ -496,20 +497,27 @@ def test_the_worker_does_not_match_lines_against_the_other_pseudo_distributor(db
     assert all(line.review_status == ReviewStatus.pending for line in lines)
 
 
-def test_a_correction_on_an_unattributed_invoice_writes_no_alias(db_session, tenant, canonical_sku):
+def test_lines_on_an_unattributed_invoice_wait_for_a_distributor(db_session, tenant, canonical_sku):
+    """Resolving them here used to write no alias and then be overwritten when
+    the distributor was chosen on the invoice screen. They stay out of the
+    queue, and acting on one directly is refused, until it has a distributor."""
     other = db_session.scalar(select(Distributor).where(Distributor.slug == "other"))
     line = _auto_matched_line(db_session, tenant, other, canonical_sku)
     line.review_status = ReviewStatus.pending
     db_session.commit()
+    client = TestClient(app)
 
-    resp = TestClient(app).post(
+    queue = client.get("/review/queue", params={"tenant_id": str(tenant.id)}).json()
+    resp = client.post(
         f"/review/{line.id}/correct",
         params={"tenant_id": str(tenant.id)},
         json={"canonical_sku_id": str(canonical_sku.id)},
     )
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["wrote_alias"] is False
+    assert str(line.id) not in {item["id"] for item in queue}
+    assert resp.status_code == 409, resp.text
+    assert "distributor" in resp.json()["detail"]
+    assert db_session.scalars(select(SkuAlias).where(SkuAlias.tenant_id == tenant.id)).all() == []
 
 
 def test_a_running_retry_cant_wipe_lines_typed_into_a_failed_invoice(db_session, tenant, distributor, canonical_sku):
@@ -525,17 +533,96 @@ def test_a_running_retry_cant_wipe_lines_typed_into_a_failed_invoice(db_session,
 
     reviewer = SessionLocal()
     bind_tenant(reviewer, tenant.id)
-    held = reviewer.get(Invoice, invoice_id, with_for_update=True)  # the edit, in progress
     worker = threading.Thread(target=process_invoice, args=(str(invoice_id),))
-    worker.start()
-    worker.join(timeout=1.0)
-    assert worker.is_alive(), "the worker must wait for the reviewer's lock, not race past it"
-
-    held.status = InvoiceStatus.needs_review  # what _take_under_review does
-    reviewer.commit()
-    reviewer.close()
-    worker.join(timeout=10)
+    # try/finally: if the worker doesn't wait (the regression this test is
+    # for), the assertion must fail the test, not leave this session holding
+    # the row lock so the fixture's teardown blocks on it forever.
+    try:
+        held = reviewer.get(Invoice, invoice_id, with_for_update=True)  # the edit, in progress
+        worker.start()
+        worker.join(timeout=1.0)
+        waited = worker.is_alive()
+        held.status = InvoiceStatus.needs_review  # what _take_under_review does
+        reviewer.commit()
+    finally:
+        reviewer.close()
+        worker.join(timeout=10)
+    assert waited, "the worker must wait for the reviewer's lock, not race past it"
 
     db_session.expire_all()
     assert db_session.get(InvoiceLineItem, line.id) is not None
     assert db_session.get(Invoice, invoice_id).status == InvoiceStatus.needs_review
+
+
+def test_reopen_withdraws_the_disputed_mapping_for_the_whole_business(db_session, tenant, distributor, canonical_sku):
+    """A sibling location's copy of the same wrong mapping is trusted by the
+    matcher as this location's own (account-keyed), so reopen has to withdraw
+    it too. Another business's correction is theirs and stays."""
+    group = Account(name=f"Reopen Group {uuid.uuid4().hex[:8]}")
+    db_session.add(group)
+    db_session.commit()
+    sibling = Tenant(name=f"Sibling {uuid.uuid4().hex[:8]}", metro=tenant.metro, volume_tier=VolumeTier.under_500k, account_id=group.id)
+    stranger = Tenant(name=f"Stranger {uuid.uuid4().hex[:8]}", metro=tenant.metro, volume_tier=VolumeTier.under_500k)
+    db_session.add_all([sibling, stranger])
+    db_session.get(Tenant, tenant.id).account_id = group.id
+    db_session.commit()
+    db_session.info["_created"]["tenants"] += [sibling.id, stranger.id]
+
+    line = _auto_matched_line(db_session, tenant, distributor, canonical_sku)
+
+    def alias_for(owner):
+        return SkuAlias(tenant_id=owner.id, canonical_sku_id=canonical_sku.id, distributor_id=distributor.id,
+                        raw_description=line.raw_description, raw_sku=line.raw_sku)
+    siblings_copy, strangers_copy = alias_for(sibling), alias_for(stranger)
+    db_session.add_all([siblings_copy, strangers_copy])
+    db_session.commit()
+    sibling_id, stranger_id = siblings_copy.id, strangers_copy.id
+
+    resp = TestClient(app).post(f"/review/{line.id}/reopen", params={"tenant_id": str(tenant.id)})
+
+    assert resp.status_code == 200, resp.text
+    db_session.expire_all()
+    assert db_session.get(SkuAlias, sibling_id) is None
+    assert db_session.get(SkuAlias, stranger_id) is not None
+    db_session.get(Tenant, tenant.id).account_id = None  # let teardown remove the account
+    db_session.get(Tenant, sibling.id).account_id = None
+    db_session.commit()
+    db_session.delete(db_session.get(Account, group.id))
+    db_session.commit()
+
+
+def test_a_queue_action_waits_for_an_invoice_being_re_attributed(db_session, tenant, distributor, canonical_sku):
+    """Confirm and correct take the same invoice lock the invoice screen and
+    the worker take, so they can't interleave with a distributor change."""
+    import threading
+
+    line = _auto_matched_line(db_session, tenant, distributor, canonical_sku)
+    line.review_status = ReviewStatus.pending
+    db_session.commit()
+
+    screen = SessionLocal()
+    bind_tenant(screen, tenant.id)
+    result = {}
+    worker = threading.Thread(
+        target=lambda: result.setdefault(
+            "status", TestClient(app).post(f"/review/{line.id}/confirm", params={"tenant_id": str(tenant.id)}).status_code
+        )
+    )
+    # try/finally for the same reason as the worker-lock test above: a
+    # regression must fail here, not hang teardown on a leaked row lock.
+    try:
+        screen.get(Invoice, line.invoice_id, with_for_update=True)  # a re-attribution in progress
+        worker.start()
+        worker.join(timeout=1.0)
+        waited = worker.is_alive()
+        # The re-attribution re-matched the line (here: resolved it) before letting go.
+        screen.get(InvoiceLineItem, line.id).review_status = ReviewStatus.auto
+        screen.commit()
+    finally:
+        screen.close()
+        worker.join(timeout=10)
+    assert waited, "the confirm must wait for the invoice lock"
+
+    # Re-read under the lock, the line is no longer pending: nothing written.
+    assert result["status"] == 409
+    assert db_session.scalars(select(SkuAlias).where(SkuAlias.tenant_id == tenant.id)).all() == []

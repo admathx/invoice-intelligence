@@ -527,3 +527,74 @@ def test_re_attributing_an_invoice_withdraws_corrections_made_on_it_and_only_tho
     db.expire_all()
     assert db.get(SkuAlias, withdrawn_id) is None
     assert db.get(SkuAlias, kept_id) is not None
+
+
+def test_removing_a_line_withdraws_the_corrections_made_on_it(client, db, misread_invoice, tenant, distributor):
+    """Removing a line says it was never on the invoice, so a correction made
+    on it was a correction of nothing."""
+    invoice, lines = misread_invoice
+    phantom = SkuAlias(tenant_id=tenant.id, canonical_sku_id=lines[0].canonical_sku_id, distributor_id=distributor.id,
+                       raw_description=lines[0].raw_description, raw_sku=lines[0].raw_sku,
+                       source_invoice_line_item_id=lines[0].id)
+    db.add(phantom)
+    db.commit()
+    phantom_id = phantom.id
+
+    assert client.delete(_url(invoice, tenant, f"/line-items/{lines[0].id}")).status_code == 200
+
+    db.expire_all()
+    assert db.get(SkuAlias, phantom_id) is None
+
+
+def test_a_misread_pack_size_can_be_corrected_and_reprices_without_losing_the_match(client, misread_invoice, tenant):
+    """The arithmetic check never looks at pack size, so this is the only way
+    a misread one gets fixed. Same product, so the match stands."""
+    invoice, lines = misread_invoice
+    sku_before = str(lines[1].canonical_sku_id)
+
+    resp = client.patch(
+        _url(invoice, tenant), json={"line_items": [{"id": str(lines[1].id), "raw_pack_size": "4/2.5 LB"}]}
+    )
+
+    assert resp.status_code == 200, resp.text
+    line = next(li for li in resp.json()["line_items"] if li["line_number"] == 2)
+    assert line["raw_pack_size"] == "4/2.5 LB"
+    assert line["canonical_sku_id"] == sku_before
+    assert Decimal(line["normalized_unit_price"]) == Decimal("4.7500")  # $47.50 / 10 lb, not / 20 lb
+
+
+def test_a_pack_size_that_no_longer_prices_sends_the_line_back_to_review(client, misread_invoice, tenant):
+    invoice, lines = misread_invoice
+
+    resp = client.patch(_url(invoice, tenant), json={"line_items": [{"id": str(lines[1].id), "uom": "EA"}]})
+
+    line = next(li for li in resp.json()["line_items"] if li["line_number"] == 2)
+    assert line["normalized_unit_price"] is None
+    assert line["review_status"] == ReviewStatus.pending.value
+
+
+def test_correcting_a_misread_item_code_re_matches_and_withdraws_corrections_on_the_old_code(
+    client, db, misread_invoice, tenant, distributor
+):
+    invoice, lines = misread_invoice
+    on_misread_code = SkuAlias(tenant_id=tenant.id, canonical_sku_id=lines[1].canonical_sku_id,
+                               distributor_id=distributor.id, raw_description=lines[1].raw_description,
+                               raw_sku=lines[1].raw_sku, source_invoice_line_item_id=lines[1].id)
+    db.add(on_misread_code)
+    db.commit()
+    alias_id = on_misread_code.id
+
+    resp = client.patch(_url(invoice, tenant), json={"line_items": [{"id": str(lines[1].id), "raw_sku": "RT-2-CORRECT"}]})
+
+    assert resp.status_code == 200, resp.text
+    line = next(li for li in resp.json()["line_items"] if li["line_number"] == 2)
+    assert line["raw_sku"] == "RT-2-CORRECT"
+    db.expire_all()
+    assert db.get(SkuAlias, alias_id) is None
+
+
+def test_description_and_unit_cant_be_blanked(client, misread_invoice, tenant):
+    invoice, lines = misread_invoice
+    for field in ("raw_description", "uom"):
+        resp = client.patch(_url(invoice, tenant), json={"line_items": [{"id": str(lines[0].id), field: ""}]})
+        assert resp.status_code == 422, field

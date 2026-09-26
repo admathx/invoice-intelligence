@@ -46,13 +46,14 @@ from app.models import (
     build_price_observation,
 )
 from app.models.enums import InvoiceStatus, ReviewStatus
-from app.normalize.matcher import apply_match, match_line_item, normalize_price
+from app.normalize.matcher import _exact_match_result, apply_match, match_line_item, normalize_price
 from app.schemas.invoices import (
     InvoiceCheckOut,
     InvoiceDetailOut,
     InvoiceEdit,
     InvoiceOut,
     LineItemCreate,
+    LineItemEdit,
     LineItemOut,
     LineItemSuggestion,
 )
@@ -203,6 +204,57 @@ def _match(db: Session, invoice: Invoice, line: InvoiceLineItem) -> None:
     apply_match(line, match)
 
 
+def _apply_line_edit(db: Session, invoice: Invoice, line: InvoiceLineItem, edit: LineItemEdit) -> None:
+    """Apply one line's corrections, then redo only what they invalidate.
+
+    - Item code or description changed: the line may be a different product.
+      Re-match it, and withdraw any correction a reviewer made on the misread
+      code (by provenance), since that correction was about a code that isn't
+      on the invoice.
+    - Pack size or unit changed: same product, different price per base unit.
+      Keep the match (including one a person confirmed) and re-derive the
+      price; if it can no longer be derived, send the line back to review.
+    - Only numbers changed: re-derive the price from the corrected ones.
+    """
+    sent = edit.model_fields_set
+    before = (line.raw_sku, line.raw_description, line.raw_pack_size, line.uom)
+
+    for name in ("quantity", "unit_price", "extended_price", "raw_description"):
+        value = getattr(edit, name)
+        if name in sent and value is not None:
+            setattr(line, name, value.strip() if isinstance(value, str) else value)
+    for name in ("raw_sku", "raw_pack_size"):
+        if name in sent and getattr(edit, name) is not None:
+            setattr(line, name, getattr(edit, name).strip() or None)
+    if "uom" in sent and edit.uom is not None:
+        line.uom = edit.uom.strip().upper()
+
+    identity_changed = (line.raw_sku, line.raw_description) != before[:2]
+    unit_changed = (line.raw_pack_size, line.uom) != before[2:]
+
+    if identity_changed:
+        db.execute(delete(SkuAlias).where(SkuAlias.source_invoice_line_item_id == line.id))
+        _match(db, invoice, line)
+    elif unit_changed and line.canonical_sku_id is not None:
+        result = _exact_match_result(
+            db, line.canonical_sku_id, "repriced", line.raw_pack_size, line.quantity, line.unit_price, line.uom
+        )
+        line.normalized_qty_base = result.normalized_qty_base
+        line.normalized_unit_price = result.normalized_unit_price
+        line.base_uom = result.base_uom
+        if result.normalized_unit_price is None:
+            line.review_status = ReviewStatus.pending
+    elif unit_changed:
+        _match(db, invoice, line)
+    elif {"quantity", "unit_price"} & sent:
+        # The line's identity doesn't depend on its price, so its match
+        # stands; its price per base unit was computed from the misread
+        # number and has to be redone from the corrected one.
+        line.normalized_qty_base, line.normalized_unit_price = normalize_price(
+            line.raw_pack_size, line.quantity, line.unit_price, line.uom
+        )
+
+
 def _get_reviewable_invoice(db: Session, invoice_id: uuid.UUID, *, editing: bool) -> Invoice:
     """The invoice, locked, if a person may work on it.
 
@@ -263,20 +315,7 @@ def edit_invoice(
             setattr(invoice, name, getattr(body, name))
 
     for edit in body.line_items:
-        line = lines[edit.id]
-        repriced = False
-        for name in ("quantity", "unit_price", "extended_price"):
-            value = getattr(edit, name)
-            if name in edit.model_fields_set and value is not None:
-                setattr(line, name, value)
-                repriced = repriced or name != "extended_price"
-        if repriced:
-            # The line's identity doesn't depend on its price, so its match
-            # stands; its price per base unit was computed from the misread
-            # number and has to be redone from the corrected one.
-            line.normalized_qty_base, line.normalized_unit_price = normalize_price(
-                line.raw_pack_size, line.quantity, line.unit_price, line.uom
-            )
+        _apply_line_edit(db, invoice, lines[edit.id], edit)
 
     if distributor_changed:
         # Corrections reviewers made on this invoice's lines were recorded as
@@ -399,6 +438,12 @@ def remove_line_item(
     line = db.get(InvoiceLineItem, line_item_id)
     if line is None or line.invoice_id != invoice.id:
         raise HTTPException(status_code=404, detail="line item not on this invoice")
+    # Removing a line says it was never on the invoice, so any correction made
+    # on it (line queue confirm/correct) was a correction of nothing. Left in
+    # place, a phantom line's alias kept matching that item code for this
+    # business, and the ON DELETE SET NULL below would also erase its
+    # provenance, so no later re-attribution could find it.
+    db.execute(delete(SkuAlias).where(SkuAlias.source_invoice_line_item_id == line.id))
     db.delete(line)
     _take_under_review(invoice)
     db.commit()

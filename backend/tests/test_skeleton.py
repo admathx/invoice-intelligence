@@ -9,12 +9,12 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 from reportlab.pdfgen import canvas
-from sqlalchemy import text
+from sqlalchemy import delete, select, text
 
 from app.db import SessionLocal, engine
 from app.extract.client import FakeExtractorClient
 from app.main import app
-from app.models import Tenant
+from app.models import Invoice, InvoiceLineItem, PriceAlert, PriceObservation, SkuAlias, Tenant
 from app.models.enums import InvoiceStatus, VolumeTier
 from app.workers.tasks import process_invoice
 
@@ -37,6 +37,23 @@ def db_session():
     session.close()
 
 
+def _remove_tenant(db, tenant_id) -> None:
+    """Committing fixtures (the upload goes through the API's own session, so a
+    rollback fixture can't see it) have to clean up after themselves. These
+    didn't, and every full test run left two tenants and an invoice behind:
+    the source of the "Test Tenant"/"Other Tenant" debris that kept turning up
+    in the dev database and in the Businesses location picker."""
+    db.rollback()
+    lines = select(InvoiceLineItem.id).where(InvoiceLineItem.tenant_id == tenant_id)
+    db.execute(delete(PriceObservation).where(PriceObservation.invoice_line_item_id.in_(lines)))
+    db.execute(delete(PriceAlert).where(PriceAlert.tenant_id == tenant_id))
+    db.execute(delete(SkuAlias).where(SkuAlias.tenant_id == tenant_id))
+    db.execute(delete(InvoiceLineItem).where(InvoiceLineItem.tenant_id == tenant_id))
+    db.execute(delete(Invoice).where(Invoice.tenant_id == tenant_id))
+    db.execute(delete(Tenant).where(Tenant.id == tenant_id))
+    db.commit()
+
+
 @pytest.fixture()
 def tenant(db_session):
     t = Tenant(name="Test Tenant", metro="test-metro", volume_tier=VolumeTier.under_500k)
@@ -44,6 +61,7 @@ def tenant(db_session):
     db_session.commit()
     db_session.refresh(t)
     yield t
+    _remove_tenant(db_session, t.id)
 
 
 @pytest.fixture()
@@ -53,6 +71,7 @@ def other_tenant(db_session):
     db_session.commit()
     db_session.refresh(t)
     yield t
+    _remove_tenant(db_session, t.id)
 
 
 def test_upload_job_rows_api_read(tenant, other_tenant, monkeypatch):

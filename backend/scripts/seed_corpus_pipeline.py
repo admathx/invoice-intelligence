@@ -37,6 +37,7 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 sys.path.insert(0, str(REPO_ROOT))
 
+from app.analytics.price_creep import upsert_creep_alerts  # noqa: E402
 from app.db import SessionLocal, bind_tenant  # noqa: E402
 from app.ingest.email_stub import inbox_address_for  # noqa: E402
 from app.models import (  # noqa: E402
@@ -200,6 +201,12 @@ def main() -> None:
             total_invoices += 1
 
         db.commit()
+        # Every observation behind this tenant's creep alerts was just rebuilt,
+        # so the alerts are recomputed from the new ones (which also resolves
+        # any whose creep is gone). Without this, Insights kept showing alerts
+        # computed from observations that no longer existed until the tenant
+        # happened to write again through some other path.
+        upsert_creep_alerts(db, tenant.id)
         print(f"  {synth_tenant.name}: {len(week_files)} invoices seeded ({time.time()-t0:.0f}s elapsed)")
 
     print(

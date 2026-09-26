@@ -1353,3 +1353,55 @@ and creep windows in between. A new `cleanup` command runs in the suite's
   tests kept, all 7 new backend tests fail. Frontend **20** unit (was 15),
   `tsc` clean, Playwright 6.
 - `creep_report` 93.9% / 0 FP, `matching_report` 0/38709.
+
+## Interaction review: new code vs existing paths (6 findings, all fixed)
+
+1. **Reopen withdrew the disputed alias for one location; the matcher trusts
+   the whole business.** A sibling location's copy of the same wrong mapping
+   kept auto-matching for the location disputing it. Reopen now withdraws by
+   account key, the same scope `match_by_alias` rule 1 uses.
+2. **Removing a line kept the aliases it wrote**, and ON DELETE SET NULL then
+   erased their provenance. Removing a line says it was never on the invoice,
+   so its corrections are withdrawn with it.
+3. **The reseed rebuilt every observation but never touched alerts,** so
+   Insights showed alerts computed from data that no longer existed.
+   `seed_corpus_pipeline` now runs `upsert_creep_alerts` per tenant. Verified
+   by planting a stale open alert and reseeding: it came back `resolved`.
+4. **The review screen couldn't correct a misread pack size, item code,
+   description or unit,** and the arithmetic check never looks at pack size, so
+   `4/3 LB` for `4/5 LB` confirmed a per-pound price 67% too high. All four are
+   now editable, with three different consequences (`_apply_line_edit`):
+   item code or description changed → re-match, and withdraw corrections made
+   on the misread code; pack size or unit changed → same product, keep the
+   match (even a human-confirmed one) and re-price, or send the line back to
+   review if it can no longer be priced; only numbers changed → re-price.
+   Checked live: `4/5 LB` → `4/2.5 LB` re-priced $2.375/lb → $4.75/lb and kept
+   the match. The editable table also got a layout fix: it was overflowing and
+   clipping the Remove column.
+5. **The line queue showed lines from invoices with no known distributor,**
+   where resolving them wrote no alias and was then overwritten when the
+   distributor was chosen. They're now kept out of the queue (and confirm /
+   correct refuse them with a reason) until the invoice is attributed.
+6. **Queue actions didn't take the invoice lock** the worker and the invoice
+   screen take, so a confirm could write an alias under the old distributor
+   right after a re-attribution withdrew exactly those. Confirm, correct and
+   reopen now lock the invoice and re-read the line under the lock.
+
+### Two test-infrastructure problems this turned up
+- **A lock test that hung instead of failing.** Run against the pre-fix code,
+  the new lock tests asserted before releasing the session that held the row
+  lock, so teardown then blocked on it forever — with the pre-fix code still
+  stashed into the working tree. Both lock tests now release in `finally`
+  and fail in seconds. (Also: macOS has no `timeout`; use
+  `perl -e 'alarm shift; exec @ARGV' N cmd` for a hard limit.)
+- **The actual source of the recurring "Test Tenant" / "Other Tenant" debris**
+  cleaned up three times this session: `test_skeleton.py` shadowed the
+  rollback fixture with a committing one and never cleaned up, leaking two
+  tenants and an invoice on every full run. Its fixtures now delete what they
+  create; a full run leaves the tenant count unchanged (verified), and the 22
+  leaked tenants are gone.
+
+### Gates
+- Backend **195 passed** (was 188); with the source fixes stashed, all 8 new
+  tests fail. Frontend 20 unit, `tsc` clean, Playwright 6.
+- `creep_report` 93.9% / 0 FP, `matching_report` 0/38709.

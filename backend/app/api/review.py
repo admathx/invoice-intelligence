@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.analytics.benchmark import account_key_for
 from app.analytics.price_creep import upsert_creep_alerts
 from app.api.deps import get_tenant_or_404
 from app.db import get_db_for_tenant
@@ -28,22 +29,49 @@ from app.models import (
 )
 from app.models.distributor import UNRECOGNIZED_SLUG
 from app.models.enums import ReviewStatus
+from app.models.tenant import account_key_column
 from app.normalize.matcher import _exact_match_result
 from app.schemas.review import CorrectRequest, ReviewActionResponse, ReviewQueueItem
 
 router = APIRouter(prefix="/review", tags=["review"])
 
 
-def _get_pending_line_or_404(db: Session, line_item_id: uuid.UUID) -> InvoiceLineItem:
+def _lock_line_for_action(db: Session, line_item_id: uuid.UUID, *, pending: bool) -> tuple[InvoiceLineItem, Invoice]:
+    """The line and its invoice, with the invoice row locked, re-read under the lock.
+
+    The same row the invoice review endpoints and the worker lock. Without it,
+    a confirm could interleave with a distributor change on the invoice
+    screen: read the old distributor, then write its alias under that
+    distributor right after the change had withdrawn exactly those aliases.
+    The line is re-read after the lock because its state is what the lock
+    protects: a re-attribution may have just re-matched it.
+    """
     line = db.get(InvoiceLineItem, line_item_id)
     if line is None:
         raise HTTPException(status_code=404, detail="line item not found")
-    if line.review_status != ReviewStatus.pending:
+    invoice = db.get(Invoice, line.invoice_id, with_for_update=True, populate_existing=True)
+    db.refresh(line)
+    if pending and line.review_status != ReviewStatus.pending:
         # Already resolved — a second tab, or a client retrying a request
         # whose commit already landed. Reject rather than write a second
         # sku_aliases/price_observations row for the same line.
         raise HTTPException(status_code=409, detail=f"line item is already {line.review_status.value}, not pending")
-    return line
+    if not pending and line.review_status == ReviewStatus.pending:
+        raise HTTPException(status_code=409, detail="line item is already pending review")
+    return line, invoice
+
+
+def _require_recognized_distributor(db: Session, invoice: Invoice) -> None:
+    """Item codes only mean something within one distributor's catalog. On an
+    invoice nobody has attributed yet, resolving a line here wrote no alias
+    and was then overwritten when the distributor was chosen on the invoice
+    screen (which re-matches every line), so the effort simply vanished."""
+    distributor = db.get(Distributor, invoice.distributor_id) if invoice.distributor_id else None
+    if distributor is None or distributor.slug == UNRECOGNIZED_SLUG:
+        raise HTTPException(
+            status_code=409,
+            detail="this invoice's distributor isn't known yet; choose it on the invoice screen first",
+        )
 
 
 def _write_alias(db: Session, line: InvoiceLineItem, invoice: Invoice, canonical_sku_id: uuid.UUID) -> bool:
@@ -117,14 +145,18 @@ def get_review_queue(
     distributor_id: uuid.UUID | None = None,
     db: Session = Depends(get_db_for_tenant),
 ) -> list[ReviewQueueItem]:
-    conditions = [InvoiceLineItem.review_status == ReviewStatus.pending]
+    # Only lines whose invoice has a recognized distributor: until it does,
+    # there's no catalog to resolve an item code against, and whatever a
+    # reviewer did here would be overwritten when the distributor is chosen
+    # on the invoice screen. Those lines appear once it has been.
+    conditions = [InvoiceLineItem.review_status == ReviewStatus.pending, Distributor.slug != UNRECOGNIZED_SLUG]
     if distributor_id is not None:
         conditions.append(Invoice.distributor_id == distributor_id)
 
     rows = db.execute(
         select(InvoiceLineItem, Invoice, Distributor, CanonicalSku)
         .join(Invoice, InvoiceLineItem.invoice_id == Invoice.id)
-        .outerjoin(Distributor, Invoice.distributor_id == Distributor.id)
+        .join(Distributor, Invoice.distributor_id == Distributor.id)
         .outerjoin(CanonicalSku, InvoiceLineItem.canonical_sku_id == CanonicalSku.id)
         .where(*conditions)
         .order_by(Invoice.invoice_date, InvoiceLineItem.line_number)
@@ -159,12 +191,11 @@ def confirm_line_item(
     right. A confirm still writes an alias: the whole point of a human
     verifying a match is that the next identical line resolves for free.
     """
-    line = _get_pending_line_or_404(db, line_item_id)
+    tenant = get_tenant_or_404(db, tenant_id)
+    line, invoice = _lock_line_for_action(db, line_item_id, pending=True)
+    _require_recognized_distributor(db, invoice)
     if line.canonical_sku_id is None:
         raise HTTPException(status_code=400, detail="no suggested match to confirm — use /correct instead")
-
-    invoice = db.get(Invoice, line.invoice_id)
-    tenant = get_tenant_or_404(db, tenant_id)
 
     line.review_status = ReviewStatus.confirmed
     return _finalize(db, line, invoice, tenant)
@@ -182,13 +213,12 @@ def correct_line_item(
     same pack-size logic the live matcher uses (app/normalize/matcher.py's
     _exact_match_result) — not a second reimplementation of that math.
     """
-    line = _get_pending_line_or_404(db, line_item_id)
+    tenant = get_tenant_or_404(db, tenant_id)
+    line, invoice = _lock_line_for_action(db, line_item_id, pending=True)
+    _require_recognized_distributor(db, invoice)
     sku = db.get(CanonicalSku, body.canonical_sku_id)
     if sku is None:
         raise HTTPException(status_code=404, detail="canonical SKU not found")
-
-    invoice = db.get(Invoice, line.invoice_id)
-    tenant = get_tenant_or_404(db, tenant_id)
 
     result = _exact_match_result(
         db,
@@ -236,11 +266,7 @@ def reopen_line_item(
     line's resolution wrote (see below).
     """
     tenant = get_tenant_or_404(db, tenant_id)
-    line = db.get(InvoiceLineItem, line_item_id)
-    if line is None:
-        raise HTTPException(status_code=404, detail="line item not found")
-    if line.review_status == ReviewStatus.pending:
-        raise HTTPException(status_code=409, detail="line item is already pending review")
+    line, invoice = _lock_line_for_action(db, line_item_id, pending=False)
 
     db.execute(delete(PriceObservation).where(PriceObservation.invoice_line_item_id == line.id))
 
@@ -248,13 +274,18 @@ def reopen_line_item(
     # the mapping is what's disputed. Leaving it meant the tenant's own alias
     # (match_by_alias rule 1) auto-matched the same code to the same wrong SKU
     # at confidence 1.0 on the very next invoice, and it kept counting as this
-    # business's vote for that mapping toward cross-tenant promotion. Scoped
-    # to this tenant's own row: other businesses' corrections are theirs.
-    invoice = db.get(Invoice, line.invoice_id)
-    if invoice is not None and invoice.distributor_id is not None and line.canonical_sku_id is not None:
+    # business's vote for that mapping toward cross-tenant promotion.
+    #
+    # Scoped to this BUSINESS, not this tenant, because that is the scope
+    # rule 1 trusts: a sibling location's copy of the same wrong mapping would
+    # otherwise keep auto-matching for the very location disputing it. Other
+    # businesses' corrections are theirs and stay.
+    if invoice.distributor_id is not None and line.canonical_sku_id is not None:
+        business = account_key_for(db, line.tenant_id)
+        same_business = select(Tenant.id).where(account_key_column() == business)
         db.execute(
             delete(SkuAlias).where(
-                SkuAlias.tenant_id == line.tenant_id,
+                SkuAlias.tenant_id.in_(same_business),
                 SkuAlias.distributor_id == invoice.distributor_id,
                 SkuAlias.raw_sku == line.raw_sku,
                 SkuAlias.canonical_sku_id == line.canonical_sku_id,

@@ -13,6 +13,7 @@ type LineItem = {
   id: string;
   line_number: number;
   raw_description: string;
+  raw_sku: string | null;
   raw_pack_size: string | null;
   quantity: string;
   unit_price: string;
@@ -40,8 +41,30 @@ export type InvoiceDetail = {
 
 export type Distributor = { id: string; name: string; slug: string };
 
-type LineField = "quantity" | "unit_price" | "extended_price";
-type HeaderField = "subtotal" | "tax" | "total" | "invoice_date" | "distributor_id";
+type MoneyField = "quantity" | "unit_price" | "extended_price";
+// What identifies the item. Editable because OCR misreads these too, and the
+// arithmetic check never looks at them: a pack read as "4/3 LB" for "4/5 LB"
+// would otherwise confirm a per-pound price 67% too high.
+type TextField = "raw_description" | "raw_sku" | "raw_pack_size" | "uom";
+type LineField = MoneyField | TextField;
+const MONEY_FIELDS: readonly LineField[] = [
+  "quantity",
+  "unit_price",
+  "extended_price",
+];
+
+function sameValue(
+  field: LineField,
+  draft: string,
+  saved: string | null,
+): boolean {
+  if (MONEY_FIELDS.includes(field)) return sameMoney(draft, saved);
+  const norm = (v: string) =>
+    field === "uom" ? v.trim().toUpperCase() : v.trim();
+  return norm(draft) === norm(saved ?? "");
+}
+type HeaderField =
+  "subtotal" | "tax" | "total" | "invoice_date" | "distributor_id";
 
 // Money stays a string end to end: typed in, sent to the API, parsed there as
 // a Decimal (SPEC.md §11). Nothing here does arithmetic on it; the check that
@@ -53,17 +76,28 @@ function sameMoney(a: string, b: string | null): boolean {
   return a.trim() !== "" && Number.isFinite(x) && x === y;
 }
 
-export default function InvoiceReview({ initial, distributors }: { initial: InvoiceDetail; distributors: Distributor[] }) {
+export default function InvoiceReview({
+  initial,
+  distributors,
+}: {
+  initial: InvoiceDetail;
+  distributors: Distributor[];
+}) {
   const [invoice, setInvoice] = useState(initial);
-  const [lineDrafts, setLineDrafts] = useState<Record<string, Partial<Record<LineField, string>>>>({});
-  const [headerDrafts, setHeaderDrafts] = useState<Partial<Record<HeaderField, string>>>({});
+  const [lineDrafts, setLineDrafts] = useState<
+    Record<string, Partial<Record<LineField, string>>>
+  >({});
+  const [headerDrafts, setHeaderDrafts] = useState<
+    Partial<Record<HeaderField, string>>
+  >({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // `failed` is editable too: extraction produced nothing usable, and typing
   // the lines in from the image is how it's recovered. The server moves it to
   // needs_review on the first edit.
-  const editable = invoice.status === "needs_review" || invoice.status === "failed";
+  const editable =
+    invoice.status === "needs_review" || invoice.status === "failed";
   const [adding, setAdding] = useState(false);
   // Extraction's "other" is stored as a real distributor row but isn't in the
   // picker (it isn't a choice), so it reads as unrecognized here, same as NULL.
@@ -76,8 +110,17 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
   const edits = useMemo(() => {
     const lines = invoice.line_items.flatMap((li) => {
       const draft = lineDrafts[li.id] ?? {};
-      const changed = (Object.keys(draft) as LineField[]).filter((f) => !sameMoney(draft[f] ?? "", li[f]));
-      return changed.length ? [{ id: li.id, ...Object.fromEntries(changed.map((f) => [f, draft[f]])) }] : [];
+      const changed = (Object.keys(draft) as LineField[]).filter(
+        (f) => !sameValue(f, draft[f] ?? "", li[f]),
+      );
+      return changed.length
+        ? [
+            {
+              id: li.id,
+              ...Object.fromEntries(changed.map((f) => [f, draft[f]])),
+            },
+          ]
+        : [];
     });
     const header = (Object.keys(headerDrafts) as HeaderField[]).filter((f) => {
       const value = headerDrafts[f] ?? "";
@@ -93,11 +136,14 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/invoices/${invoice.id}${path}?tenant_id=${TENANT_ID}`, {
-        method,
-        headers: body ? { "Content-Type": "application/json" } : undefined,
-        body: body ? JSON.stringify(body) : undefined,
-      });
+      const res = await fetch(
+        `${API_BASE}/invoices/${invoice.id}${path}?tenant_id=${TENANT_ID}`,
+        {
+          method,
+          headers: body ? { "Content-Type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+        },
+      );
       const data = await res.json().catch(() => null);
       if (!res.ok) {
         // A validation error points at line_items[i], a position in the list
@@ -105,13 +151,21 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
         // names the row the person is looking at.
         const sentLines = edits.lines;
         setError(
-          formatApiError(data?.detail, "Request failed — check the values and try again.", (loc) => {
-            const i = loc.indexOf("line_items");
-            if (i === -1 || typeof loc[i + 1] !== "number") return null;
-            const line = invoice.line_items.find((li) => li.id === sentLines[loc[i + 1] as number]?.id);
-            const field = loc[i + 2];
-            return line ? `line ${line.line_number} ${String(field ?? "").replaceAll("_", " ")}`.trim() : null;
-          })
+          formatApiError(
+            data?.detail,
+            "Request failed — check the values and try again.",
+            (loc) => {
+              const i = loc.indexOf("line_items");
+              if (i === -1 || typeof loc[i + 1] !== "number") return null;
+              const line = invoice.line_items.find(
+                (li) => li.id === sentLines[loc[i + 1] as number]?.id,
+              );
+              const field = loc[i + 2];
+              return line
+                ? `line ${line.line_number} ${String(field ?? "").replaceAll("_", " ")}`.trim()
+                : null;
+            },
+          ),
         );
         return;
       }
@@ -126,13 +180,19 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
   }
 
   async function removeLine(li: LineItem) {
-    if (!window.confirm(`Remove line ${li.line_number} (${li.raw_description})?`)) return;
+    if (
+      !window.confirm(`Remove line ${li.line_number} (${li.raw_description})?`)
+    )
+      return;
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/invoices/${invoice.id}/line-items/${li.id}?tenant_id=${TENANT_ID}`, {
-        method: "DELETE",
-      });
+      const res = await fetch(
+        `${API_BASE}/invoices/${invoice.id}/line-items/${li.id}?tenant_id=${TENANT_ID}`,
+        {
+          method: "DELETE",
+        },
+      );
       const data = await res.json().catch(() => null);
       if (!res.ok) {
         setError(formatApiError(data?.detail, "Couldn't remove the line."));
@@ -154,18 +214,30 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
   }
 
   const failed = new Set(invoice.check.failed_line_numbers);
-  const lineValue = (li: LineItem, f: LineField) => lineDrafts[li.id]?.[f] ?? li[f];
+  const lineValue = (li: LineItem, f: LineField) =>
+    lineDrafts[li.id]?.[f] ?? li[f] ?? "";
+  const setLine =
+    (li: LineItem, f: LineField) => (e: React.ChangeEvent<HTMLInputElement>) =>
+      setLineDrafts((d) => ({
+        ...d,
+        [li.id]: { ...d[li.id], [f]: e.target.value },
+      }));
+  const textInput = "rounded border border-gray-300 px-1.5 py-0.5";
   const headerValue = (f: HeaderField) => headerDrafts[f] ?? invoice[f] ?? "";
-  const moneyInput = "w-24 rounded border border-gray-300 px-1.5 py-0.5 text-right tabular-nums";
+  const moneyInput =
+    "w-20 rounded border border-gray-300 px-1.5 py-0.5 text-right tabular-nums";
 
   return (
     <div>
       <div className="mb-1 flex items-baseline gap-3">
-        <h1 className="text-xl font-semibold">{invoice.invoice_number ?? invoice.id}</h1>
+        <h1 className="text-xl font-semibold">
+          {invoice.invoice_number ?? invoice.id}
+        </h1>
         <StatusBadge status={invoice.status} />
       </div>
       <p className="mb-4 text-sm text-gray-500">
-        {invoice.distributor_name ?? "Unrecognized distributor"} · {invoice.invoice_date ?? "no date"}
+        {invoice.distributor_name ?? "Unrecognized distributor"} ·{" "}
+        {invoice.invoice_date ?? "no date"}
       </p>
 
       {editable && (
@@ -195,7 +267,8 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
       )}
       {invoice.status === "confirmed" && (
         <p className="mb-4 rounded border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-800">
-          Confirmed after review. Its prices now feed your benchmarks, alerts and negotiation sheet.
+          Confirmed after review. Its prices now feed your benchmarks, alerts
+          and negotiation sheet.
         </p>
       )}
 
@@ -205,25 +278,42 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
             <div className="space-y-3">
               {invoice.page_image_urls.map((url) => (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img key={url} src={`${API_BASE}${url}`} alt="Invoice page" className="w-full rounded border border-gray-200" />
+                <img
+                  key={url}
+                  src={`${API_BASE}${url}`}
+                  alt="Invoice page"
+                  className="w-full rounded border border-gray-200"
+                />
               ))}
             </div>
           ) : (
-            <p className="text-sm text-gray-400">No page image available for this invoice.</p>
+            <p className="text-sm text-gray-400">
+              No page image available for this invoice.
+            </p>
           )}
         </div>
 
-        <div className="flex-1">
+        <div className="min-w-0 flex-1">
           {editable && (
             <div className="mb-3 flex flex-wrap gap-4 text-sm">
               <label className="flex items-center gap-2">
                 Distributor
                 <select
-                  value={headerDrafts.distributor_id ?? (recognized ? invoice.distributor_id ?? "" : "")}
-                  onChange={(e) => setHeaderDrafts((d) => ({ ...d, distributor_id: e.target.value }))}
+                  value={
+                    headerDrafts.distributor_id ??
+                    (recognized ? (invoice.distributor_id ?? "") : "")
+                  }
+                  onChange={(e) =>
+                    setHeaderDrafts((d) => ({
+                      ...d,
+                      distributor_id: e.target.value,
+                    }))
+                  }
                   className="rounded border border-gray-300 px-2 py-1"
                 >
-                  {!recognized && <option value="">Unrecognized — choose</option>}
+                  {!recognized && (
+                    <option value="">Unrecognized — choose</option>
+                  )}
                   {distributors.map((d) => (
                     <option key={d.id} value={d.id}>
                       {d.name}
@@ -236,92 +326,166 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
                 <input
                   type="date"
                   value={headerValue("invoice_date")}
-                  onChange={(e) => setHeaderDrafts((d) => ({ ...d, invoice_date: e.target.value }))}
+                  onChange={(e) =>
+                    setHeaderDrafts((d) => ({
+                      ...d,
+                      invoice_date: e.target.value,
+                    }))
+                  }
                   className="rounded border border-gray-300 px-2 py-1"
                 />
               </label>
             </div>
           )}
 
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b text-left text-gray-500">
-                <th className="py-2 pr-3">#</th>
-                <th className="py-2 pr-3">Description</th>
-                <th className="py-2 pr-3 text-right">Qty</th>
-                <th className="py-2 pr-3">UOM</th>
-                <th className="py-2 pr-3 text-right">Unit price</th>
-                <th className="py-2 pr-3 text-right">Extended</th>
-                <th className="py-2 pr-3">Review</th>
-                {editable && <th className="py-2" />}
-              </tr>
-            </thead>
-            <tbody>
-              {invoice.line_items.map((li) => {
-                const flagged = failed.has(li.line_number) && !edits.lines.some((e) => e.id === li.id);
-                return (
-                  <tr key={li.id} className={`border-b ${flagged ? "bg-red-50" : ""}`}>
-                    <td className="py-1.5 pr-3">{li.line_number}</td>
-                    <td className="py-1.5 pr-3">
-                      {li.raw_description}
-                      {flagged && <div className="text-xs text-red-700">qty × unit price ≠ extended</div>}
-                    </td>
-                    {(["quantity"] as LineField[]).map((f) => (
-                      <td key={f} className="py-1.5 pr-3 text-right">
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr className="border-b text-left text-gray-500">
+                  <th className="py-2 pr-3">#</th>
+                  <th className="py-2 pr-3">Description</th>
+                  <th className="py-2 pr-3 text-right">Qty</th>
+                  <th className="py-2 pr-3">UOM</th>
+                  <th className="py-2 pr-3 text-right">Unit price</th>
+                  <th className="py-2 pr-3 text-right">Extended</th>
+                  <th className="py-2 pr-3">Review</th>
+                  {editable && <th className="py-2" />}
+                </tr>
+              </thead>
+              <tbody>
+                {invoice.line_items.map((li) => {
+                  const flagged =
+                    failed.has(li.line_number) &&
+                    !edits.lines.some((e) => e.id === li.id);
+                  return (
+                    <tr
+                      key={li.id}
+                      className={`border-b ${flagged ? "bg-red-50" : ""}`}
+                    >
+                      <td className="py-1.5 pr-3">{li.line_number}</td>
+                      <td className="py-1.5 pr-3">
                         {editable ? (
-                          <input
-                            aria-label={`Line ${li.line_number} ${f}`}
-                            inputMode="decimal"
-                            value={lineValue(li, f)}
-                            onChange={(e) =>
-                              setLineDrafts((d) => ({ ...d, [li.id]: { ...d[li.id], [f]: e.target.value } }))
-                            }
-                            className={moneyInput}
-                          />
+                          <>
+                            <input
+                              aria-label={`Line ${li.line_number} description`}
+                              value={lineValue(li, "raw_description")}
+                              onChange={setLine(li, "raw_description")}
+                              className={`${textInput} w-full`}
+                            />
+                            <div className="mt-1 flex gap-1 text-xs">
+                              <input
+                                aria-label={`Line ${li.line_number} item code`}
+                                placeholder="item code"
+                                value={lineValue(li, "raw_sku")}
+                                onChange={setLine(li, "raw_sku")}
+                                className={`${textInput} w-20`}
+                              />
+                              <input
+                                aria-label={`Line ${li.line_number} pack size`}
+                                placeholder="pack size"
+                                value={lineValue(li, "raw_pack_size")}
+                                onChange={setLine(li, "raw_pack_size")}
+                                className={`${textInput} w-24`}
+                              />
+                            </div>
+                          </>
                         ) : (
-                          li[f]
+                          <>
+                            {li.raw_description}
+                            <div className="text-xs text-gray-400">
+                              {li.raw_sku ?? "no item code"} ·{" "}
+                              {li.raw_pack_size ?? "no pack size"}
+                            </div>
+                          </>
+                        )}
+                        {flagged && (
+                          <div className="text-xs text-red-700">
+                            qty × unit price ≠ extended
+                          </div>
                         )}
                       </td>
-                    ))}
-                    <td className="py-1.5 pr-3">{li.uom}</td>
-                    {(["unit_price", "extended_price"] as LineField[]).map((f) => (
-                      <td key={f} className="py-1.5 pr-3 text-right">
+                      {(["quantity"] as LineField[]).map((f) => (
+                        <td key={f} className="py-1.5 pr-3 text-right">
+                          {editable ? (
+                            <input
+                              aria-label={`Line ${li.line_number} ${f}`}
+                              inputMode="decimal"
+                              value={lineValue(li, f)}
+                              onChange={(e) =>
+                                setLineDrafts((d) => ({
+                                  ...d,
+                                  [li.id]: { ...d[li.id], [f]: e.target.value },
+                                }))
+                              }
+                              className={moneyInput}
+                            />
+                          ) : (
+                            li[f]
+                          )}
+                        </td>
+                      ))}
+                      <td className="py-1.5 pr-3">
                         {editable ? (
                           <input
-                            aria-label={`Line ${li.line_number} ${f.replace("_", " ")}`}
-                            inputMode="decimal"
-                            value={lineValue(li, f)}
-                            onChange={(e) =>
-                              setLineDrafts((d) => ({ ...d, [li.id]: { ...d[li.id], [f]: e.target.value } }))
-                            }
-                            className={moneyInput}
+                            aria-label={`Line ${li.line_number} unit`}
+                            value={lineValue(li, "uom")}
+                            onChange={setLine(li, "uom")}
+                            className={`${textInput} w-12`}
                           />
                         ) : (
-                          `$${li[f]}`
+                          li.uom
                         )}
                       </td>
-                    ))}
-                    <td className="py-1.5 pr-3 text-gray-500">{li.review_status}</td>
-                    {editable && (
-                      <td className="py-1.5 text-right">
-                        <button
-                          onClick={() => void removeLine(li)}
-                          disabled={busy}
-                          aria-label={`Remove line ${li.line_number}`}
-                          className="text-xs text-gray-400 hover:text-red-700 disabled:opacity-50"
-                        >
-                          Remove
-                        </button>
+                      {(["unit_price", "extended_price"] as LineField[]).map(
+                        (f) => (
+                          <td key={f} className="py-1.5 pr-3 text-right">
+                            {editable ? (
+                              <input
+                                aria-label={`Line ${li.line_number} ${f.replace("_", " ")}`}
+                                inputMode="decimal"
+                                value={lineValue(li, f)}
+                                onChange={(e) =>
+                                  setLineDrafts((d) => ({
+                                    ...d,
+                                    [li.id]: {
+                                      ...d[li.id],
+                                      [f]: e.target.value,
+                                    },
+                                  }))
+                                }
+                                className={moneyInput}
+                              />
+                            ) : (
+                              `$${li[f]}`
+                            )}
+                          </td>
+                        ),
+                      )}
+                      <td className="py-1.5 pr-3 text-gray-500">
+                        {li.review_status}
                       </td>
-                    )}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                      {editable && (
+                        <td className="py-1.5 text-right">
+                          <button
+                            onClick={() => void removeLine(li)}
+                            disabled={busy}
+                            aria-label={`Remove line ${li.line_number}`}
+                            className="text-xs text-gray-400 hover:text-red-700 disabled:opacity-50"
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
           {invoice.line_items.length === 0 && (
             <p className="py-4 text-sm text-gray-500">
-              No line items were detected on this invoice.{editable && " Add them from the invoice image."}
+              No line items were detected on this invoice.
+              {editable && " Add them from the invoice image."}
             </p>
           )}
           {editable && (
@@ -343,7 +507,9 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
                     aria-label={f}
                     inputMode="decimal"
                     value={headerValue(f)}
-                    onChange={(e) => setHeaderDrafts((d) => ({ ...d, [f]: e.target.value }))}
+                    onChange={(e) =>
+                      setHeaderDrafts((d) => ({ ...d, [f]: e.target.value }))
+                    }
                     className={moneyInput}
                   />
                 ) : (
@@ -365,12 +531,20 @@ export default function InvoiceReview({ initial, distributors }: { initial: Invo
               <button
                 onClick={() => void send("POST", "/confirm")}
                 disabled={busy || dirty || !invoice.check.passes}
-                title={dirty ? "Save your changes first" : !invoice.check.passes ? "The numbers still don't add up" : ""}
+                title={
+                  dirty
+                    ? "Save your changes first"
+                    : !invoice.check.passes
+                      ? "The numbers still don't add up"
+                      : ""
+                }
                 className="rounded bg-gray-900 px-3 py-1.5 text-sm text-white hover:bg-gray-800 disabled:opacity-40"
               >
                 Confirm invoice
               </button>
-              {dirty && <span className="text-xs text-gray-500">Unsaved changes</span>}
+              {dirty && (
+                <span className="text-xs text-gray-500">Unsaved changes</span>
+              )}
             </div>
           )}
           {error && <p className="mt-3 text-sm text-red-700">{error}</p>}
@@ -402,5 +576,9 @@ export function StatusBadge({ status }: { status: string }) {
         : status === "failed"
           ? "bg-red-100 text-red-800"
           : "bg-gray-100 text-gray-700";
-  return <span className={`rounded px-2 py-0.5 text-xs font-medium ${style}`}>{status.replace("_", " ")}</span>;
+  return (
+    <span className={`rounded px-2 py-0.5 text-xs font-medium ${style}`}>
+      {status.replace("_", " ")}
+    </span>
+  );
 }
