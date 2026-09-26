@@ -1,8 +1,8 @@
 import { computeSparklineCoords, type PriceHistoryPoint } from "@/lib/sparkline";
 import { labelAnchor, ordinal, priceVerdict, trackPosition } from "@/lib/spectrum";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
-const TENANT_ID = process.env.NEXT_PUBLIC_DEV_TENANT_ID ?? "";
+import NoLocation from "@/components/NoLocation";
+import { requireSession, serverGet } from "@/lib/server";
 
 type BenchmarkPosition = {
   p25: string;
@@ -28,9 +28,8 @@ type InsightCard = {
   benchmark: BenchmarkPosition | null;
 };
 
-async function getInsights(): Promise<InsightCard[]> {
-  if (!TENANT_ID) return [];
-  const res = await fetch(`${API_BASE}/insights?tenant_id=${TENANT_ID}`, { cache: "no-store" });
+async function getInsights(locationId: string): Promise<InsightCard[]> {
+  const res = await serverGet(`/insights?tenant_id=${locationId}`);
   if (!res.ok) return [];
   return res.json();
 }
@@ -154,15 +153,9 @@ function BenchmarkSpectrum({ benchmark }: { benchmark: BenchmarkPosition }) {
 }
 
 export default async function InsightsPage() {
-  const cards = await getInsights();
-
-  if (!TENANT_ID) {
-    return (
-      <p className="text-sm text-gray-600">
-        Set <code>NEXT_PUBLIC_DEV_TENANT_ID</code> in <code>frontend/.env.local</code>.
-      </p>
-    );
-  }
+  const { locationId } = await requireSession();
+  if (!locationId) return <NoLocation />;
+  const cards = await getInsights(locationId);
 
   return (
     <div className="max-w-3xl">

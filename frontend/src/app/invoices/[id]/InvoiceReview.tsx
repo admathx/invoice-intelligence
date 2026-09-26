@@ -1,13 +1,13 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
+import { useLocationId } from "@/components/SessionContext";
+import { api } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
 
 import AddLineModal from "./AddLineModal";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
-const TENANT_ID = process.env.NEXT_PUBLIC_DEV_TENANT_ID ?? "";
 
 type LineItem = {
   id: string;
@@ -83,6 +83,8 @@ export default function InvoiceReview({
   initial: InvoiceDetail;
   distributors: Distributor[];
 }) {
+  const router = useRouter();
+  const locationId = useLocationId();
   const [invoice, setInvoice] = useState(initial);
   const [lineDrafts, setLineDrafts] = useState<
     Record<string, Partial<Record<LineField, string>>>
@@ -136,8 +138,8 @@ export default function InvoiceReview({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(
-        `${API_BASE}/invoices/${invoice.id}${path}?tenant_id=${TENANT_ID}`,
+      const res = await api(
+        `/invoices/${invoice.id}${path}?tenant_id=${locationId}`,
         {
           method,
           headers: body ? { "Content-Type": "application/json" } : undefined,
@@ -172,6 +174,7 @@ export default function InvoiceReview({
       setInvoice(data);
       setLineDrafts({});
       setHeaderDrafts({});
+      router.refresh(); // the history below the form
     } catch {
       setError("Couldn't reach the server. Nothing was saved.");
     } finally {
@@ -187,8 +190,8 @@ export default function InvoiceReview({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(
-        `${API_BASE}/invoices/${invoice.id}/line-items/${li.id}?tenant_id=${TENANT_ID}`,
+      const res = await api(
+        `/invoices/${invoice.id}/line-items/${li.id}?tenant_id=${locationId}`,
         {
           method: "DELETE",
         },
@@ -200,6 +203,7 @@ export default function InvoiceReview({
       }
       setInvoice(data);
       setLineDrafts(({ [li.id]: _removed, ...rest }) => rest);
+      router.refresh();
     } catch {
       setError("Couldn't reach the server. Nothing was removed.");
     } finally {
@@ -280,7 +284,7 @@ export default function InvoiceReview({
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   key={url}
-                  src={`${API_BASE}${url}`}
+                  src={`/api${url}`}
                   alt="Invoice page"
                   className="w-full rounded border border-gray-200"
                 />
@@ -560,6 +564,7 @@ export default function InvoiceReview({
           onAdded={(updated) => {
             setInvoice(updated);
             setAdding(false);
+            router.refresh();
           }}
         />
       )}

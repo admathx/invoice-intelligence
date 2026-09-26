@@ -2,12 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { useLocationId } from "@/components/SessionContext";
+import { api, jsonInit } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
 
 import type { InvoiceDetail } from "./InvoiceReview";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
-const TENANT_ID = process.env.NEXT_PUBLIC_DEV_TENANT_ID ?? "";
 
 type Suggestion = {
   raw_description: string;
@@ -59,6 +58,7 @@ export default function AddLineModal({
   onClose: () => void;
   onAdded: (invoice: InvoiceDetail) => void;
 }) {
+  const locationId = useLocationId();
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [picked, setPicked] = useState<Suggestion | null>(null);
@@ -75,8 +75,8 @@ export default function AddLineModal({
     const requestId = ++latestSearch.current;
     setQuery(q);
     try {
-      const params = new URLSearchParams({ tenant_id: TENANT_ID, q });
-      const res = await fetch(`${API_BASE}/invoices/${invoiceId}/line-item-suggestions?${params}`, { cache: "no-store" });
+      const params = new URLSearchParams({ tenant_id: locationId, q });
+      const res = await api(`/invoices/${invoiceId}/line-item-suggestions?${params}`);
       const data = res.ok ? await res.json() : [];
       if (requestId === latestSearch.current) setSuggestions(data);
     } catch {
@@ -115,15 +115,14 @@ export default function AddLineModal({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/invoices/${invoiceId}/line-items?tenant_id=${TENANT_ID}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const res = await api(
+        `/invoices/${invoiceId}/line-items?tenant_id=${locationId}`,
+        jsonInit("POST", {
           ...fields,
           raw_sku: fields.raw_sku || null,
           raw_pack_size: fields.raw_pack_size || null,
         }),
-      });
+      );
       const data = await res.json().catch(() => null);
       if (!res.ok) {
         setError(formatApiError(data?.detail, "Couldn't add the line."));

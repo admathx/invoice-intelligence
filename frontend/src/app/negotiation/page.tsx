@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
-const TENANT_ID = process.env.NEXT_PUBLIC_DEV_TENANT_ID ?? "";
+import NoLocation from "@/components/NoLocation";
+import { useLocationId } from "@/components/SessionContext";
+import { api } from "@/lib/api";
 
 type Basis = "auto" | "peer" | "history";
 
@@ -55,6 +56,7 @@ function TargetEvidence({ line }: { line: NegotiationLine }) {
 
 export default function NegotiationPage() {
   const [basis, setBasis] = useState<Basis>("auto");
+  const locationId = useLocationId();
   // Held as one object rather than separate pieces of state: every figure on
   // the page (including the total, summed server-side in Decimal per
   // backend/app/api/negotiation.py) belongs to the same sheet, and a partial
@@ -66,11 +68,11 @@ export default function NegotiationPage() {
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    if (!TENANT_ID) return;
+    if (!locationId) return;
     let cancelled = false;
     setSheet(null);
     setFailed(false);
-    fetch(`${API_BASE}/negotiation?tenant_id=${TENANT_ID}&basis=${basis}`, { cache: "no-store" })
+    api(`/negotiation?tenant_id=${locationId}&basis=${basis}`)
       .then((res) => {
         if (!res.ok) throw new Error(`negotiation request failed: ${res.status}`);
         return res.json();
@@ -90,15 +92,9 @@ export default function NegotiationPage() {
     return () => {
       cancelled = true;
     };
-  }, [basis]);
+  }, [basis, locationId]);
 
-  if (!TENANT_ID) {
-    return (
-      <p className="text-sm text-gray-600">
-        Set <code>NEXT_PUBLIC_DEV_TENANT_ID</code> in <code>frontend/.env.local</code>.
-      </p>
-    );
-  }
+  if (!locationId) return <NoLocation />;
 
   const emptyMessage = failed
     ? "Couldn't load the sheet — the server didn't respond. Nothing here is out of date; there's just nothing here yet."

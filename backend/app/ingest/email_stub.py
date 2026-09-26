@@ -25,6 +25,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app import audit
 from app.config import settings
 from app.db import bind_tenant
 from app.ingest.upload import InvalidInvoiceFileError, is_pdf_bytes, save_invoice_bytes, validate_invoice_bytes
@@ -280,6 +281,16 @@ def ingest_email_file(db: Session, path: Path, inbox_dir: Path | None = None) ->
             )
             invoice.original_file_uri = save_invoice_bytes(invoice.id, attachment.filename, attachment.content)
             db.add(invoice)
+            audit.record(
+                db,
+                None,
+                "invoice.received_by_email",
+                "invoice",
+                invoice.id,
+                tenant.id,
+                filename=attachment.filename,
+                message_id=parsed.message_id,
+            )
             invoice_ids.append(invoice.id)
         db.commit()
     except Exception as exc:

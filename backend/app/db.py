@@ -85,18 +85,14 @@ def _enforce_tenant_scope(execute_state) -> None:
 
 
 def get_db() -> Generator[Session, None, None]:
-    """Unscoped session — only for endpoints/scripts with no tenant-scoped query."""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    """Unscoped session — only for endpoints/scripts with no tenant-scoped query.
 
-
-def get_db_for_tenant(tenant_id: uuid.UUID) -> Generator[Session, None, None]:
-    """FastAPI dependency: scopes every TenantScoped query in this request to tenant_id."""
+    Tenant-scoped endpoints use app.auth.get_db_for_tenant, which checks the
+    signed-in user may open that tenant before binding it. It lives there,
+    not here, so there is no way to get a tenant-bound request session that
+    skipped the check.
+    """
     db = SessionLocal()
-    bind_tenant(db, tenant_id)
     try:
         yield db
     finally:

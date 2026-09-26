@@ -13,10 +13,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app import audit
 from app.analytics.benchmark import account_key_for
 from app.analytics.price_creep import upsert_creep_alerts
 from app.api.deps import get_tenant_or_404
-from app.db import get_db_for_tenant
+from app.auth import current_user, get_db_for_tenant
 from app.models import (
     CanonicalSku,
     Distributor,
@@ -25,6 +26,7 @@ from app.models import (
     PriceObservation,
     SkuAlias,
     Tenant,
+    User,
     build_price_observation,
 )
 from app.models.distributor import UNRECOGNIZED_SLUG
@@ -74,7 +76,9 @@ def _require_recognized_distributor(db: Session, invoice: Invoice) -> None:
         )
 
 
-def _write_alias(db: Session, line: InvoiceLineItem, invoice: Invoice, canonical_sku_id: uuid.UUID) -> bool:
+def _write_alias(
+    db: Session, line: InvoiceLineItem, invoice: Invoice, canonical_sku_id: uuid.UUID, user: User
+) -> bool:
     if invoice.distributor_id is None:
         return False
     # Extraction's 'other' is a real row but not a catalog. An alias under it
@@ -97,6 +101,7 @@ def _write_alias(db: Session, line: InvoiceLineItem, invoice: Invoice, canonical
             raw_description=line.raw_description,
             raw_sku=line.raw_sku,
             pack_size=line.raw_pack_size,
+            confirmed_by_user_id=user.id,
         )
     )
     return True
@@ -110,14 +115,36 @@ def _write_observation(db: Session, line: InvoiceLineItem, invoice: Invoice, ten
     return True
 
 
-def _finalize(db: Session, line: InvoiceLineItem, invoice: Invoice, tenant: Tenant) -> ReviewActionResponse:
+def _finalize(
+    db: Session,
+    line: InvoiceLineItem,
+    invoice: Invoice,
+    tenant: Tenant,
+    user: User,
+    action: str,
+    previous_sku_id: uuid.UUID | None,
+) -> ReviewActionResponse:
     """Shared by confirm and correct: both write an alias and (when
     resolvable) an observation, commit, and refresh the same response shape
     — the only thing that differs between the two endpoints is how `line`
     got mutated before this runs.
     """
-    wrote_alias = _write_alias(db, line, invoice, line.canonical_sku_id)
+    wrote_alias = _write_alias(db, line, invoice, line.canonical_sku_id, user)
     wrote_observation = _write_observation(db, line, invoice, tenant)
+    audit.record(
+        db,
+        user,
+        action,
+        "invoice_line_item",
+        line.id,
+        tenant.id,
+        invoice_id=invoice.id,
+        line_number=line.line_number,
+        raw_sku=line.raw_sku,
+        raw_description=line.raw_description,
+        canonical_sku={"from": previous_sku_id, "to": line.canonical_sku_id},
+        review_status=line.review_status,
+    )
     db.commit()
     db.refresh(line)
 
@@ -184,7 +211,10 @@ def get_review_queue(
 
 @router.post("/{line_item_id}/confirm", response_model=ReviewActionResponse)
 def confirm_line_item(
-    line_item_id: uuid.UUID, tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)
+    line_item_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
 ) -> ReviewActionResponse:
     """Confirms the already-suggested canonical_sku_id is correct — the
     review-band case (0.80-0.92 confidence) where the matcher's guess was
@@ -198,7 +228,7 @@ def confirm_line_item(
         raise HTTPException(status_code=400, detail="no suggested match to confirm — use /correct instead")
 
     line.review_status = ReviewStatus.confirmed
-    return _finalize(db, line, invoice, tenant)
+    return _finalize(db, line, invoice, tenant, user, "invoice_line.match_confirmed", line.canonical_sku_id)
 
 
 @router.post("/{line_item_id}/correct", response_model=ReviewActionResponse)
@@ -207,6 +237,7 @@ def correct_line_item(
     tenant_id: uuid.UUID,
     body: CorrectRequest,
     db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
 ) -> ReviewActionResponse:
     """Reassigns canonical_sku_id (whether the line previously had a wrong
     suggestion or none at all) and recomputes normalized price/qty via the
@@ -219,6 +250,7 @@ def correct_line_item(
     sku = db.get(CanonicalSku, body.canonical_sku_id)
     if sku is None:
         raise HTTPException(status_code=404, detail="canonical SKU not found")
+    previous_sku_id = line.canonical_sku_id
 
     result = _exact_match_result(
         db,
@@ -244,12 +276,15 @@ def correct_line_item(
         ReviewStatus.corrected if result.normalized_unit_price is not None else result.review_status
     )
 
-    return _finalize(db, line, invoice, tenant)
+    return _finalize(db, line, invoice, tenant, user, "invoice_line.match_corrected", previous_sku_id)
 
 
 @router.post("/{line_item_id}/reopen", response_model=ReviewActionResponse)
 def reopen_line_item(
-    line_item_id: uuid.UUID, tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)
+    line_item_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
 ) -> ReviewActionResponse:
     """Sends an already-resolved line back to the review queue.
 
@@ -292,6 +327,20 @@ def reopen_line_item(
             )
         )
 
+    audit.record(
+        db,
+        user,
+        "invoice_line.reopened",
+        "invoice_line_item",
+        line.id,
+        tenant.id,
+        invoice_id=invoice.id,
+        line_number=line.line_number,
+        raw_sku=line.raw_sku,
+        raw_description=line.raw_description,
+        canonical_sku_id=line.canonical_sku_id,
+        review_status={"from": line.review_status, "to": ReviewStatus.pending},
+    )
     line.review_status = ReviewStatus.pending
     db.commit()
     db.refresh(line)

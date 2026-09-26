@@ -3,8 +3,9 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
-const TENANT_ID = process.env.NEXT_PUBLIC_DEV_TENANT_ID ?? "";
+import NoLocation from "@/components/NoLocation";
+import { useLocationId } from "@/components/SessionContext";
+import { api, jsonInit } from "@/lib/api";
 
 type QueueItem = {
   id: string;
@@ -43,6 +44,7 @@ function ReviewQueueInner() {
   // through one distributor at a time, and for e2e tests that need a clean
   // slice of the queue instead of every pending line across every source.
   const distributorId = useSearchParams().get("distributor_id");
+  const locationId = useLocationId();
   const [queue, setQueue] = useState<QueueItem[] | null>(null);
   const [index, setIndex] = useState(0);
   const [clearedCount, setClearedCount] = useState(0);
@@ -56,14 +58,14 @@ function ReviewQueueInner() {
   const latestSearch = useRef(0);
 
   useEffect(() => {
-    if (!TENANT_ID) return;
+    if (!locationId) return;
     // Ignore a stale response: if distributorId changes again before this
     // request resolves, an out-of-order response must not clobber the
     // queue for whichever filter is current by the time it lands.
     let ignore = false;
-    const params = new URLSearchParams({ tenant_id: TENANT_ID });
+    const params = new URLSearchParams({ tenant_id: locationId });
     if (distributorId) params.set("distributor_id", distributorId);
-    fetch(`${API_BASE}/review/queue?${params}`, { cache: "no-store" })
+    api(`/review/queue?${params}`)
       .then((res) => (res.ok ? res.json() : []))
       .then((data) => {
         if (ignore) return;
@@ -82,7 +84,7 @@ function ReviewQueueInner() {
     return () => {
       ignore = true;
     };
-  }, [distributorId]);
+  }, [distributorId, locationId]);
 
   const current = queue?.[index] ?? null;
 
@@ -111,7 +113,7 @@ function ReviewQueueInner() {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/skus?q=${encodeURIComponent(q)}`);
+      const res = await api(`/skus?q=${encodeURIComponent(q)}`);
       const data = res.ok ? await res.json() : [];
       if (requestId === latestSearch.current) setResults(data);
     } catch {
@@ -129,9 +131,7 @@ function ReviewQueueInner() {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/review/${current.id}/confirm?tenant_id=${TENANT_ID}`, {
-        method: "POST",
-      });
+      const res = await api(`/review/${current.id}/confirm?tenant_id=${locationId}`, { method: "POST" });
       if (!res.ok) {
         setError((await res.json()).detail ?? "confirm failed");
         return;
@@ -147,11 +147,10 @@ function ReviewQueueInner() {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/review/${current.id}/correct?tenant_id=${TENANT_ID}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ canonical_sku_id: skuId }),
-      });
+      const res = await api(
+        `/review/${current.id}/correct?tenant_id=${locationId}`,
+        jsonInit("POST", { canonical_sku_id: skuId }),
+      );
       if (!res.ok) {
         setError((await res.json()).detail ?? "correct failed");
         return;
@@ -188,13 +187,7 @@ function ReviewQueueInner() {
     }
   }
 
-  if (!TENANT_ID) {
-    return (
-      <p className="text-sm text-gray-600">
-        Set <code>NEXT_PUBLIC_DEV_TENANT_ID</code> in <code>frontend/.env.local</code>.
-      </p>
-    );
-  }
+  if (!locationId) return <NoLocation />;
 
   if (queue === null) {
     return <p className="text-sm text-gray-500">Loading review queue...</p>;

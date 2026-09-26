@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.analytics.negotiation import NegotiationBasis, build_negotiation_sheet
 from app.api.deps import get_tenant_or_404
-from app.db import get_db_for_tenant
+from app.auth import get_db_for_tenant
 from app.models import CanonicalSku
 from app.schemas.negotiation import NegotiationLineOut, NegotiationSheetOut
 

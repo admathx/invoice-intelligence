@@ -1,8 +1,8 @@
+import NoLocation from "@/components/NoLocation";
+import { requireSession, serverGet } from "@/lib/server";
+
 import { StatusBadge } from "./[id]/InvoiceReview";
 import UploadForm from "./UploadForm";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
-const TENANT_ID = process.env.NEXT_PUBLIC_DEV_TENANT_ID ?? "";
 
 type Invoice = {
   id: string;
@@ -14,26 +14,16 @@ type Invoice = {
   created_at: string;
 };
 
-async function getInvoices(): Promise<Invoice[]> {
-  if (!TENANT_ID) return [];
-  const res = await fetch(`${API_BASE}/invoices?tenant_id=${TENANT_ID}`, {
-    cache: "no-store",
-  });
+async function getInvoices(locationId: string): Promise<Invoice[]> {
+  const res = await serverGet(`/invoices?tenant_id=${locationId}`);
   if (!res.ok) return [];
   return res.json();
 }
 
 export default async function InvoicesPage() {
-  const invoices = await getInvoices();
-
-  if (!TENANT_ID) {
-    return (
-      <p className="text-sm text-gray-600">
-        Set <code>NEXT_PUBLIC_DEV_TENANT_ID</code> in <code>frontend/.env.local</code> to a tenant
-        id (see <code>frontend/.env.local.example</code>).
-      </p>
-    );
-  }
+  const { locationId } = await requireSession();
+  if (!locationId) return <NoLocation />;
+  const invoices = await getInvoices(locationId);
 
   // Surfaced up top because these invoices are otherwise invisible in the
   // numbers: their prices are held out of every benchmark, alert and

@@ -10,7 +10,8 @@ import { expect, test } from "@playwright/test";
 // seed_corpus_pipeline.py already uses for Phase 4, so this gate doesn't
 // depend on Anthropic API budget/credit to run.
 
-const TENANT_ID = process.env.NEXT_PUBLIC_DEV_TENANT_ID ?? "";
+const TENANT_ID = process.env.E2E_TENANT_ID ?? "";
+const CSRF = { "X-Requested-With": "invoice-intelligence" };
 const REPO_ROOT = path.resolve(__dirname, "../..");
 const BACKEND_DIR = path.join(REPO_ROOT, "backend");
 const PYTHON = path.join(BACKEND_DIR, ".venv/bin/python");
@@ -40,8 +41,51 @@ function runFixture(...args: string[]) {
   return JSON.parse(out.toString());
 }
 
+type Login = { email: string; password: string };
+
+// A throwaway member of TENANT_ID, with a password generated for this run
+// (backend/scripts/e2e_fixture.py login). Made once: re-running it resets the
+// password and signs out every session it had.
+let login: Login | null = null;
+function e2eLogin(): Login {
+  login ??= runFixture("login", TENANT_ID) as Login;
+  return login;
+}
+
+test.describe("signing in", () => {
+  test.skip(!TENANT_ID, "E2E_TENANT_ID not set in frontend/.env.local");
+
+  test("a signed-out visitor is sent to sign in, and back where they were after", async ({ page }) => {
+    const { email, password } = e2eLogin();
+    await page.goto("/negotiation");
+    await expect(page).toHaveURL(/\/login\?next=%2Fnegotiation/);
+
+    await page.getByLabel("Email").fill(email);
+    await page.getByLabel("Password").fill("not the password");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.getByText("email or password is incorrect")).toBeVisible();
+
+    await page.getByLabel("Password").fill(password);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page).toHaveURL(/\/negotiation$/);
+    await expect(page.getByText("E2E Reviewer")).toBeVisible();
+    // A member, not an operator: no cross-location Businesses page.
+    await expect(page.getByRole("link", { name: "Businesses" })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await expect(page).toHaveURL(/\/login/);
+    await page.goto("/invoices");
+    await expect(page).toHaveURL(/\/login/);
+  });
+});
+
 test.describe("ingest -> review -> negotiation sheet", () => {
-  test.skip(!TENANT_ID, "NEXT_PUBLIC_DEV_TENANT_ID not set in frontend/.env.local");
+  test.skip(!TENANT_ID, "E2E_TENANT_ID not set in frontend/.env.local");
+
+  test.beforeEach(async ({ page }) => {
+    const res = await page.request.post("/api/auth/login", { data: e2eLogin(), headers: CSRF });
+    expect(res.ok()).toBeTruthy();
+  });
 
   // Fixtures confirm invoices on real catalog SKUs, so they'd otherwise sit in
   // this tenant's real benchmarks and creep alerts until the next run.
@@ -173,6 +217,11 @@ test.describe("ingest -> review -> negotiation sheet", () => {
 
     await expect(page.getByText("Confirmed after review")).toBeVisible();
     await expect(page.getByText("confirmed", { exact: true })).toBeVisible();
+
+    // The audit trail: who fixed which number, from what to what.
+    const history = page.locator("section", { has: page.getByRole("heading", { name: "History" }) });
+    await expect(history.getByText("E2E Reviewer confirmed the invoice")).toBeVisible();
+    await expect(history.getByText("line 1: unit price 74.50 → 47.50")).toBeVisible();
   });
 
   test("lines can be entered by hand when extraction found none, starting from a past purchase", async ({ page }) => {

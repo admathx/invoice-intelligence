@@ -7,7 +7,7 @@ from app.models.price_alert import PriceAlert
 from app.models.price_observation import PriceObservation, build_price_observation
 from app.models.sku_alias import SkuAlias
 from app.models.tenant import Tenant
-from app.models.user import User
+from app.models.user import AuditEvent, TenantMembership, User, UserSession
 
 __all__ = [
     "Account",
@@ -21,4 +21,7 @@ __all__ = [
     "SkuAlias",
     "Tenant",
     "User",
+    "UserSession",
+    "TenantMembership",
+    "AuditEvent",
 ]

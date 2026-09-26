@@ -10,6 +10,9 @@ Subcommands (see backend/scripts/e2e_fixture.py --help via argparse):
   setup-bulk <tenant_id> <n> creates n pending items that each already have a
                              suggested canonical_sku_id (the review-band
                              case) — for timing "clear N items via keyboard."
+  login <tenant_id>          creates/resets the e2e login (a member of that
+                             tenant) with a fresh random password, prints
+                             {email, password} for the spec to sign in with.
   verify-alias <distributor_id> <raw_sku> <raw_description>
                              calls the real matcher again for that
                              (distributor, raw_sku) pair and prints the
@@ -30,9 +33,28 @@ import sqlalchemy  # noqa: E402
 
 from app.analytics.price_creep import upsert_creep_alerts  # noqa: E402
 from app.db import SessionLocal, bind_tenant  # noqa: E402
-from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceObservation, SkuAlias  # noqa: E402
+from app.models import (  # noqa: E402
+    AuditEvent,
+    CanonicalSku,
+    Distributor,
+    Invoice,
+    InvoiceLineItem,
+    PriceObservation,
+    SkuAlias,
+)
 from app.models.enums import InvoiceSource, InvoiceStatus, ReviewStatus  # noqa: E402
 from app.normalize.matcher import match_line_item  # noqa: E402
+
+
+def _delete_history(db, invoice_ids: list[uuid.UUID]) -> None:
+    """The fixtures' audit events go with them: a history for invoices that
+    no longer exist would only clutter the location's Activity page."""
+    ids = [str(i) for i in invoice_ids]
+    db.execute(
+        sqlalchemy.delete(AuditEvent).where(
+            sqlalchemy.or_(AuditEvent.entity_id.in_(invoice_ids), AuditEvent.details["invoice_id"].astext.in_(ids))
+        )
+    )
 
 
 def _cleanup_prior_fixtures(db, tenant_id: uuid.UUID) -> None:
@@ -65,6 +87,7 @@ def _cleanup_prior_fixtures(db, tenant_id: uuid.UUID) -> None:
         ).all()
     ]
     if empty_ids:
+        _delete_history(db, empty_ids)
         empty_lines = sqlalchemy.select(InvoiceLineItem.id).where(InvoiceLineItem.invoice_id.in_(empty_ids))
         db.execute(sqlalchemy.delete(PriceObservation).where(PriceObservation.invoice_line_item_id.in_(empty_lines)))
         db.execute(sqlalchemy.delete(InvoiceLineItem).where(InvoiceLineItem.invoice_id.in_(empty_ids)))
@@ -75,6 +98,7 @@ def _cleanup_prior_fixtures(db, tenant_id: uuid.UUID) -> None:
     invoice_ids = [
         row[0] for row in db.execute(sqlalchemy.select(Invoice.id).where(Invoice.distributor_id.in_(prior_ids))).all()
     ]
+    _delete_history(db, invoice_ids)
     line_item_ids = sqlalchemy.select(InvoiceLineItem.id).where(InvoiceLineItem.invoice_id.in_(invoice_ids))
     db.execute(sqlalchemy.delete(PriceObservation).where(PriceObservation.invoice_line_item_id.in_(line_item_ids)))
     db.execute(sqlalchemy.delete(InvoiceLineItem).where(InvoiceLineItem.invoice_id.in_(invoice_ids)))
@@ -320,6 +344,20 @@ def cmd_cleanup(tenant_id: str) -> None:
     print(json.dumps({"cleaned": tenant_id}))
 
 
+E2E_LOGIN = ("e2e@dev.test", "E2E Reviewer")
+
+
+def cmd_login(tenant_id: str) -> None:
+    from scripts.seed_dev_users import upsert_login
+
+    db = SessionLocal()
+    try:
+        user, password = upsert_login(db, *E2E_LOGIN, tenant_ids=(uuid.UUID(tenant_id),))
+        print(json.dumps({"email": user.email, "password": password}))
+    finally:
+        db.close()
+
+
 def cmd_verify_alias(tenant_id: str, distributor_id: str, raw_sku: str, raw_description: str) -> None:
     """Asks the matcher what THIS tenant now gets for a (distributor, raw_sku).
 
@@ -366,6 +404,9 @@ def main() -> None:
     empty_p = sub.add_parser("setup-empty-invoice")
     empty_p.add_argument("tenant_id")
 
+    login_p = sub.add_parser("login")
+    login_p.add_argument("tenant_id")
+
     cleanup_p = sub.add_parser("cleanup")
     cleanup_p.add_argument("tenant_id")
 
@@ -384,6 +425,8 @@ def main() -> None:
         cmd_setup_needs_review(args.tenant_id)
     elif args.command == "setup-empty-invoice":
         cmd_setup_empty_invoice(args.tenant_id)
+    elif args.command == "login":
+        cmd_login(args.tenant_id)
     elif args.command == "cleanup":
         cmd_cleanup(args.tenant_id)
     elif args.command == "verify-alias":

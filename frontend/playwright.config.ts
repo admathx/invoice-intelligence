@@ -3,7 +3,7 @@ import path from "node:path";
 import { defineConfig } from "@playwright/test";
 
 // Playwright doesn't read .env.local the way `next dev` does — load it here
-// so e2e/dashboard.spec.ts can see NEXT_PUBLIC_DEV_TENANT_ID.
+// so e2e/dashboard.spec.ts can see E2E_TENANT_ID.
 try {
   const envPath = path.join(__dirname, ".env.local");
   for (const line of readFileSync(envPath, "utf-8").split("\n")) {

@@ -1,8 +1,8 @@
 """Shared API-layer helpers.
 
-`get_tenant_or_404` exists because `get_db_for_tenant` only *binds* a
-tenant_id for query scoping (app/db.py) — it never checks that the tenant
-actually exists. Endpoints that skipped their own check behaved
+`get_tenant_or_404` exists because `get_db_for_tenant` (app/auth.py) checks
+that the signed-in user may open a tenant, but for an operator (who may open
+any) that is no check that the tenant actually exists. Endpoints that skipped their own check behaved
 inconsistently: some returned a clean 404, others a degenerate 200, and the
 one write endpoint (invoices.upload_invoice) would have raised an unhandled
 IntegrityError on the FK after already writing the uploaded file to disk.

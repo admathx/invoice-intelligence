@@ -18,6 +18,8 @@ frontend/blob-report/
 # Env / secrets
 .env
 *.env.local
+# Generated dev logins (backend/scripts/seed_dev_users.py)
+backend/dev_users.local.json
 
 # Synthetic output (regeneratable, large)
 synthetic/out/*

@@ -1,5 +1,5 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
-const TENANT_ID = process.env.NEXT_PUBLIC_DEV_TENANT_ID ?? "";
+import NoLocation from "@/components/NoLocation";
+import { requireSession, serverGet } from "@/lib/server";
 
 type MatchedLine = {
   invoice_id: string;
@@ -20,14 +20,16 @@ type SkuDetail = {
   matched_lines: MatchedLine[];
 };
 
-async function getSku(id: string): Promise<SkuDetail | null> {
-  const res = await fetch(`${API_BASE}/skus/${id}?tenant_id=${TENANT_ID}`, { cache: "no-store" });
+async function getSku(id: string, locationId: string): Promise<SkuDetail | null> {
+  const res = await serverGet(`/skus/${id}?tenant_id=${locationId}`);
   if (!res.ok) return null;
   return res.json();
 }
 
 export default async function SkuDetailPage({ params }: { params: { id: string } }) {
-  const sku = await getSku(params.id);
+  const { locationId } = await requireSession();
+  if (!locationId) return <NoLocation />;
+  const sku = await getSku(params.id, locationId);
 
   if (!sku) {
     return <p className="text-sm text-gray-600">SKU not found.</p>;
@@ -72,7 +74,7 @@ export default async function SkuDetailPage({ params }: { params: { id: string }
           {sku.matched_lines.length === 0 && (
             <tr>
               <td colSpan={6} className="py-4 text-gray-500">
-                No matched invoice lines yet for this tenant.
+                No matched invoice lines yet at this location.
               </td>
             </tr>
           )}

@@ -29,10 +29,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
+from app import audit
 from app.analytics.price_creep import upsert_creep_alerts
 from app.api.deps import get_tenant_or_404
+from app.auth import current_user, get_db_for_tenant
 from app.config import settings
-from app.db import get_db_for_tenant
 from app.extract.confidence import check_arithmetic
 from app.models.distributor import UNRECOGNIZED_SLUG
 from app.models import (
@@ -43,6 +44,7 @@ from app.models import (
     PriceObservation,
     SkuAlias,
     Tenant,
+    User,
     build_price_observation,
 )
 from app.models.enums import InvoiceStatus, ReviewStatus
@@ -66,6 +68,15 @@ router = APIRouter(prefix="/invoices", tags=["invoice review"])
 # the invoice's numbers are trusted. A `pending` line still waits on the line
 # queue, and gets its observation when that resolves it (review.py _finalize).
 _RESOLVED = {ReviewStatus.auto, ReviewStatus.confirmed, ReviewStatus.corrected}
+
+# What the audit trail records about an invoice and a line: the numbers and
+# text a person can change here, so "what did it say before" is answerable.
+_INVOICE_AUDITED = ("invoice_date", "subtotal", "tax", "total", "distributor_id")
+_LINE_AUDITED = ("raw_description", "raw_sku", "raw_pack_size", "uom", "quantity", "unit_price", "extended_price")
+
+
+def _snapshot(obj, fields: tuple[str, ...]) -> dict:
+    return {name: getattr(obj, name) for name in fields}
 
 
 @dataclass
@@ -161,7 +172,10 @@ def build_invoice_detail(db: Session, invoice: Invoice) -> InvoiceDetailOut:
 
     render_dir = Path(settings.upload_dir) / "renders" / str(invoice.id)
     page_image_urls = (
-        [f"/renders/{invoice.id}/{p.name}" for p in sorted(render_dir.glob("page_*.png"))]
+        [
+            f"/invoices/{invoice.id}/pages/{p.name}?tenant_id={invoice.tenant_id}"
+            for p in sorted(render_dir.glob("page_*.png"))
+        ]
         if render_dir.is_dir()
         else []
     )
@@ -291,7 +305,11 @@ def _take_under_review(invoice: Invoice) -> None:
 
 @router.patch("/{invoice_id}", response_model=InvoiceDetailOut)
 def edit_invoice(
-    invoice_id: uuid.UUID, tenant_id: uuid.UUID, body: InvoiceEdit, db: Session = Depends(get_db_for_tenant)
+    invoice_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    body: InvoiceEdit,
+    db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
 ) -> InvoiceDetailOut:
     get_tenant_or_404(db, tenant_id)
     invoice = _get_reviewable_invoice(db, invoice_id, editing=True)
@@ -309,6 +327,10 @@ def edit_invoice(
         chosen = db.get(Distributor, body.distributor_id)
         if chosen is None or chosen.slug == UNRECOGNIZED_SLUG:
             raise HTTPException(status_code=422, detail="choose a recognized distributor")
+
+    invoice_before = _snapshot(invoice, _INVOICE_AUDITED)
+    lines_before = {line.id: _snapshot(line, _LINE_AUDITED) for line in lines.values()}
+    status_before = invoice.status
 
     for name in ("invoice_date", "subtotal", "tax", "total"):
         if name in sent and getattr(body, name) is not None:
@@ -337,13 +359,34 @@ def edit_invoice(
             _match(db, invoice, line)
 
     _take_under_review(invoice)
+    line_changes = {
+        str(line.line_number): changed
+        for line in lines.values()
+        if (changed := audit.changes(lines_before[line.id], _snapshot(line, _LINE_AUDITED)))
+    }
+    invoice_changes = audit.changes(invoice_before, _snapshot(invoice, _INVOICE_AUDITED))
+    if invoice_changes or line_changes or invoice.status != status_before:
+        audit.record(
+            db,
+            user,
+            "invoice.edited",
+            "invoice",
+            invoice.id,
+            invoice.tenant_id,
+            changes=invoice_changes,
+            line_changes=line_changes,
+            status={"from": status_before, "to": invoice.status} if invoice.status != status_before else None,
+        )
     db.commit()
     return build_invoice_detail(db, invoice)
 
 
 @router.post("/{invoice_id}/confirm", response_model=InvoiceDetailOut)
 def confirm_invoice(
-    invoice_id: uuid.UUID, tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)
+    invoice_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
 ) -> InvoiceDetailOut:
     get_tenant_or_404(db, tenant_id)
     invoice = _get_reviewable_invoice(db, invoice_id, editing=False)
@@ -365,13 +408,25 @@ def confirm_invoice(
             )
         )
     )
-    wrote_any_observation = False
+    observations_written = 0
     for line in lines:
         if line.review_status in _RESOLVED and line.id not in already_observed:
             observation = build_price_observation(line, invoice, tenant)
             if observation is not None:
                 db.add(observation)
-                wrote_any_observation = True
+                observations_written += 1
+    wrote_any_observation = observations_written > 0
+    audit.record(
+        db,
+        user,
+        "invoice.confirmed",
+        "invoice",
+        invoice.id,
+        invoice.tenant_id,
+        total=invoice.total,
+        line_count=len(lines),
+        price_observations_written=observations_written,
+    )
     db.commit()
 
     # Derived work after the durable commit, and non-fatal for the same reason
@@ -388,7 +443,11 @@ def confirm_invoice(
 
 @router.post("/{invoice_id}/line-items", response_model=InvoiceDetailOut, status_code=201)
 def add_line_item(
-    invoice_id: uuid.UUID, tenant_id: uuid.UUID, body: LineItemCreate, db: Session = Depends(get_db_for_tenant)
+    invoice_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    body: LineItemCreate,
+    db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
 ) -> InvoiceDetailOut:
     """Add a line a person read off the invoice image.
 
@@ -422,13 +481,28 @@ def add_line_item(
     _match(db, invoice, line)
     db.add(line)
     _take_under_review(invoice)
+    audit.record(
+        db,
+        user,
+        "invoice_line.added",
+        "invoice_line_item",
+        line.id,
+        invoice.tenant_id,
+        invoice_id=invoice.id,
+        line_number=line.line_number,
+        values=_snapshot(line, _LINE_AUDITED),
+    )
     db.commit()
     return build_invoice_detail(db, invoice)
 
 
 @router.delete("/{invoice_id}/line-items/{line_item_id}", response_model=InvoiceDetailOut)
 def remove_line_item(
-    invoice_id: uuid.UUID, line_item_id: uuid.UUID, tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)
+    invoice_id: uuid.UUID,
+    line_item_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
 ) -> InvoiceDetailOut:
     """Remove a line that isn't on the page: a mistyped manual entry, or one
     extraction hallucinated. Only on an invoice under review, whose lines by
@@ -444,6 +518,19 @@ def remove_line_item(
     # business, and the ON DELETE SET NULL below would also erase its
     # provenance, so no later re-attribution could find it.
     db.execute(delete(SkuAlias).where(SkuAlias.source_invoice_line_item_id == line.id))
+    # The line's content goes into the event: after the delete, this is the
+    # only record of what it said.
+    audit.record(
+        db,
+        user,
+        "invoice_line.removed",
+        "invoice_line_item",
+        line.id,
+        invoice.tenant_id,
+        invoice_id=invoice.id,
+        line_number=line.line_number,
+        values=_snapshot(line, _LINE_AUDITED),
+    )
     db.delete(line)
     _take_under_review(invoice)
     db.commit()

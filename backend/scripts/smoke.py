@@ -5,6 +5,7 @@ Exits non-zero on failure or timeout, per SPEC.md §10 rule 2 (every gate exits 
 import io
 import sys
 import time
+import uuid
 
 import httpx
 from reportlab.pdfgen import canvas
@@ -12,6 +13,7 @@ from reportlab.pdfgen import canvas
 from app.db import SessionLocal
 from app.models import Tenant
 from app.models.enums import VolumeTier
+from scripts.seed_dev_users import upsert_login
 
 API_BASE = "http://localhost:8000"
 TIMEOUT_SECONDS = 30
@@ -24,6 +26,20 @@ def make_test_pdf() -> bytes:
     c.showPage()
     c.save()
     return buf.getvalue()
+
+
+SMOKE_LOGIN = ("smoke@dev.test", "Smoke Test")
+# app.auth.CSRF_HEADER: required on every write that rides a session cookie.
+CSRF = {"X-Requested-With": "invoice-intelligence"}
+
+
+def smoke_password(tenant_id: str) -> str:
+    db = SessionLocal()
+    try:
+        _, password = upsert_login(db, *SMOKE_LOGIN, tenant_ids=(uuid.UUID(tenant_id),))
+        return password
+    finally:
+        db.close()
 
 
 def get_or_create_dev_tenant() -> str:
@@ -44,7 +60,14 @@ def main() -> int:
     tenant_id = get_or_create_dev_tenant()
     print(f"Using tenant {tenant_id}")
 
-    with httpx.Client(base_url=API_BASE, timeout=10.0) as client:
+    with httpx.Client(base_url=API_BASE, timeout=10.0, headers=CSRF) as client:
+        resp = client.post(
+            "/auth/login", json={"email": SMOKE_LOGIN[0], "password": smoke_password(tenant_id)}
+        )
+        if resp.status_code != 200:
+            print(f"FAIL: sign-in returned {resp.status_code}: {resp.text}")
+            return 1
+
         resp = client.post(
             "/invoices",
             params={"tenant_id": tenant_id},

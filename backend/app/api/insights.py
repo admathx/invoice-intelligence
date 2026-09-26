@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.analytics.benchmark import account_key_for, compute_benchmark
 from app.api.deps import get_tenant_or_404
-from app.db import get_db_for_tenant
+from app.auth import get_db_for_tenant
 from app.models import CanonicalSku, PriceAlert, PriceObservation
 from app.models.enums import AlertStatus
 from app.schemas.insights import BenchmarkPosition, InsightCard, PriceHistoryPoint

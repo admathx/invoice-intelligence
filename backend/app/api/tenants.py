@@ -2,7 +2,8 @@
 
 Exists for the accounts UI (app/api/accounts.py) — every other tenant-facing
 endpoint takes the tenant as a parameter and never needs to enumerate them.
-Same v0 no-auth caveat as accounts.py: this returns every tenant in the system.
+Operators only: this returns every tenant in the system. A member's own
+locations come from GET /auth/me.
 """
 import uuid
 
@@ -11,11 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_tenant_or_404
+from app.auth import require_operator
 from app.db import get_db
 from app.models import Tenant
 from app.schemas.accounts import TenantSummary
 
-router = APIRouter(prefix="/tenants", tags=["tenants"])
+router = APIRouter(prefix="/tenants", tags=["tenants"], dependencies=[Depends(require_operator)])
 
 
 @router.get("", response_model=list[TenantSummary])

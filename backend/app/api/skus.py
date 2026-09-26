@@ -5,15 +5,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_tenant_or_404
-from app.db import get_db, get_db_for_tenant
-from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem
+from app.auth import current_user, get_db_for_tenant
+from app.db import get_db
+from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, User
 from app.schemas.skus import CanonicalSkuDetail, CanonicalSkuSearchResult, SkuMatchedLine
 
 router = APIRouter(prefix="/skus", tags=["skus"])
 
 
 @router.get("", response_model=list[CanonicalSkuSearchResult])
-def search_skus(q: str, db: Session = Depends(get_db)) -> list[CanonicalSku]:
+def search_skus(
+    q: str, db: Session = Depends(get_db), _: User = Depends(current_user)
+) -> list[CanonicalSku]:
     # canonical_skus is a shared reference table (not TenantScoped, see its
     # model docstring) — search isn't scoped to a tenant, only the matched-line
     # detail view below is.

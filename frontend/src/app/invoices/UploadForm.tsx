@@ -3,13 +3,13 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { useLocationId } from "@/components/SessionContext";
+import { api } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
-const TENANT_ID = process.env.NEXT_PUBLIC_DEV_TENANT_ID ?? "";
 
 export default function UploadForm() {
   const router = useRouter();
+  const locationId = useLocationId();
   const [status, setStatus] = useState<"idle" | "uploading" | "error">("idle");
   // The API says why a file was refused (not a PDF, too large); the form used
   // to discard that and show "Upload failed." for everything.
@@ -24,7 +24,7 @@ export default function UploadForm() {
     formData.append("file", file);
 
     try {
-      const res = await fetch(`${API_BASE}/invoices?tenant_id=${TENANT_ID}`, {
+      const res = await api(`/invoices?tenant_id=${locationId}`, {
         method: "POST",
         body: formData,
       });

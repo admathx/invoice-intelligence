@@ -1,4 +1,4 @@
-.PHONY: up down migrate seed seed-analytics smoke watch-inbox test test-e2e validate extraction-report frontend-install frontend-dev
+.PHONY: up down migrate seed seed-analytics dev-users smoke watch-inbox test test-e2e validate extraction-report frontend-install frontend-dev
 
 VENV := .venv/bin
 RUN_DIR := .run
@@ -40,6 +40,12 @@ seed:
 # needed for Phase 0-3 work.
 seed-analytics:
 	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/seed_corpus_pipeline.py
+
+# Throwaway local logins (an operator, and a member of one location).
+# Passwords are generated each run and written to backend/dev_users.local.json.
+# Real users: backend/scripts/manage_users.py (prompts for the password).
+dev-users:
+	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/seed_dev_users.py
 
 smoke:
 	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/smoke.py

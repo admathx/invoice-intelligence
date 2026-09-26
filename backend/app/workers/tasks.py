@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sqlalchemy import delete, select
 
+from app import audit
 from app.analytics.price_creep import upsert_creep_alerts
 from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS, SessionLocal, bind_tenant
@@ -172,6 +173,19 @@ def process_invoice(invoice_id: str) -> None:
                     db.add(observation)
                     wrote_any_observation = True
 
+        audit.record(
+            db,
+            None,
+            "invoice.extracted",
+            "invoice",
+            invoice.id,
+            invoice.tenant_id,
+            status=invoice.status,
+            distributor=extracted.distributor,
+            line_count=len(extracted.line_items),
+            extraction_model=invoice.extraction_model,
+            extraction_cost_usd=invoice.extraction_cost_usd,
+        )
         db.commit()
     except Exception as exc:
         db.rollback()
@@ -182,6 +196,15 @@ def process_invoice(invoice_id: str) -> None:
                 # Both attempts were billed; record them even though nothing
                 # validated (see ExtractionFailedError).
                 invoice.extraction_cost_usd = Decimal(str(exc.cost_usd))
+            audit.record(
+                db,
+                None,
+                "invoice.extraction_failed",
+                "invoice",
+                invoice.id,
+                invoice.tenant_id,
+                error=f"{type(exc).__name__}: {exc}"[:500],
+            )
             db.commit()
         db.close()
         raise

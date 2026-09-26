@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+import { api } from "@/lib/api";
 
 type SearchResult = {
   id: string;
@@ -25,7 +25,7 @@ export default function SkusPage() {
     }
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/skus?q=${encodeURIComponent(q)}`);
+      const res = await api(`/skus?q=${encodeURIComponent(q)}`);
       setResults(res.ok ? await res.json() : []);
     } finally {
       setLoading(false);

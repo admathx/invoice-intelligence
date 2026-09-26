@@ -12,8 +12,9 @@ Tracks completed phases with actual measured numbers (per spec §10/§11), not "
   straight at `/Applications/Docker.app/Contents/Resources/bin/docker`.
 - `frontend/.claude/launch.json` runs the dev server on port **3001**, not the Next.js default
   3000 — an unrelated dev server from another project/session was already bound to 3000 on
-  this machine. Backend CORS uses `allow_origin_regex` for `http://localhost:\d+` rather than
-  a fixed origin, so the dev port doesn't need to stay in sync with a hardcoded allowlist.
+  this machine. Since login, the browser reaches the API through the frontend's own `/api`
+  proxy (same origin, no CORS); backend CORS is an explicit list (`frontend_origins`,
+  3000 and 3001) for pointing a dev frontend straight at the API.
 - `next` pinned to `14.2.35` (latest 14.x patch), not 14.2.15 as first installed — that had a
   known CVE. `npm audit` still flags the `next` package broadly (its advisories mostly cover
   Server Actions, `next/image`, i18n middleware, custom servers, Windows hosting — none of
@@ -1452,3 +1453,78 @@ Field accuracy 99.8-100%; review routing 10%. Spend for the whole effort
   (`claude-sonnet-5`, $2/$10 vs $3/$15; the spec pins `sonnet-4-6`).
 - **The corpus PDFs are clean renders,** so this validates the pipeline, not
   accuracy on real photos and faxes.
+
+## Login and the audit trail
+
+v0 had no authentication (SPEC.md §1): every endpoint trusted a `tenant_id`
+query parameter, and nothing recorded who changed what. Both mattered once
+corrections could travel across businesses: a review-queue correction changes
+numbers other businesses read in their benchmarks.
+
+### What was built
+- **Email + password sign-in.** Argon2id hashes; server-side sessions stored
+  as a SHA-256 of a random token behind an HttpOnly, SameSite=Lax cookie
+  (`ii_session`, 14 days), so logout and deactivation take effect
+  immediately. Same message and same timing for "no such user" and "wrong
+  password". Throttled per address from the audit trail itself (10 failures
+  in 15 minutes; a successful sign-in resets the count).
+- **Access is enforced in one place.** `get_db_for_tenant` moved from
+  `app/db.py` to `app/auth.py` and now requires a signed-in user with access
+  to that location, so no endpoint can get a tenant session that skipped the
+  check. Another business's location answers 404, not 403. Access is per
+  location (`tenant_memberships`); operators (`is_operator`) see every
+  location plus Businesses, and `/accounts` and `/tenants` are
+  operator-only. Distributors and SKU search need any signed-in user.
+- **CSRF:** writes that carry the session cookie must carry
+  `X-Requested-With: invoice-intelligence` (and sign-in always must, against
+  login CSRF). SameSite=Lax alone wasn't enough: it treats every localhost
+  port as the same site.
+- **Page images were public.** The `/renders` static mount served every
+  invoice's page to anyone with the URL. Replaced by
+  `GET /invoices/{id}/pages/{name}`, authorized like the invoice itself,
+  filename pattern-checked, `Cache-Control: no-store` (restaurant office PCs
+  are shared).
+- **Append-only `audit_events`,** written in the same transaction as the
+  change, so neither exists without the other. Recorded: upload, email
+  intake and extraction (as the system), invoice edits with before/after of
+  every changed field and line, confirm, line add/remove (with the removed
+  line's content), review-queue confirm/correct/reopen, business regrouping,
+  sign-in/out and failures, and user management. `sku_aliases.confirmed_by_user_id`
+  (in the schema since Phase 0, never set) is now filled in.
+- **Frontend:** sign-in page; middleware sends anyone without a session to
+  it and back where they were; location switcher (cookie `ii_location`, only a
+  preference, since the API checks every request); Activity page per location;
+  History panel on every invoice. The browser talks to the API through a
+  Next.js rewrite at `/api`, so the cookie is first-party and CORS stays out
+  of it. Sign-out is a form POST to `/logout`, because a click handler did
+  nothing if pressed before hydration (Playwright found this).
+
+### Managing users
+There's no sign-up page. `backend/scripts/manage_users.py`
+(`create`/`grant`/`revoke`/`set-password`/`deactivate`/`list`, run with
+`PYTHONPATH=backend`) prompts for passwords and never takes one as an
+argument. `make dev-users` makes a local operator and a member of one
+location with generated passwords, written to the gitignored
+`backend/dev_users.local.json`. `make smoke` and the Playwright suite each
+make their own throwaway login per run. The Playwright location is now
+`E2E_TENANT_ID` in `frontend/.env.local` (was `NEXT_PUBLIC_DEV_TENANT_ID`).
+
+### Gates
+- Backend **216 passed** (was 197): 19 new in `tests/test_auth.py`, run with
+  real cookies. Existing API tests run as an injected test operator
+  (`conftest.py`), and a run leaves no audit rows or users behind (verified).
+- Frontend 25 unit (5 new), `tsc` clean, Playwright **7** (new: sign-in and
+  redirect-back, wrong password, member sees no Businesses, sign-out; the
+  review test now also checks the invoice's history shows who fixed which
+  number, `74.50 -> 47.50`).
+- `make smoke` passes on the fake extractor. Against the real API it fails
+  because **the Anthropic credit is exhausted again**; the audit trail
+  recorded the failure correctly, as the system.
+- `creep_report` 0 FP, `matching_report` PASS, `corpus_report` PASS.
+
+### Still open
+- `session_cookie_secure` defaults to false for local http; it must be true
+  in any deployment.
+- Expired sessions are never pruned (harmless, but the table only grows).
+- No self-service password reset; an operator resets passwords with
+  `manage_users.py set-password`.

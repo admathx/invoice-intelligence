@@ -31,5 +31,20 @@ class Settings(BaseSettings):
 
     extraction_model: str = "claude-sonnet-4-6"
 
+    # --- login (app/auth.py) ---
+    # The browser origins allowed to make credentialed (cookie-carrying)
+    # requests. Explicit, not a pattern: with credentials allowed, any origin
+    # matched here can act as a signed-in user, and "any localhost port" would
+    # include whatever else happens to be running on the machine.
+    frontend_origins: list[str] = ["http://localhost:3000", "http://localhost:3001"]
+    session_ttl_days: int = 14
+    # Secure cookies aren't sent over plain http, which is what local dev
+    # runs on. Must be True anywhere served over https.
+    session_cookie_secure: bool = False
+    # Failed sign-ins allowed per email address inside the window before
+    # further attempts are refused, whatever the password.
+    login_max_failures: int = 10
+    login_failure_window_minutes: int = 15
+
 
 settings = Settings()

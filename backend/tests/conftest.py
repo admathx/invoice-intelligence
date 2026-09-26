@@ -27,3 +27,73 @@ def db_session():
         session.close()
         transaction.rollback()
         connection.close()
+
+
+# --- Signed-in user for API tests -------------------------------------------
+#
+# Every tenant endpoint now requires a signed-in user. The existing API tests
+# are about what the endpoints do, not who may call them, so each runs as a
+# real operator row (audit events and sku_aliases.confirmed_by_user_id point
+# at users.id, so it has to exist), injected by overriding current_user.
+# tests/test_auth.py switches this off to exercise real sign-in, cookies,
+# CSRF and membership checks end to end.
+
+TEST_OPERATOR_EMAIL = "pytest-operator@test.invalid"
+
+
+@pytest.fixture(scope="session")
+def test_operator():
+    import uuid
+    from datetime import datetime, timezone
+
+    from sqlalchemy import delete, or_, select
+
+    from app.db import SessionLocal
+    from app.models import AuditEvent, User
+
+    db = SessionLocal()
+    started = datetime.now(timezone.utc)
+    user = db.scalar(select(User).where(User.email == TEST_OPERATOR_EMAIL))
+    if user is None:
+        # An unusable hash: this user is only ever injected, never signs in.
+        user = User(id=uuid.uuid4(), email=TEST_OPERATOR_EMAIL, name="Pytest Operator", password_hash="!", is_operator=True)
+        db.add(user)
+        db.commit()
+    db.refresh(user)
+    db.expunge(user)
+    try:
+        yield user
+    finally:
+        # Events this run wrote: the operator's own, and system events (the
+        # worker, email intake) whose tenant the tests have since deleted.
+        # Bounded by the run's start so a dev server's events are left alone.
+        db.execute(
+            delete(AuditEvent).where(
+                AuditEvent.occurred_at >= started,
+                or_(
+                    AuditEvent.actor_user_id == user.id,
+                    AuditEvent.actor_user_id.is_(None) & AuditEvent.tenant_id.is_(None),
+                ),
+            )
+        )
+        db.commit()
+        db.close()
+
+
+@pytest.fixture(autouse=True)
+def signed_in_as_operator(request, test_operator):
+    from app.auth import current_user
+    from app.main import app
+
+    if request.node.get_closest_marker("real_auth"):
+        yield
+        return
+    app.dependency_overrides[current_user] = lambda: test_operator
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "real_auth: use real sign-in instead of the injected test operator")

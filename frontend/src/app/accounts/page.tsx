@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+import { useSession } from "@/components/SessionContext";
+import { api, jsonInit } from "@/lib/api";
 
 type TenantSummary = {
   id: string;
@@ -21,6 +22,15 @@ type Account = {
 };
 
 export default function AccountsPage() {
+  // The API refuses non-operators anyway (403); this just says so plainly
+  // instead of rendering a page of failed requests.
+  if (!useSession()?.user.is_operator) {
+    return <p className="text-sm text-gray-600">Only operators can manage businesses.</p>;
+  }
+  return <Businesses />;
+}
+
+function Businesses() {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [unassigned, setUnassigned] = useState<TenantSummary[]>([]);
   const [newName, setNewName] = useState("");
@@ -29,15 +39,15 @@ export default function AccountsPage() {
 
   const load = useCallback(async () => {
     try {
-      const list: Account[] = await (await fetch(`${API_BASE}/accounts`, { cache: "no-store" })).json();
+      const list: Account[] = await (await api("/accounts")).json();
       // Each account's locations, so the page shows what a grouping actually
       // contains rather than just a count. Fetched together to avoid a
       // half-loaded page where counts and members disagree.
       const detailed = await Promise.all(
-        list.map(async (a) => (await fetch(`${API_BASE}/accounts/${a.id}`, { cache: "no-store" })).json())
+        list.map(async (a) => (await api(`/accounts/${a.id}`)).json())
       );
       setAccounts(detailed);
-      setUnassigned(await (await fetch(`${API_BASE}/tenants?unassigned=true`, { cache: "no-store" })).json());
+      setUnassigned(await (await api("/tenants?unassigned=true")).json());
       setError(null);
     } catch {
       setAccounts([]);
@@ -65,12 +75,7 @@ export default function AccountsPage() {
     }
   }
 
-  const post = (path: string, body: unknown) =>
-    fetch(`${API_BASE}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+  const post = (path: string, body: unknown) => api(path, jsonInit("POST", body));
 
   return (
     <div className="max-w-3xl">
@@ -136,7 +141,7 @@ export default function AccountsPage() {
                     disabled={busy}
                     onClick={() =>
                       void act(() =>
-                        fetch(`${API_BASE}/accounts/${account.id}/locations/${location.id}`, { method: "DELETE" })
+                        api(`/accounts/${account.id}/locations/${location.id}`, { method: "DELETE" })
                       )
                     }
                     className="text-xs text-gray-500 hover:text-red-700 disabled:opacity-50"
