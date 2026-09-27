@@ -1,4 +1,4 @@
-.PHONY: up down migrate seed seed-analytics dev-users smoke watch-inbox test test-e2e validate extraction-report frontend-install frontend-dev
+.PHONY: up down migrate seed seed-analytics dev-users calibration-report real-invoice-report smoke watch-inbox test test-e2e validate extraction-report frontend-install frontend-dev
 
 VENV := .venv/bin
 RUN_DIR := .run
@@ -46,6 +46,17 @@ seed-analytics:
 # Real users: backend/scripts/manage_users.py (prompts for the password).
 dev-users:
 	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/seed_dev_users.py
+
+# Threshold calibration from real use: reads human verdicts from the audit
+# trail. Free; run it once people have been reviewing real invoices.
+calibration-report:
+	PYTHONPATH=backend backend/$(VENV)/python -m validation.calibration_report
+
+# Extraction accuracy on a folder of real invoices. Scoring is free;
+# extracting costs API money, so it takes explicit flags:
+#   make real-invoice-report DIR=path/to/invoices ARGS="--extract --limit 20"
+real-invoice-report:
+	PYTHONPATH=backend backend/$(VENV)/python -m validation.real_invoice_report $(DIR) $(ARGS)
 
 smoke:
 	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/smoke.py

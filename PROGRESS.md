@@ -1683,3 +1683,54 @@ afterwards; nothing of it is left on disk.
 ### Gates
 Backend **248 passed** (2 new migration tests), frontend 27 unit, `tsc`
 clean, Playwright 8.
+
+## Calibrating on real invoices
+
+The thresholds were all tuned on the synthetic corpus. Two tools for tuning
+them on real invoices, neither of which needed (or spent) API credit to
+build; both are ready for real data.
+
+### From real use: `make calibration-report`
+People using the app are already producing labels. `validation/calibration_report.py`
+reads them from the audit trail:
+- **Matching:** every review-queue confirm or correct is a verdict on a
+  suggestion made at a known confidence (now recorded with each verdict as
+  `suggested_confidence`, and on a reopen as `match_confidence`). Reported
+  per confidence band, with how often auto-accepted matches were later
+  disputed.
+- **Extraction:** on invoices a person reviewed and confirmed, which fields
+  they had to correct (a field fixed twice on one line counts once), lines
+  added (missed) and removed (invented), and holds where nothing needed
+  fixing (false alarms).
+- **Suggestions only on evidence.** A threshold move is suggested only when
+  the 95% Wilson interval supports it against the 1% false-match ceiling:
+  with zero errors that takes 381 decisions, and a band with 50/50 correct
+  moves nothing. It exits non-zero if disputed auto-accepted matches show the
+  auto threshold is too loose, the one finding that means wrong prices reach
+  benchmarks now.
+
+### From a labelled set: `make real-invoice-report DIR=...`
+`validation/real_invoice_report.py`: `--extract` renders and extracts each
+PDF once (cached beside it with its cost; `--limit` caps a run's spend) and
+writes a truth template from the extraction for a person to correct and mark
+`"_reviewed": true`. Scoring is free and repeatable: line recall/precision,
+per-field accuracy, cost, and what synthetic data can't show, whether the
+arithmetic check catches real mistakes and how often it holds correct
+invoices anyway. A reviewer's edits are never overwritten by re-extraction.
+`--fake` is a free dry run with its own cache files.
+
+### Also in this pass
+- Audit log: an "Older" page in flight when the filters change is dropped,
+  not appended; activity detail lines keyed by position.
+
+### Gates
+Backend **257 passed** (9 new: Wilson bounds incl. the 381 figure, banding,
+evidence-gated suggestions, extraction counting, verdict confidence recorded
+via the API, harness extract-once/reviewed-only/mistake detection). Frontend
+27 unit, Playwright 8.
+
+### To actually calibrate
+Needs what can't be built: real invoices and API credit. Gather 20-50 real
+PDFs, `make real-invoice-report DIR=... ARGS="--extract --limit 20"` (roughly
+$0.10 each at the Phase 2 measurement), correct the truth files, score. And
+once restaurants are reviewing, `make calibration-report` periodically.

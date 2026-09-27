@@ -48,8 +48,9 @@ export default function ActivityList({
                 )}
                 {detail.length > 0 && (
                   <ul className="mt-1 text-gray-600">
-                    {detail.map((text) => (
-                      <li key={text}>{text}</li>
+                    {detail.map((text, i) => (
+                      // By position: two changes can read identically.
+                      <li key={i}>{text}</li>
                     ))}
                   </ul>
                 )}

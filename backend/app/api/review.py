@@ -123,6 +123,7 @@ def _finalize(
     user: User,
     action: str,
     previous_sku_id: uuid.UUID | None,
+    suggested_confidence: Decimal | None,
 ) -> ReviewActionResponse:
     """Shared by confirm and correct: both write an alias and (when
     resolvable) an observation, commit, and refresh the same response shape
@@ -143,6 +144,10 @@ def _finalize(
         raw_sku=line.raw_sku,
         raw_description=line.raw_description,
         canonical_sku={"from": previous_sku_id, "to": line.canonical_sku_id},
+        # How sure the matcher was about what the person just judged. With
+        # the verdict, this is what calibrates the auto-accept and review
+        # thresholds on real invoices (validation/calibration_report.py).
+        suggested_confidence=suggested_confidence,
         review_status=line.review_status,
     )
     db.commit()
@@ -228,7 +233,9 @@ def confirm_line_item(
         raise HTTPException(status_code=400, detail="no suggested match to confirm — use /correct instead")
 
     line.review_status = ReviewStatus.confirmed
-    return _finalize(db, line, invoice, tenant, user, "invoice_line.match_confirmed", line.canonical_sku_id)
+    return _finalize(
+        db, line, invoice, tenant, user, "invoice_line.match_confirmed", line.canonical_sku_id, line.match_confidence
+    )
 
 
 @router.post("/{line_item_id}/correct", response_model=ReviewActionResponse)
@@ -250,7 +257,7 @@ def correct_line_item(
     sku = db.get(CanonicalSku, body.canonical_sku_id)
     if sku is None:
         raise HTTPException(status_code=404, detail="canonical SKU not found")
-    previous_sku_id = line.canonical_sku_id
+    previous_sku_id, suggested_confidence = line.canonical_sku_id, line.match_confidence
 
     result = _exact_match_result(
         db,
@@ -276,7 +283,9 @@ def correct_line_item(
         ReviewStatus.corrected if result.normalized_unit_price is not None else result.review_status
     )
 
-    return _finalize(db, line, invoice, tenant, user, "invoice_line.match_corrected", previous_sku_id)
+    return _finalize(
+        db, line, invoice, tenant, user, "invoice_line.match_corrected", previous_sku_id, suggested_confidence
+    )
 
 
 @router.post("/{line_item_id}/reopen", response_model=ReviewActionResponse)
@@ -339,6 +348,9 @@ def reopen_line_item(
         raw_sku=line.raw_sku,
         raw_description=line.raw_description,
         canonical_sku_id=line.canonical_sku_id,
+        # A reopened `auto` line is a match the matcher accepted on its own
+        # and a person disputed: a false positive at this confidence.
+        match_confidence=line.match_confidence,
         review_status={"from": line.review_status, "to": ReviewStatus.pending},
     )
     line.review_status = ReviewStatus.pending

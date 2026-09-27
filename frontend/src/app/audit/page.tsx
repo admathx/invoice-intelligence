@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import ActivityList from "@/components/ActivityList";
 import { useSession } from "@/components/SessionContext";
@@ -39,6 +39,9 @@ function AuditLog() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  // Bumped whenever the filters change, so an "Older" page still in flight
+  // for the previous filters is dropped instead of appended.
+  const generation = useRef(0);
 
   useEffect(() => {
     api("/users")
@@ -63,6 +66,7 @@ function AuditLog() {
   useEffect(() => {
     // A slower response for the previous filters must not replace this one.
     let stale = false;
+    generation.current += 1;
     setEvents(null);
     setFailed(false);
     void fetchPage(null).then((page) => {
@@ -78,9 +82,11 @@ function AuditLog() {
 
   async function loadMore() {
     if (!cursor) return;
+    const asked = generation.current;
     setLoadingMore(true);
     const page = await fetchPage(cursor);
     setLoadingMore(false);
+    if (asked !== generation.current) return;
     if (!page) {
       setFailed(true);
       return;

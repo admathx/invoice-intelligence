@@ -703,3 +703,28 @@ def test_only_operators_add_locations(db):
     member = _signed_in(_user(db, locations=(tenant,)))
     resp = member.post("/tenants", json={"name": "Nope", "metro": "Austin, TX", "volume_tier": "under_500k"}, headers=CSRF)
     assert resp.status_code == 403
+
+
+def test_a_review_verdict_records_how_sure_the_matcher_was(db):
+    """The input validation/calibration_report.py calibrates thresholds from."""
+    tenant = _tenant(db, "Calibration")
+    user = _user(db, locations=(tenant,))
+    sku = CanonicalSku(name=f"Calibration SKU {uuid.uuid4().hex[:8]}", category="test", base_uom=BaseUom.each)
+    db.add(sku)
+    db.commit()
+    db.info["_created"]["skus"].append(sku.id)
+    invoice = _needs_review_invoice(db, tenant, _distributor(db))
+    line_id = _unscoped(db, select(InvoiceLineItem.id).where(InvoiceLineItem.invoice_id == invoice.id))
+    db.execute(
+        update(InvoiceLineItem)
+        .where(InvoiceLineItem.id == line_id)
+        .values(canonical_sku_id=sku.id, match_confidence=Decimal("0.850"))
+        .execution_options(tenant_scope_bypass=True)
+    )
+    db.commit()
+
+    resp = _signed_in(user).post(f"/review/{line_id}/confirm", params={"tenant_id": str(tenant.id)}, headers=CSRF)
+    assert resp.status_code == 200, resp.text
+    event = db.scalar(select(AuditEvent).where(AuditEvent.entity_id == line_id))
+    assert event.action == "invoice_line.match_confirmed"
+    assert event.details["suggested_confidence"] == "0.85"
