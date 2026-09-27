@@ -17,17 +17,21 @@ try {
 // Requires `make up` already running (postgres, redis, the FastAPI API, and
 // the RQ worker) — same assumption `make smoke` and `make validate` make.
 // This config only launches the frontend itself.
+// The dashboard's port for the run. 3001 by default; set E2E_PORT to run a
+// second copy beside a dev server (with API_BASE pointing at its own API).
+const PORT = process.env.E2E_PORT ?? "3001";
+
 export default defineConfig({
   testDir: "./e2e",
   timeout: 30_000,
   fullyParallel: false,
   reporter: "list",
   use: {
-    baseURL: "http://localhost:3001",
+    baseURL: `http://localhost:${PORT}`,
   },
   webServer: {
-    command: "npm run dev -- -p 3001",
-    url: "http://localhost:3001",
+    command: `npm run dev -- -p ${PORT}`,
+    url: `http://localhost:${PORT}`,
     reuseExistingServer: true,
     timeout: 30_000,
   },

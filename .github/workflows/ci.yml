@@ -1,0 +1,141 @@
+# Every push and pull request: the backend suite and validation gates, the
+# frontend's static checks, and the Playwright suite against a real stack.
+# Everything runs on fresh services, so nothing depends on a developer's
+# database, and the real Anthropic API is never called (no key is set; the
+# fake extractor stands in).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The same services docker-compose.yml gives a developer.
+  DATABASE_URL: postgresql+psycopg://invoice:invoice@localhost:5432/invoice_intelligence
+  REDIS_URL: redis://localhost:6379/0
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: invoice
+          POSTGRES_PASSWORD: invoice
+          POSTGRES_DB: invoice_intelligence
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U invoice" --health-interval 2s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-backend
+
+      - name: Tests
+        run: cd backend && .venv/bin/pytest -q
+
+      - name: Validation gates (corpus, matching, price creep)
+        run: |
+          PYTHONPATH=backend backend/.venv/bin/python -m validation.corpus_report
+          PYTHONPATH=backend backend/.venv/bin/python -m validation.matching_report
+          PYTHONPATH=backend backend/.venv/bin/python backend/scripts/seed_corpus_pipeline.py
+          PYTHONPATH=backend backend/.venv/bin/python -m validation.creep_report
+
+      - name: Extraction report, dry run (no API calls)
+        run: PYTHONPATH=backend backend/.venv/bin/python -m validation.extraction_report --sample 2 --fake
+
+      - name: Production compose file is valid
+        run: |
+          cp deploy/.env.production.example deploy/.env.production
+          DOMAIN=ci.example.com POSTGRES_PASSWORD=ci docker compose -f deploy/docker-compose.prod.yml \
+            --env-file deploy/.env.production config --quiet
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Unit tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: invoice
+          POSTGRES_PASSWORD: invoice
+          POSTGRES_DB: invoice_intelligence
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U invoice" --health-interval 2s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-backend
+
+      - name: Seed analytics (benchmarks, creep alerts, negotiation data)
+        run: PYTHONPATH=backend backend/.venv/bin/python backend/scripts/seed_corpus_pipeline.py
+
+      - name: Start the API and worker
+        run: |
+          mkdir -p logs
+          nohup backend/.venv/bin/uvicorn app.main:app --app-dir backend --port 8000 > logs/api.log 2>&1 &
+          PYTHONPATH=backend nohup backend/.venv/bin/python backend/scripts/run_worker.py > logs/worker.log 2>&1 &
+          for i in $(seq 30); do curl -sf http://localhost:8000/health && exit 0; sleep 1; done
+          cat logs/api.log; exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      - name: Playwright
+        working-directory: frontend
+        run: |
+          # The location the suite works in: the seeded one with the most
+          # purchase history, which the suggestion and negotiation tests need.
+          export E2E_TENANT_ID=$(PYTHONPATH=../backend ../backend/.venv/bin/python ../backend/scripts/e2e_fixture.py pick-tenant)
+          echo "E2E_TENANT_ID=$E2E_TENANT_ID"
+          API_BASE=http://localhost:8000 npx playwright test
+
+      - name: Keep logs and traces from a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: |
+            logs/
+            frontend/test-results/
+          retention-days: 7

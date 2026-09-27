@@ -16,6 +16,8 @@ Subcommands (see backend/scripts/e2e_fixture.py --help via argparse):
   login-operator             the same for an e2e operator login.
   cleanup-users              deletes the logins the Users-screen test created
                              (e2e-new-*@dev.test) and their history.
+  pick-tenant                prints the id of the seeded location with the most
+                             invoices (CI has no .env.local to name one).
   cleanup-locations          deletes the locations the Businesses test created
                              ("E2E Location *") and their history.
   verify-alias <distributor_id> <raw_sku> <raw_description>
@@ -398,6 +400,23 @@ def cmd_cleanup_users() -> None:
         db.close()
 
 
+def cmd_pick_tenant() -> None:
+    db = SessionLocal()
+    try:
+        tenant_id = db.scalar(
+            sqlalchemy.select(Invoice.tenant_id)
+            .group_by(Invoice.tenant_id)
+            .order_by(sqlalchemy.func.count(Invoice.id).desc(), Invoice.tenant_id)
+            .limit(1)
+            .execution_options(tenant_scope_bypass=True)
+        )
+        if tenant_id is None:
+            sys.exit("no invoices seeded: run the corpus pipeline first")
+        print(tenant_id)
+    finally:
+        db.close()
+
+
 def cmd_cleanup_locations() -> None:
     db = SessionLocal()
     try:
@@ -463,6 +482,7 @@ def main() -> None:
     sub.add_parser("login-operator")
     sub.add_parser("cleanup-users")
     sub.add_parser("cleanup-locations")
+    sub.add_parser("pick-tenant")
 
     cleanup_p = sub.add_parser("cleanup")
     cleanup_p.add_argument("tenant_id")
@@ -490,6 +510,8 @@ def main() -> None:
         cmd_cleanup_users()
     elif args.command == "cleanup-locations":
         cmd_cleanup_locations()
+    elif args.command == "pick-tenant":
+        cmd_pick_tenant()
     elif args.command == "cleanup":
         cmd_cleanup(args.tenant_id)
     elif args.command == "verify-alias":

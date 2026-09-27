@@ -1854,3 +1854,25 @@ Backend **275 passed** (9 new: sliding expiry, the cap, write throttling,
 cookie lifetime, forced change, keep-this-session, lockout on wrong current
 password, length and reuse). Frontend 28 unit, `tsc` clean, Playwright 11
 (the users test now walks the forced change end to end).
+
+## Continuous integration
+
+`.github/workflows/ci.yml`, on every push to main and every pull request,
+on fresh services (nothing depends on a developer's database; no API key is
+set, so the real Anthropic API is never called):
+- **backend**: migrate from an empty database, seed the catalog, generate
+  the synthetic corpus, the full test suite, the corpus / matching / creep
+  gates, an extraction-report dry run, and a validity check of the
+  production compose file.
+- **frontend**: type check, unit tests, production build.
+- **e2e**: the same setup plus analytics seeding, the API and worker
+  started, and the whole Playwright suite; logs and traces kept on failure.
+
+Rehearsed locally before pushing, exactly as CI will run it: a fresh
+database with only migrations and the catalog passes all 275 backend tests;
+the corpus regenerates byte-identical (it's deterministic); the gates pass;
+the Playwright suite passes all 11 against a second API and dashboard on
+that fresh database; the production build compiles. Setup takes about a
+minute (corpus 25 s, analytics 30 s). `e2e_fixture.py pick-tenant` chooses
+the location CI tests in; `E2E_PORT` lets a second Playwright run sit beside
+a dev server.
