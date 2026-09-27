@@ -1,0 +1,20 @@
+# HTTPS for the dashboard, with certificates obtained and renewed
+# automatically for $DOMAIN (which must point at this host).
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	# Invoice PDFs arrive by email at up to 60 MB (MAX_INBOUND_EMAIL_BYTES).
+	request_body {
+		max_size 64MB
+	}
+
+	reverse_proxy frontend:3000
+}

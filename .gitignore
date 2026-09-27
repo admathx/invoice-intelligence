@@ -20,6 +20,8 @@ frontend/blob-report/
 *.env.local
 # Generated dev logins (backend/scripts/seed_dev_users.py)
 backend/dev_users.local.json
+# Real deployment settings (deploy/.env.production.example is the template)
+deploy/.env.production
 
 # Synthetic output (regeneratable, large)
 synthetic/out/*

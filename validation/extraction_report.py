@@ -1,7 +1,7 @@
 """Phase 2 gate: python -m validation.extraction_report --sample N
 
-Runs real extraction (or the fake extractor, if no ANTHROPIC_API_KEY is set —
-useful for a zero-cost dry run of the reporting pipeline itself) against a
+Runs real extraction (or, with --fake, the deterministic fake extractor —
+a zero-cost dry run of the reporting pipeline itself) against a
 random sample of the synthetic corpus and scores it against ground truth:
 per-field accuracy, line-level match rate (both split clean vs. noisy per
 SPEC.md's separate thresholds), the arithmetic-validator's catch rate on
@@ -189,7 +189,7 @@ def main() -> int:
                 break
             truth, meta = _load_ground_truth(gt_path)
             pdf_path = gt_path.with_suffix(".pdf")
-            page_paths = render_pdf_to_pngs(f"file://{pdf_path.resolve()}", Path(tmp) / f"inv_{i}")
+            page_paths = render_pdf_to_pngs(pdf_path.read_bytes(), Path(tmp) / f"inv_{i}")
 
             # One failed invoice must not abort the run. The first real run
             # died at invoice 13 of 20 and threw away the twelve already paid
@@ -326,6 +326,12 @@ def main() -> int:
         # Numbers over a partial sample are reported, but a run that didn't
         # finish can't pass the gate it was asked to measure.
         failures.append(f"incomplete run: {len(per_invoice)} of {len(sample)} invoices ({stopped_early})")
+    if args.fake:
+        # The fake extractor returns one fixed invoice for every page, so its
+        # accuracy is meaningless by design; a dry run checks that rendering,
+        # scoring and reporting run end to end, and nothing more.
+        print(f"\nDRY RUN (--fake): pipeline ran on {len(per_invoice)} invoice(s); thresholds not applied")
+        return 0
     if failures:
         print("\nFAIL:")
         for f in failures:

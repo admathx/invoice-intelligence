@@ -1633,3 +1633,53 @@ within a metro, and annual food-spend band). Each gets a unique invoice
 forwarding address, numbered if another location has the same name, shown
 on creation and in an "All locations" table. `POST /tenants`, operator-only,
 audited as `tenant.created`. Backend 246 passed.
+
+## Production plumbing, part 2: deployment
+
+`deploy/` runs the whole service on one Docker host: Caddy (automatic
+HTTPS, security headers) -> Next.js -> API, plus worker, Postgres/pgvector
+and Redis. Only 80/443 are published; the API, including the inbound email
+webhook, is reached through the frontend's `/api` proxy. A `migrate` step
+runs migrations and the SKU catalog seed before the API starts, on every
+deploy. `deploy/README.md` covers DNS, first operator, onboarding a
+restaurant, mail-provider setup per provider, storage, backups and updates.
+Images: backend 2.2 GB (CPU-only torch; the default PyPI wheel drags in
+gigabytes of CUDA), embedding model baked in and run offline; frontend
+224 MB (Next standalone).
+
+### Verified by actually running it
+The full stack was built and run locally over HTTPS (`localhost:8443`, a
+generated throwaway env): first operator created with `manage_users.py`
+inside the container, sign-in (cookie `Secure; HttpOnly; SameSite=lax`),
+location created, a PDF uploaded and an email posted to the webhook with
+provider-style Basic auth, both extracted by the worker (fake extractor, no
+API key), a retried email a duplicate, a wrong secret 401, page images 200
+signed in and 401 signed out, HSTS/nosniff/DENY headers present. Torn down
+afterwards; nothing of it is left on disk.
+
+### What running it found
+- **Migrations could not build a database from empty.** 0001 called
+  `create_all()` on the *current* models, so on an empty database step 1
+  created everything and 0004 then failed adding `tenants.inbox_address`.
+  The dev database had only ever been migrated forward. 0001 now writes out
+  the first schema explicitly, regenerated from the models at the commit the
+  first databases were built from (a91a168); a database migrated from empty
+  is now byte-identical (`pg_dump -s`) to the dev database and has zero drift
+  from the models. `tests/test_migrations.py` builds a throwaway database
+  from empty on every run, plus a full downgrade/upgrade round trip; it fails
+  on the old 0001 with the exact production error.
+- **Sign-out would have failed in production.** `/logout` compared the
+  request's Origin with its own URL, but behind the HTTPS proxy Next sees
+  `http://`, so every real sign-out was refused as cross-origin. It now
+  compares hosts and redirects using the forwarded scheme; verified 303 to
+  `https://.../login`, and a cross-site POST still 403.
+- `validation/extraction_report.py` still passed a `file://` path to the
+  renderer (now bytes), and its `--fake` mode applied accuracy thresholds to
+  a fake extractor whose output is fixed by design, so a dry run could never
+  pass; it now says it's a dry run and skips them.
+- `requirements.txt` is runtime only (torch and transformers now pinned to
+  what dev runs); test tools moved to `requirements-dev.txt`.
+
+### Gates
+Backend **248 passed** (2 new migration tests), frontend 27 unit, `tsc`
+clean, Playwright 8.

@@ -1,0 +1,118 @@
+# The whole service on one host: Caddy (HTTPS) -> Next.js -> API, plus the
+# extraction worker, Postgres and Redis. See deploy/README.md.
+#
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production up -d --build
+#
+# Only Caddy publishes ports. The API is reached through the frontend's /api
+# proxy (including the inbound email webhook), never directly.
+
+x-backend: &backend
+  build:
+    context: ..
+    dockerfile: deploy/backend.Dockerfile
+  image: invoice-intelligence-backend
+  env_file: .env.production
+  environment:
+    APP_ENV: production
+    DATABASE_URL: postgresql+psycopg://invoice:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/invoice_intelligence
+    REDIS_URL: redis://redis:6379/0
+    UPLOAD_DIR: /srv/backend/uploads
+    SESSION_COOKIE_SECURE: "true"
+    FRONTEND_ORIGINS: '["https://${DOMAIN:?set DOMAIN}${PUBLIC_PORT_SUFFIX:-}"]'
+  volumes:
+    - uploads:/srv/backend/uploads
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_USER: invoice
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: invoice_intelligence
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U invoice -d invoice_intelligence"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # Persisted: the queue holds invoices waiting for extraction.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Runs to completion before the API starts: schema migrations, then the
+  # canonical SKU catalog (idempotent). Safe to run on every deploy.
+  migrate:
+    <<: *backend
+    command: ["sh", "-c", "alembic upgrade head && python scripts/seed_catalog.py"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    <<: *backend
+    command: ["python", "scripts/run_worker.py"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/frontend.Dockerfile
+      args:
+        API_BASE: http://api:8000
+    image: invoice-intelligence-frontend
+    environment:
+      API_BASE: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  uploads:
+  caddy_data:
+  caddy_config:

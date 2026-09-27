@@ -1,0 +1,20 @@
+# Keep build contexts small and secrets out of images.
+.git
+**/node_modules
+**/.next
+**/.venv
+**/__pycache__
+**/.pytest_cache
+backend/uploads
+backend/.env
+backend/dev_users.local.json
+frontend/.env.local
+frontend/test-results
+frontend/playwright-report
+synthetic/out
+validation/results
+inbox
+logs
+.run
+.env*
+!deploy/.env.production.example
