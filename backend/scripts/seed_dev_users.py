@@ -21,16 +21,16 @@ import json
 import secrets
 import sys
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.engine import make_url
 
 from app.auth import hash_password
+from app.users import revoke_sessions
 from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS, SessionLocal
-from app.models import Invoice, Tenant, TenantMembership, User, UserSession
+from app.models import Invoice, Tenant, TenantMembership, User
 
 OUTPUT = Path(__file__).resolve().parents[1] / "dev_users.local.json"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -59,11 +59,7 @@ def upsert_login(
     user.is_operator = operator
     user.is_active = True
     db.flush()
-    db.execute(
-        update(UserSession)
-        .where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None))
-        .values(revoked_at=datetime.now(timezone.utc))
-    )
+    revoke_sessions(db, user)
     for tenant_id in tenant_ids:
         if not db.scalar(
             select(TenantMembership.id).where(

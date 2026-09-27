@@ -451,3 +451,166 @@ def test_a_review_correction_names_who_made_it(db):
     assert event.action == "invoice_line.match_corrected" and event.actor_user_id == user.id
     assert event.details["canonical_sku"] == {"from": None, "to": str(sku.id)}
     assert event.details["invoice_id"] == str(invoice.id)
+
+
+# --- Managing users (the operators' Users screen) ------------------------------
+
+
+def _created(db, body: dict) -> None:
+    """Register a user the API made, for the fixture to clean up."""
+    db.info["_created"]["users"].append(uuid.UUID(body["user"]["id"]))
+
+
+def test_an_operator_creates_a_login_that_works_with_the_generated_password(db):
+    tenant = _tenant(db, "Users")
+    operator = _signed_in(_user(db, operator=True))
+    email = f"new-{uuid.uuid4().hex[:8]}@test.invalid"
+
+    resp = operator.post(
+        "/users",
+        json={"email": f" {email.upper()} ", "name": "New Person", "location_ids": [str(tenant.id)]},
+        headers=CSRF,
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    _created(db, body)
+    assert resp.headers["cache-control"] == "no-store"
+    assert body["user"]["email"] == email
+    assert [loc["id"] for loc in body["user"]["locations"]] == [str(tenant.id)]
+    password = body["generated_password"]
+    assert len(password) >= 12
+
+    newcomer = TestClient(app)
+    login = newcomer.post("/auth/login", json={"email": email, "password": password}, headers=CSRF)
+    assert login.status_code == 200
+    assert [loc["id"] for loc in login.json()["locations"]] == [str(tenant.id)]
+
+    listed = {u["email"]: u for u in operator.get("/users").json()}
+    assert listed[email]["last_sign_in"] is not None
+
+
+def test_creating_a_login_refuses_bad_input(db):
+    existing = _user(db)
+    operator = _signed_in(_user(db, operator=True))
+    duplicate = operator.post("/users", json={"email": existing.email, "name": "Dup"}, headers=CSRF)
+    assert duplicate.status_code == 409
+    short = operator.post(
+        "/users", json={"email": "short-pw@test.invalid", "name": "Short", "password": "tooshort"}, headers=CSRF
+    )
+    assert short.status_code == 422 and "12 characters" in short.json()["detail"]
+    nowhere = operator.post(
+        "/users",
+        json={"email": "nowhere@test.invalid", "name": "Nowhere", "location_ids": [str(uuid.uuid4())]},
+        headers=CSRF,
+    )
+    assert nowhere.status_code == 422
+    assert db.scalar(select(User.id).where(User.email.in_(["short-pw@test.invalid", "nowhere@test.invalid"]))) is None
+
+
+def test_only_operators_manage_users(db):
+    tenant = _tenant(db, "Users")
+    member = _signed_in(_user(db, locations=(tenant,)))
+    assert member.get("/users").status_code == 403
+    assert member.post("/users", json={"email": "x@test.invalid", "name": "X"}, headers=CSRF).status_code == 403
+
+
+def test_granting_and_revoking_a_location_takes_effect_and_is_recorded(db):
+    first, second = _tenant(db, "First"), _tenant(db, "Second")
+    operator_user = _user(db, operator=True)
+    operator = _signed_in(operator_user)
+    member_user = _user(db, locations=(first,))
+    member = _signed_in(member_user)
+    assert member.get("/invoices", params={"tenant_id": str(second.id)}).status_code == 404
+
+    granted = operator.put(f"/users/{member_user.id}/locations/{second.id}", headers=CSRF)
+    assert granted.status_code == 200
+    assert member.get("/invoices", params={"tenant_id": str(second.id)}).status_code == 200
+
+    revoked = operator.delete(f"/users/{member_user.id}/locations/{first.id}", headers=CSRF)
+    assert [loc["id"] for loc in revoked.json()["locations"]] == [str(second.id)]
+    assert member.get("/invoices", params={"tenant_id": str(first.id)}).status_code == 404
+
+    events = db.scalars(
+        select(AuditEvent).where(AuditEvent.entity_id == member_user.id, AuditEvent.action.like("user.access_%"))
+    ).all()
+    assert {(e.action, e.tenant_id, e.actor_user_id) for e in events} == {
+        ("user.access_granted", second.id, operator_user.id),
+        ("user.access_revoked", first.id, operator_user.id),
+    }
+
+
+def test_deactivating_signs_the_user_out_at_once(db):
+    tenant = _tenant(db, "Users")
+    operator = _signed_in(_user(db, operator=True))
+    member_user = _user(db, locations=(tenant,))
+    member = _signed_in(member_user)
+
+    resp = operator.patch(f"/users/{member_user.id}", json={"is_active": False}, headers=CSRF)
+    assert resp.status_code == 200 and resp.json()["is_active"] is False
+    assert member.get("/auth/me").status_code == 401
+
+    # Reactivating doesn't resurrect the old session; they sign in again.
+    operator.patch(f"/users/{member_user.id}", json={"is_active": True}, headers=CSRF)
+    assert member.get("/auth/me").status_code == 401
+    assert _signed_in(member_user).get("/auth/me").status_code == 200
+
+
+def test_an_operator_cannot_demote_or_deactivate_themselves(db):
+    operator_user = _user(db, operator=True)
+    operator = _signed_in(operator_user)
+    for change in ({"is_operator": False}, {"is_active": False}):
+        resp = operator.patch(f"/users/{operator_user.id}", json=change, headers=CSRF)
+        assert resp.status_code == 422, change
+    assert operator.get("/users").status_code == 200
+
+
+def test_a_password_reset_replaces_the_password_and_ends_old_sessions(db):
+    operator = _signed_in(_user(db, operator=True))
+    member_user = _user(db)
+    member = _signed_in(member_user)
+
+    resp = operator.post(f"/users/{member_user.id}/password", json={}, headers=CSRF)
+    assert resp.status_code == 200 and resp.headers["cache-control"] == "no-store"
+    new_password = resp.json()["generated_password"]
+    assert member.get("/auth/me").status_code == 401
+
+    fresh = TestClient(app)
+    assert fresh.post("/auth/login", json={"email": member_user.email, "password": PASSWORD}, headers=CSRF).status_code == 401
+    assert fresh.post("/auth/login", json={"email": member_user.email, "password": new_password}, headers=CSRF).status_code == 200
+    assert db.scalar(
+        select(AuditEvent.id).where(AuditEvent.entity_id == member_user.id, AuditEvent.action == "user.password_reset")
+    )
+
+
+def test_old_dead_sessions_are_pruned_on_sign_in_and_recent_ones_kept(db):
+    from app.auth import prune_sessions
+
+    user = _user(db)
+    now = datetime.now(timezone.utc)
+    long_ago = now - timedelta(days=settings.session_retention_days + 1)
+    recently = now - timedelta(days=1)
+    db.add_all(
+        [
+            UserSession(user_id=user.id, token_hash=uuid.uuid4().hex, expires_at=long_ago),
+            UserSession(user_id=user.id, token_hash=uuid.uuid4().hex, expires_at=now + timedelta(days=1), revoked_at=long_ago),
+            UserSession(user_id=user.id, token_hash=uuid.uuid4().hex, expires_at=recently),
+            UserSession(user_id=user.id, token_hash=uuid.uuid4().hex, expires_at=now + timedelta(days=1)),
+        ]
+    )
+    db.commit()
+    prune_sessions(db)
+    db.commit()
+    remaining = db.scalars(select(UserSession.expires_at).where(UserSession.user_id == user.id)).all()
+    assert len(remaining) == 2
+
+
+def test_production_refuses_insecure_cookies_and_http_origins():
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    with pytest.raises(ValidationError, match="SESSION_COOKIE_SECURE"):
+        Settings(app_env="production", session_cookie_secure=False, frontend_origins=["https://app.example.com"])
+    with pytest.raises(ValidationError, match="https"):
+        Settings(app_env="production", session_cookie_secure=True, frontend_origins=["http://app.example.com"])
+    assert Settings(app_env="production", session_cookie_secure=True, frontend_origins=["https://a.example.com"])

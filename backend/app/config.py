@@ -1,5 +1,7 @@
 from pathlib import Path
+from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Anchored to backend/ regardless of the process's cwd. `make up` starts the API
@@ -14,6 +16,11 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=str(BACKEND_DIR / ".env"), extra="ignore")
+
+    # "production" turns the settings that are only safe on a developer's
+    # machine into startup errors (see _production_safety below), so a
+    # deployment can't quietly run with them.
+    app_env: Literal["development", "production"] = "development"
 
     database_url: str = "postgresql+psycopg://invoice:invoice@localhost:5432/invoice_intelligence"
     redis_url: str = "redis://localhost:6379/0"
@@ -45,6 +52,22 @@ class Settings(BaseSettings):
     # further attempts are refused, whatever the password.
     login_max_failures: int = 10
     login_failure_window_minutes: int = 15
+    # Expired or revoked sessions are deleted this long after they stop
+    # working (app.auth.prune_sessions). Kept a while rather than at once so a
+    # "why was I signed out?" question can still be answered from the table.
+    session_retention_days: int = 30
+
+    @model_validator(mode="after")
+    def _production_safety(self) -> "Settings":
+        if self.app_env == "production":
+            problems = []
+            if not self.session_cookie_secure:
+                problems.append("SESSION_COOKIE_SECURE must be true (session cookies would travel over plain http)")
+            if any(origin.startswith("http://") for origin in self.frontend_origins):
+                problems.append("FRONTEND_ORIGINS must all be https")
+            if problems:
+                raise ValueError("refusing to start with APP_ENV=production: " + "; ".join(problems))
+        return self
 
 
 settings = Settings()

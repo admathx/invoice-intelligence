@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from fastapi import Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -72,6 +72,16 @@ def create_session(db: Session, user: User) -> str:
         )
     )
     return token
+
+
+def prune_sessions(db: Session) -> int:
+    """Delete sessions that stopped working more than session_retention_days
+    ago (expired or revoked). Run on every sign-in, which is exactly when the
+    table grows, so it never needs a scheduler. Indexed (migration 0010)."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.session_retention_days)
+    return db.execute(
+        delete(UserSession).where(or_(UserSession.expires_at < cutoff, UserSession.revoked_at < cutoff))
+    ).rowcount
 
 
 def revoke_session(db: Session, token: str) -> None:

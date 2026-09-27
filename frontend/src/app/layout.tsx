@@ -42,12 +42,17 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <a href="/activity" className={LINK}>
               Activity
             </a>
-            {/* Operators only: the one page that works across every
-                location rather than inside the selected one. */}
+            {/* Operators only: the pages that work across every location
+                rather than inside the selected one. */}
             {session.user.is_operator && (
-              <a href="/accounts" className="whitespace-nowrap text-sm text-gray-400 hover:text-gray-900">
-                Businesses
-              </a>
+              <>
+                <a href="/accounts" className="whitespace-nowrap text-sm text-gray-400 hover:text-gray-900">
+                  Businesses
+                </a>
+                <a href="/users" className="whitespace-nowrap text-sm text-gray-400 hover:text-gray-900">
+                  Users
+                </a>
+              </>
             )}
             <AccountMenu
               name={session.user.name}

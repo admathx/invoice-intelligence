@@ -258,3 +258,47 @@ test.describe("ingest -> review -> negotiation sheet", () => {
   });
 });
 
+
+test.describe("managing users", () => {
+  test.skip(!TENANT_ID, "E2E_TENANT_ID not set in frontend/.env.local");
+  test.afterAll(() => {
+    runFixture("cleanup-users");
+  });
+
+  test("an operator creates a login, hands over the password, and can deactivate it", async ({ page, browser }) => {
+    const operator = runFixture("login-operator") as Login;
+    expect((await page.request.post("/api/auth/login", { data: operator, headers: CSRF })).ok()).toBeTruthy();
+
+    await page.goto("/users");
+    await page.getByRole("button", { name: "Add user" }).click();
+    const email = `e2e-new-${Date.now()}@dev.test`;
+    await page.getByLabel("Name").fill("E2E New Person");
+    await page.getByLabel("Email").fill(email);
+    await page.getByRole("group", { name: "Locations" }).getByRole("checkbox").first().check();
+    await page.getByRole("button", { name: "Create login" }).click();
+
+    const shown = page.getByTestId("generated-password");
+    await expect(shown).toBeVisible();
+    const password = (await shown.textContent())!.trim();
+    expect(password.length).toBeGreaterThanOrEqual(12);
+    const row = page.getByRole("row", { name: new RegExp(email) });
+    await expect(row).toBeVisible();
+
+    // The new person signs in with it, in a browser of their own.
+    const theirs = await browser.newContext({ baseURL: test.info().project.use.baseURL });
+    const newcomer = await theirs.newPage();
+    await newcomer.goto("/login");
+    await newcomer.getByLabel("Email").fill(email);
+    await newcomer.getByLabel("Password").fill(password);
+    await newcomer.getByRole("button", { name: "Sign in" }).click();
+    await expect(newcomer.getByText("E2E New Person")).toBeVisible();
+
+    // Deactivating signs them out at once.
+    page.once("dialog", (dialog) => void dialog.accept());
+    await row.getByRole("button", { name: "Deactivate" }).click();
+    await expect(row.getByText("Deactivated")).toBeVisible();
+    await newcomer.reload();
+    await expect(newcomer).toHaveURL(/\/login/);
+    await theirs.close();
+  });
+});

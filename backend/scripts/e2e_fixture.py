@@ -13,6 +13,9 @@ Subcommands (see backend/scripts/e2e_fixture.py --help via argparse):
   login <tenant_id>          creates/resets the e2e login (a member of that
                              tenant) with a fresh random password, prints
                              {email, password} for the spec to sign in with.
+  login-operator             the same for an e2e operator login.
+  cleanup-users              deletes the logins the Users-screen test created
+                             (e2e-new-*@dev.test) and their history.
   verify-alias <distributor_id> <raw_sku> <raw_description>
                              calls the real matcher again for that
                              (distributor, raw_sku) pair and prints the
@@ -41,6 +44,7 @@ from app.models import (  # noqa: E402
     InvoiceLineItem,
     PriceObservation,
     SkuAlias,
+    User,
 )
 from app.models.enums import InvoiceSource, InvoiceStatus, ReviewStatus  # noqa: E402
 from app.normalize.matcher import match_line_item  # noqa: E402
@@ -345,6 +349,9 @@ def cmd_cleanup(tenant_id: str) -> None:
 
 
 E2E_LOGIN = ("e2e@dev.test", "E2E Reviewer")
+E2E_OPERATOR = ("e2e-operator@dev.test", "E2E Operator")
+# Logins the Users-screen test creates through the UI.
+E2E_CREATED_PATTERN = "e2e-new-%@dev.test"
 
 
 def cmd_login(tenant_id: str) -> None:
@@ -354,6 +361,34 @@ def cmd_login(tenant_id: str) -> None:
     try:
         user, password = upsert_login(db, *E2E_LOGIN, tenant_ids=(uuid.UUID(tenant_id),))
         print(json.dumps({"email": user.email, "password": password}))
+    finally:
+        db.close()
+
+
+def cmd_login_operator() -> None:
+    from scripts.seed_dev_users import upsert_login
+
+    db = SessionLocal()
+    try:
+        user, password = upsert_login(db, *E2E_OPERATOR, operator=True)
+        print(json.dumps({"email": user.email, "password": password}))
+    finally:
+        db.close()
+
+
+def cmd_cleanup_users() -> None:
+    db = SessionLocal()
+    try:
+        ids = list(db.scalars(sqlalchemy.select(User.id).where(User.email.like(E2E_CREATED_PATTERN))))
+        if ids:
+            db.execute(
+                sqlalchemy.delete(AuditEvent).where(
+                    sqlalchemy.or_(AuditEvent.entity_id.in_(ids), AuditEvent.actor_user_id.in_(ids))
+                )
+            )
+            db.execute(sqlalchemy.delete(User).where(User.id.in_(ids)))  # memberships and sessions cascade
+            db.commit()
+        print(json.dumps({"deleted_users": len(ids)}))
     finally:
         db.close()
 
@@ -407,6 +442,9 @@ def main() -> None:
     login_p = sub.add_parser("login")
     login_p.add_argument("tenant_id")
 
+    sub.add_parser("login-operator")
+    sub.add_parser("cleanup-users")
+
     cleanup_p = sub.add_parser("cleanup")
     cleanup_p.add_argument("tenant_id")
 
@@ -427,6 +465,10 @@ def main() -> None:
         cmd_setup_empty_invoice(args.tenant_id)
     elif args.command == "login":
         cmd_login(args.tenant_id)
+    elif args.command == "login-operator":
+        cmd_login_operator()
+    elif args.command == "cleanup-users":
+        cmd_cleanup_users()
     elif args.command == "cleanup":
         cmd_cleanup(args.tenant_id)
     elif args.command == "verify-alias":

@@ -14,6 +14,7 @@ from app.auth import (
     create_session,
     current_user,
     normalize_email,
+    prune_sessions,
     revoke_session,
     user_for_token,
     verify_password,
@@ -89,6 +90,7 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
         db.commit()
         raise HTTPException(status_code=401, detail="email or password is incorrect")
 
+    prune_sessions(db)
     token = create_session(db, user)
     audit.record(db, user, LOGIN_SUCCEEDED, "user", user.id)
     db.commit()

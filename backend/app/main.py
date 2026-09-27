@@ -14,6 +14,7 @@ from app.api import (
     review,
     skus,
     tenants,
+    users,
 )
 from app.auth import CSRF_HEADER, csrf_ok
 from app.config import settings
@@ -59,6 +60,7 @@ app.include_router(insights.router)
 app.include_router(negotiation.router)
 app.include_router(accounts.router)
 app.include_router(tenants.router)
+app.include_router(users.router)
 
 
 @app.get("/health")

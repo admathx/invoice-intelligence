@@ -1,15 +1,17 @@
-"""Create users and manage their access. There is no sign-up page: an operator
-creates each login here.
+"""Create users and manage their access from the command line. Operators can
+do the same from the Users screen; both go through app/users.py.
 
     python scripts/manage_users.py create EMAIL "Full Name" [--operator] [--location TENANT_ID ...]
     python scripts/manage_users.py grant EMAIL TENANT_ID
     python scripts/manage_users.py revoke EMAIL TENANT_ID
     python scripts/manage_users.py set-password EMAIL
     python scripts/manage_users.py deactivate EMAIL
+    python scripts/manage_users.py prune-sessions
     python scripts/manage_users.py list
 
 Passwords are prompted for (never taken as an argument, which would land in
-shell history). Pipe one in on stdin to script it.
+shell history). Pipe one in on stdin to script it. This is how the first
+operator gets created, since the screen needs an operator to sign in.
 
 Every change is recorded in the audit trail as a system action, since the
 person at this terminal isn't a signed-in user.
@@ -18,16 +20,13 @@ import argparse
 import getpass
 import sys
 import uuid
-from datetime import datetime, timezone
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import func, select
 
-from app import audit
-from app.auth import hash_password, normalize_email
+from app import users as user_service
+from app.auth import normalize_email, prune_sessions
 from app.db import SessionLocal
-from app.models import Tenant, TenantMembership, User, UserSession
-
-MIN_PASSWORD_LENGTH = 12
+from app.models import TenantMembership, User
 
 
 def _read_password() -> str:
@@ -35,11 +34,8 @@ def _read_password() -> str:
         password = getpass.getpass("Password: ")
         if getpass.getpass("Again: ") != password:
             sys.exit("passwords don't match")
-    else:
-        password = sys.stdin.readline().rstrip("\n")
-    if len(password) < MIN_PASSWORD_LENGTH:
-        sys.exit(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
-    return password
+        return password
+    return sys.stdin.readline().rstrip("\n")
 
 
 def _user(db, email: str) -> User:
@@ -49,90 +45,67 @@ def _user(db, email: str) -> User:
     return user
 
 
-def _tenant(db, tenant_id: str) -> Tenant:
-    tenant = db.get(Tenant, uuid.UUID(tenant_id))
-    if tenant is None:
-        sys.exit(f"no tenant {tenant_id}")
-    return tenant
-
-
-def _revoke_sessions(db, user: User) -> None:
-    db.execute(
-        update(UserSession)
-        .where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None))
-        .values(revoked_at=datetime.now(timezone.utc))
-    )
-
-
-def cmd_create(db, args) -> None:
-    email = normalize_email(args.email)
-    if db.scalar(select(User.id).where(User.email == email)):
-        sys.exit(f"{email} already exists")
-    tenants = [_tenant(db, t) for t in args.location]
-    user = User(
-        id=uuid.uuid4(),
-        email=email,
-        name=args.name.strip(),
-        password_hash=hash_password(_read_password()),
+def cmd_create(db, args) -> str:
+    user = user_service.create_user(
+        db,
+        None,
+        email=args.email,
+        name=args.name,
+        password=_read_password(),
         is_operator=args.operator,
+        tenant_ids=[uuid.UUID(t) for t in args.location],
     )
-    db.add(user)
-    db.flush()
-    audit.record(db, None, "user.created", "user", user.id, email=email, is_operator=args.operator)
-    for tenant in tenants:
-        db.add(TenantMembership(user_id=user.id, tenant_id=tenant.id))
-        audit.record(db, None, "user.access_granted", "user", user.id, tenant.id, email=email)
-    db.commit()
-    print(f"created {email}{' (operator)' if args.operator else ''} with access to {len(tenants)} location(s)")
+    return f"created {user.email}{' (operator)' if user.is_operator else ''} with access to {len(args.location)} location(s)"
 
 
-def cmd_grant(db, args) -> None:
-    user, tenant = _user(db, args.email), _tenant(db, args.tenant_id)
-    exists = db.scalar(
-        select(TenantMembership.id).where(TenantMembership.user_id == user.id, TenantMembership.tenant_id == tenant.id)
+def cmd_grant(db, args) -> str:
+    user = _user(db, args.email)
+    user_service.grant_access(db, None, user, uuid.UUID(args.tenant_id))
+    return f"{user.email} can open {args.tenant_id}"
+
+
+def cmd_revoke(db, args) -> str:
+    user = _user(db, args.email)
+    user_service.revoke_access(db, None, user, uuid.UUID(args.tenant_id))
+    return f"{user.email} can no longer open {args.tenant_id}"
+
+
+def cmd_set_password(db, args) -> str:
+    user = _user(db, args.email)
+    user_service.set_password(db, None, user, _read_password())
+    return f"password changed for {user.email}; existing sessions signed out"
+
+
+def cmd_deactivate(db, args) -> str:
+    user = _user(db, args.email)
+    user_service.update_user(db, None, user, is_active=False)
+    return f"deactivated {user.email}"
+
+
+def cmd_prune_sessions(db, args) -> str:
+    return f"deleted {prune_sessions(db)} dead session(s)"
+
+
+def cmd_list(db, args) -> str:
+    counts = dict(
+        db.execute(select(TenantMembership.user_id, func.count()).group_by(TenantMembership.user_id)).all()
     )
-    if not exists:
-        db.add(TenantMembership(user_id=user.id, tenant_id=tenant.id))
-        audit.record(db, None, "user.access_granted", "user", user.id, tenant.id, email=user.email)
-        db.commit()
-    print(f"{user.email} can open {tenant.name}")
-
-
-def cmd_revoke(db, args) -> None:
-    user, tenant = _user(db, args.email), _tenant(db, args.tenant_id)
-    removed = db.execute(
-        delete(TenantMembership).where(TenantMembership.user_id == user.id, TenantMembership.tenant_id == tenant.id)
-    ).rowcount
-    if removed:
-        audit.record(db, None, "user.access_revoked", "user", user.id, tenant.id, email=user.email)
-        db.commit()
-    print(f"{user.email} can no longer open {tenant.name}")
-
-
-def cmd_set_password(db, args) -> None:
-    user = _user(db, args.email)
-    user.password_hash = hash_password(_read_password())
-    # Anyone signed in with the old password is signed out.
-    _revoke_sessions(db, user)
-    audit.record(db, None, "user.password_changed", "user", user.id, email=user.email)
-    db.commit()
-    print(f"password changed for {user.email}; existing sessions signed out")
-
-
-def cmd_deactivate(db, args) -> None:
-    user = _user(db, args.email)
-    user.is_active = False
-    _revoke_sessions(db, user)
-    audit.record(db, None, "user.deactivated", "user", user.id, email=user.email)
-    db.commit()
-    print(f"deactivated {user.email}")
-
-
-def cmd_list(db, args) -> None:
+    rows = []
     for user in db.scalars(select(User).order_by(User.email)):
-        count = len(list(db.scalars(select(TenantMembership.id).where(TenantMembership.user_id == user.id))))
         flags = [f for f, on in (("operator", user.is_operator), ("inactive", not user.is_active)) if on]
-        print(f"{user.email:40} {user.name:30} {count:3} location(s) {' '.join(flags)}")
+        rows.append(f"{user.email:40} {user.name:30} {counts.get(user.id, 0):3} location(s) {' '.join(flags)}")
+    return "\n".join(rows)
+
+
+COMMANDS = {
+    "create": cmd_create,
+    "grant": cmd_grant,
+    "revoke": cmd_revoke,
+    "set-password": cmd_set_password,
+    "deactivate": cmd_deactivate,
+    "prune-sessions": cmd_prune_sessions,
+    "list": cmd_list,
+}
 
 
 def main() -> None:
@@ -149,20 +122,17 @@ def main() -> None:
         p.add_argument("tenant_id")
     for name in ("set-password", "deactivate"):
         sub.add_parser(name).add_argument("email")
+    sub.add_parser("prune-sessions")
     sub.add_parser("list")
 
     args = parser.parse_args()
-    commands = {
-        "create": cmd_create,
-        "grant": cmd_grant,
-        "revoke": cmd_revoke,
-        "set-password": cmd_set_password,
-        "deactivate": cmd_deactivate,
-        "list": cmd_list,
-    }
     db = SessionLocal()
     try:
-        commands[args.command](db, args)
+        message = COMMANDS[args.command](db, args)
+        db.commit()
+        print(message)
+    except user_service.UserError as exc:
+        sys.exit(str(exc))
     finally:
         db.close()
 

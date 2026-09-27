@@ -1528,3 +1528,33 @@ make their own throwaway login per run. The Playwright location is now
 - Expired sessions are never pruned (harmless, but the table only grows).
 - No self-service password reset; an operator resets passwords with
   `manage_users.py set-password`.
+
+## Users screen, session pruning, production guard
+
+- **Users screen (`/users`, operators only).** List everyone with their
+  locations and last sign-in; add a login (temporary password generated and
+  shown once, `Cache-Control: no-store`); grant or remove a location;
+  deactivate (signs them out immediately) or reactivate; make or remove an
+  operator; reset a password (also signs them out everywhere). An operator
+  can't demote or deactivate themselves, so a slip can't leave no one able
+  to undo it. Every change is audited with the operator who made it.
+- `app/users.py` is the single implementation behind both the screen
+  (`app/api/users.py`) and `scripts/manage_users.py`, which is still how the
+  first operator gets created.
+- **Dead sessions are pruned** on every sign-in (expired or revoked more than
+  `session_retention_days`, 30, ago), indexed by migration 0010; also
+  `manage_users.py prune-sessions`.
+- **`APP_ENV=production` refuses to start** with insecure session cookies or
+  any `http://` frontend origin.
+- Test hygiene: the pytest operator is now deleted after each run, and the
+  Playwright users test deletes the logins it created.
+
+### Gates
+- Backend **225 passed** (was 216; 9 new user-management tests).
+- Frontend 25 unit, `tsc` clean, Playwright **8** (new: an operator creates a
+  login, the new person signs in with the shown password in their own
+  browser, and deactivation signs them out).
+
+### Still open
+- No "change my own password" screen; an operator's own row has no actions
+  (another operator, or the CLI, resets it).

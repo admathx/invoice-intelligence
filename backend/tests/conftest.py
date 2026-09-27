@@ -47,6 +47,7 @@ def test_operator():
     from datetime import datetime, timezone
 
     from sqlalchemy import delete, or_, select
+    from sqlalchemy.exc import IntegrityError
 
     from app.db import SessionLocal
     from app.models import AuditEvent, User
@@ -77,6 +78,14 @@ def test_operator():
             )
         )
         db.commit()
+        # And the operator itself, so it doesn't sit in the Users screen. Kept
+        # instead if something it confirmed survived the run (an alias's
+        # confirmed_by_user_id has no ON DELETE).
+        try:
+            db.execute(delete(User).where(User.id == user.id))
+            db.commit()
+        except IntegrityError:
+            db.rollback()
         db.close()
 
 
