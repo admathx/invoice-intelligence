@@ -6,6 +6,9 @@ import { createContext, useContext, useEffect } from "react";
 import { loginPath } from "@/lib/api";
 import type { Session } from "@/lib/server";
 
+// Duplicated from lib/server (a server-only module) rather than imported.
+const CHANGE_PASSWORD_PATH = "/account/password";
+
 const SessionContext = createContext<Session | null>(null);
 
 /** Hands the server-resolved session to client components, so they don't each
@@ -19,10 +22,14 @@ const SessionContext = createContext<Session | null>(null);
 export function SessionProvider({ session, children }: { session: Session | null; children: React.ReactNode }) {
   const pathname = usePathname();
   const signedOut = !session && !pathname.startsWith("/login");
+  // Client-rendered pages too: someone holding an operator-issued password
+  // goes to replace it first (the API refuses everything else until then).
+  const mustChange = !!session?.user.password_change_required && pathname !== CHANGE_PASSWORD_PATH;
   useEffect(() => {
     if (signedOut) window.location.replace(loginPath(window.location.pathname + window.location.search));
-  }, [signedOut]);
-  if (signedOut) return null;
+    else if (mustChange) window.location.replace(CHANGE_PASSWORD_PATH);
+  }, [signedOut, mustChange]);
+  if (signedOut || mustChange) return null;
   return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>;
 }
 

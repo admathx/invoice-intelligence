@@ -1813,3 +1813,44 @@ Backend **266 passed** (9 new), frontend 28 unit, `tsc` clean, Playwright 8,
 ### Gates
 Backend 266 passed, frontend 28 unit, `tsc` clean, Playwright **11**
 (3 new). Test data cleaned up after the run (verified).
+
+## Sessions that stay alive while used; changing your own password
+
+### Sliding sessions
+A session now ends 14 days after it was last *used* (it was 14 days after
+sign-in, so everyone was signed out mid-task every two weeks), capped at 90
+days after sign-in so a stolen cookie can't be kept alive by using it.
+Extended server-side on use, at most one write per session per hour. The
+cookie itself lives to the cap and the server decides validity: most pages
+render on the server, whose responses to its own API calls never reach the
+browser, so refreshing the cookie couldn't have worked.
+
+### Changing your password
+- **Account page** (`/account/password`, from your name in the nav): needs
+  the current password (a session left open on a shared office PC mustn't be
+  enough), and wrong guesses count toward the sign-in lockout. Your other
+  sessions end; this one stays.
+- **Operator-issued passwords must be replaced.** A login created or reset on
+  the Users screen has a password the operator has seen; until its owner
+  chooses their own, the API refuses everything except `/auth/me`,
+  `/auth/password` and `/auth/logout` (enforced in `current_user`, so no
+  endpoint can be reached around it), and every screen sends them to the
+  change page. Command-line logins, where the person types their own, aren't
+  flagged. Migration 0013.
+
+### Found while testing it
+**Forms could be used before the page was interactive.** Playwright filled
+the change-password form before React had loaded: on submit the browser did
+its own GET to the same URL (the page just reset), and once React took over
+it wiped the typed values, so the next submit was silently blocked by the
+browser's "required" check. Real people on a slow phone would hit the same.
+The sign-in and change-password forms are now disabled, fields included,
+until the page is interactive (`useHydrated`). (The sign-out button had the
+same race earlier and became a plain form POST.) The inputs have no `name`
+attributes, so no password ever went into a URL.
+
+### Gates
+Backend **275 passed** (9 new: sliding expiry, the cap, write throttling,
+cookie lifetime, forced change, keep-this-session, lockout on wrong current
+password, length and reuse). Frontend 28 unit, `tsc` clean, Playwright 11
+(the users test now walks the forced change end to end).

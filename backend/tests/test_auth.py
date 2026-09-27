@@ -767,3 +767,146 @@ def test_a_new_location_joins_the_existing_spelling_of_its_metro(db):
     new_place = operator.post("/tenants", json={"name": "Elsewhere", "metro": "Boise,   ID", "volume_tier": "under_500k"}, headers=CSRF)
     db.info["_created"]["tenants"].append(uuid.UUID(new_place.json()["id"]))
     assert new_place.json()["metro"] == "Boise, ID"
+
+
+# --- Sessions that stay alive while used ------------------------------------------
+
+
+def _session(db, user):
+    db.expire_all()
+    return db.scalar(select(UserSession).where(UserSession.user_id == user.id))
+
+
+def test_using_a_session_pushes_its_expiry_back(db):
+    user = _user(db)
+    client = _signed_in(user)
+    # Signed in 13 days ago and not used since: one day left.
+    db.execute(
+        update(UserSession)
+        .where(UserSession.user_id == user.id)
+        .values(created_at=datetime.now(timezone.utc) - timedelta(days=13), expires_at=datetime.now(timezone.utc) + timedelta(days=1))
+    )
+    db.commit()
+    assert client.get("/auth/me").status_code == 200
+    remaining = _session(db, user).expires_at - datetime.now(timezone.utc)
+    assert remaining > timedelta(days=settings.session_ttl_days) - timedelta(minutes=5)
+
+
+def test_a_session_still_ends_when_left_unused(db):
+    user = _user(db)
+    client = _signed_in(user)
+    db.execute(
+        update(UserSession).where(UserSession.user_id == user.id).values(expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    )
+    db.commit()
+    assert client.get("/auth/me").status_code == 401
+
+
+def test_use_never_extends_a_session_past_the_absolute_cap(db):
+    user = _user(db)
+    client = _signed_in(user)
+    started = datetime.now(timezone.utc) - timedelta(days=settings.session_max_age_days - 2)
+    db.execute(
+        update(UserSession)
+        .where(UserSession.user_id == user.id)
+        .values(created_at=started, expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+    )
+    db.commit()
+    assert client.get("/auth/me").status_code == 200
+    cap = started + timedelta(days=settings.session_max_age_days)
+    assert abs((_session(db, user).expires_at - cap).total_seconds()) < 1
+
+
+def test_a_freshly_extended_session_is_not_rewritten_on_every_request(db, monkeypatch):
+    from app import auth
+
+    user = _user(db)
+    client = _signed_in(user)
+    writes = []
+    real_extend = auth._extend
+    monkeypatch.setattr(auth, "_extend", lambda db_, s: (writes.append(s.expires_at), real_extend(db_, s)))
+    before = _session(db, user).expires_at
+    for _ in range(5):
+        client.get("/auth/me")
+    assert _session(db, user).expires_at == before  # just signed in: nothing to push back yet
+    assert len(writes) == 5  # checked every time, written none
+
+
+def test_the_session_cookie_lives_as_long_as_the_cap(db):
+    user = _user(db)
+    resp = TestClient(app).post("/auth/login", json={"email": user.email, "password": PASSWORD}, headers=CSRF)
+    assert f"Max-Age={settings.session_max_age_days * 24 * 3600}" in resp.headers["set-cookie"]
+
+
+# --- Changing your own password ----------------------------------------------------
+
+
+def _issued_login(db, operator_client, tenant) -> tuple[str, str]:
+    """A login made on the Users screen: (email, the password the operator saw)."""
+    email = f"issued-{uuid.uuid4().hex[:8]}@test.invalid"
+    body = operator_client.post(
+        "/users", json={"email": email, "name": "Issued", "location_ids": [str(tenant.id)]}, headers=CSRF
+    ).json()
+    _created(db, body)
+    return email, body["generated_password"]
+
+
+def test_an_operator_issued_password_must_be_replaced_before_anything_else(db):
+    tenant = _tenant(db, "Issued")
+    operator = _signed_in(_user(db, operator=True))
+    email, issued = _issued_login(db, operator, tenant)
+
+    newcomer = TestClient(app)
+    assert newcomer.post("/auth/login", json={"email": email, "password": issued}, headers=CSRF).status_code == 200
+    assert newcomer.get("/auth/me").json()["password_change_required"] is True
+    blocked = newcomer.get("/invoices", params={"tenant_id": str(tenant.id)})
+    assert blocked.status_code == 403 and blocked.json()["detail"] == "password change required"
+
+    new_password = "a password only I know"
+    resp = newcomer.post("/auth/password", json={"current_password": issued, "new_password": new_password}, headers=CSRF)
+    assert resp.status_code == 204
+    assert newcomer.get("/auth/me").json()["password_change_required"] is False
+    assert newcomer.get("/invoices", params={"tenant_id": str(tenant.id)}).status_code == 200
+
+    # The operator's copy no longer works; theirs does.
+    fresh = TestClient(app)
+    assert fresh.post("/auth/login", json={"email": email, "password": issued}, headers=CSRF).status_code == 401
+    assert fresh.post("/auth/login", json={"email": email, "password": new_password}, headers=CSRF).status_code == 200
+
+    # And an operator reset makes it theirs to replace again.
+    user_id = db.scalar(select(User.id).where(User.email == email))
+    operator.post(f"/users/{user_id}/password", json={}, headers=CSRF)
+    db.expire_all()
+    assert db.get(User, user_id).password_change_required is True
+
+
+def test_changing_your_password_keeps_this_session_and_ends_the_others(db):
+    user = _user(db)
+    here, elsewhere = _signed_in(user), _signed_in(user)
+    resp = here.post("/auth/password", json={"current_password": PASSWORD, "new_password": "brand new passphrase"}, headers=CSRF)
+    assert resp.status_code == 204
+    assert here.get("/auth/me").status_code == 200
+    assert elsewhere.get("/auth/me").status_code == 401
+    event = db.scalar(select(AuditEvent).where(AuditEvent.entity_id == user.id, AuditEvent.action == "user.password_changed"))
+    assert event is not None and event.actor_user_id == user.id
+
+
+def test_a_password_change_needs_the_current_password_and_counts_wrong_guesses(db, monkeypatch):
+    monkeypatch.setattr(settings, "login_max_failures", 3)
+    user = _user(db)
+    client = _signed_in(user)
+    for _ in range(3):
+        wrong = client.post("/auth/password", json={"current_password": "guess", "new_password": "x" * 20}, headers=CSRF)
+        # 422, not 401: the session is fine; a 401 would bounce the screen to sign-in.
+        assert wrong.status_code == 422
+    locked = client.post("/auth/password", json={"current_password": PASSWORD, "new_password": "x" * 20}, headers=CSRF)
+    assert locked.status_code == 429
+    assert client.get("/auth/me").status_code == 200  # still signed in
+
+
+def test_a_new_password_must_be_long_and_actually_new(db):
+    client = _signed_in(_user(db))
+    same = client.post("/auth/password", json={"current_password": PASSWORD, "new_password": PASSWORD}, headers=CSRF)
+    assert same.status_code == 422
+    short = client.post("/auth/password", json={"current_password": PASSWORD, "new_password": "short"}, headers=CSRF)
+    assert short.status_code == 422 and "12 characters" in short.json()["detail"]

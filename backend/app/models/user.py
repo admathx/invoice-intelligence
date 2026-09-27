@@ -38,6 +38,11 @@ class User(Base):
     # Deactivating (not deleting) keeps the audit trail's references to what
     # this person did intact after they leave.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Set when an operator issued the password (they've seen it); until the
+    # owner picks their own, only the password change is allowed (app.auth).
+    password_change_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 
 

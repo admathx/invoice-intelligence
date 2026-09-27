@@ -291,6 +291,17 @@ test.describe("managing users", () => {
     await newcomer.getByLabel("Email").fill(email);
     await newcomer.getByLabel("Password").fill(password);
     await newcomer.getByRole("button", { name: "Sign in" }).click();
+
+    // The operator saw that password, so the first thing is to replace it,
+    // and nothing else opens until they do.
+    await expect(newcomer).toHaveURL(/\/account\/password$/);
+    await newcomer.goto("/insights");
+    await expect(newcomer).toHaveURL(/\/account\/password$/);
+    await newcomer.getByLabel("Temporary password").fill(password);
+    await newcomer.getByLabel("New password", { exact: true }).fill("a phrase of my own choosing");
+    await newcomer.getByLabel("New password again").fill("a phrase of my own choosing");
+    await newcomer.getByRole("button", { name: "Set password and continue" }).click();
+    await expect(newcomer).toHaveURL(/\/invoices$/);
     await expect(newcomer.getByText("E2E New Person")).toBeVisible();
 
     // Deactivating signs them out at once.

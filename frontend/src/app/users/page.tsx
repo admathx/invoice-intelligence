@@ -368,7 +368,10 @@ function PasswordHandover({ handover, onDone }: { handover: Handover; onDone: ()
           Done
         </button>
       </div>
-      <p className="mt-2 text-xs">Give it to them directly, not by email. It can&rsquo;t be shown again; reset it if it&rsquo;s lost.</p>
+      <p className="mt-2 text-xs">
+        Give it to them directly, not by email. They&rsquo;ll choose their own the first time they sign in. It
+        can&rsquo;t be shown again; reset it if it&rsquo;s lost.
+      </p>
     </div>
   );
 }

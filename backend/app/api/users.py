@@ -91,6 +91,8 @@ def create_user(
             password=body.password if body.password is not None else generated,
             is_operator=body.is_operator,
             tenant_ids=body.location_ids,
+            # The operator sees this password, so its owner must replace it.
+            must_change=True,
         )
     except user_service.UserError as exc:
         raise _fail(exc) from exc
@@ -126,7 +128,9 @@ def reset_password(
     user = _user_or_404(db, user_id)
     generated = user_service.generate_password() if body.password is None else None
     try:
-        user_service.set_password(db, operator, user, body.password if body.password is not None else generated)
+        user_service.set_password(
+            db, operator, user, body.password if body.password is not None else generated, must_change=True
+        )
     except user_service.UserError as exc:
         raise _fail(exc) from exc
     db.commit()

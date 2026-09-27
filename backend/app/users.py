@@ -65,7 +65,10 @@ def create_user(
     password: str,
     is_operator: bool = False,
     tenant_ids: list[uuid.UUID] = (),
+    must_change: bool = False,
 ) -> User:
+    """must_change: the password was issued by someone else (an operator on
+    the Users screen), so its owner has to replace it before anything else."""
     email = normalize_email(email)
     name = name.strip()
     if "@" not in email:
@@ -78,7 +81,12 @@ def create_user(
     tenants = _tenants(db, list(tenant_ids))
 
     user = User(
-        id=uuid.uuid4(), email=email, name=name, password_hash=hash_password(password), is_operator=is_operator
+        id=uuid.uuid4(),
+        email=email,
+        name=name,
+        password_hash=hash_password(password),
+        is_operator=is_operator,
+        password_change_required=must_change,
     )
     db.add(user)
     db.flush()
@@ -147,10 +155,27 @@ def update_user(
     return changed
 
 
-def set_password(db: Session, actor: User | None, user: User, password: str) -> None:
+def set_password(db: Session, actor: User | None, user: User, password: str, *, must_change: bool = False) -> None:
     """Also signs the user out everywhere: whoever knew the old password, or
-    holds a session opened with it, is out."""
+    holds a session opened with it, is out. must_change as in create_user."""
     _check_password(password)
     user.password_hash = hash_password(password)
+    user.password_change_required = must_change
     revoke_sessions(db, user)
     audit.record(db, actor, "user.password_reset", "user", user.id, email=user.email)
+
+
+def change_own_password(db: Session, user: User, current_session_id: uuid.UUID, new_password: str) -> None:
+    """The owner choosing their own password (the current one already
+    verified by the caller). Their other sessions end; the one they're using
+    stays, so changing a password doesn't sign you out of the page you did
+    it on."""
+    _check_password(new_password)
+    user.password_hash = hash_password(new_password)
+    user.password_change_required = False
+    db.execute(
+        update(UserSession)
+        .where(UserSession.user_id == user.id, UserSession.id != current_session_id, UserSession.revoked_at.is_(None))
+        .values(revoked_at=datetime.now(timezone.utc))
+    )
+    audit.record(db, user, "user.password_changed", "user", user.id, email=user.email)

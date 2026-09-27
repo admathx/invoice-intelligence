@@ -64,7 +64,12 @@ class Settings(BaseSettings):
     # matched here can act as a signed-in user, and "any localhost port" would
     # include whatever else happens to be running on the machine.
     frontend_origins: list[str] = ["http://localhost:3000", "http://localhost:3001"]
+    # A session ends after this long unused; every use pushes it back
+    # (app.auth.user_for_token), so someone working daily isn't signed out
+    # mid-task. session_max_age_days caps it regardless, so a stolen cookie
+    # can't be kept alive forever by using it.
     session_ttl_days: int = 14
+    session_max_age_days: int = 90
     # Secure cookies aren't sent over plain http, which is what local dev
     # runs on. Must be True anywhere served over https.
     session_cookie_secure: bool = False

@@ -42,7 +42,9 @@ export default function AccountMenu({
       ) : (
         <span className="text-gray-600">{locations[0]?.name ?? "No locations"}</span>
       )}
-      <span className="text-gray-400">{name}</span>
+      <a href="/account/password" title="Change your password" className="text-gray-400 hover:text-gray-900">
+        {name}
+      </a>
       {/* A form, not a click handler: works before hydration (app/logout/route.ts). */}
       <form action="/logout" method="post">
         <button type="submit" className="text-gray-600 hover:text-gray-900">

@@ -16,13 +16,15 @@ from app.auth import (
     normalize_email,
     prune_sessions,
     revoke_session,
+    session_for_token,
     user_for_token,
     verify_password,
 )
 from app.config import settings
 from app.db import get_db
 from app.models import AuditEvent, Tenant, User
-from app.schemas.auth import LocationOut, LoginRequest, MeOut
+from app import users as user_service
+from app.schemas.auth import LocationOut, LoginRequest, MeOut, PasswordChange
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -38,6 +40,7 @@ def _me(db: Session, user: User) -> MeOut:
         email=user.email,
         name=user.name,
         is_operator=user.is_operator,
+        password_change_required=user.password_change_required,
         locations=[LocationOut(id=t.id, name=t.name, metro=t.metro) for t in tenants],
     )
 
@@ -97,7 +100,12 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
     response.set_cookie(
         SESSION_COOKIE,
         token,
-        max_age=settings.session_ttl_days * 24 * 3600,
+        # The cookie lives as long as the session could (the absolute cap);
+        # whether it's still valid, idle expiry included, is the server's call
+        # on every request. Refreshing the cookie itself wouldn't work anyway:
+        # most pages render on the server, whose responses to its own API
+        # calls never reach the browser.
+        max_age=settings.session_max_age_days * 24 * 3600,
         httponly=True,
         secure=settings.session_cookie_secure,
         samesite="lax",
@@ -123,3 +131,30 @@ def logout(request: Request, db: Session = Depends(get_db)) -> Response:
 @router.get("/me", response_model=MeOut)
 def me(user: User = Depends(current_user), db: Session = Depends(get_db)) -> MeOut:
     return _me(db, user)
+
+
+@router.post("/password", status_code=204)
+def change_password(body: PasswordChange, request: Request, db: Session = Depends(get_db)) -> Response:
+    """Change your own password. Needs the current one: a session left open on
+    a shared machine mustn't be enough to take over the account. Wrong guesses
+    count toward the same lockout as failed sign-ins."""
+    found = session_for_token(db, request.cookies.get(SESSION_COOKIE))
+    if found is None:
+        raise HTTPException(status_code=401, detail="sign in required")
+    session, user = found
+    if _recent_failures(db, user.email, user) >= settings.login_max_failures:
+        raise HTTPException(status_code=429, detail="too many failed attempts; try again in a few minutes")
+    # 422, not 401: the session is fine, only the typed password is wrong,
+    # and a 401 would send the screen to sign-in.
+    if not verify_password(user, body.current_password):
+        audit.record(db, None, LOGIN_FAILED, "user", user.id, email=user.email, during="password change")
+        db.commit()
+        raise HTTPException(status_code=422, detail="current password is incorrect")
+    if body.new_password == body.current_password:
+        raise HTTPException(status_code=422, detail="choose a password different from the current one")
+    try:
+        user_service.change_own_password(db, user, session.id, body.new_password)
+    except user_service.UserError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    db.commit()
+    return Response(status_code=204)

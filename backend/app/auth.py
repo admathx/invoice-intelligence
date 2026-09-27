@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from fastapi import Depends, HTTPException, Request
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -74,6 +74,24 @@ def create_session(db: Session, user: User) -> str:
     return token
 
 
+# Extending a session is a write; doing it at most this often per session
+# keeps page views from each costing one.
+SESSION_REFRESH_GRANULARITY = timedelta(hours=1)
+
+
+def _extend(db: Session, session: UserSession) -> None:
+    """Push the idle expiry back, never past the absolute cap. Committed on
+    its own: most requests that use a session are reads that never commit."""
+    now = datetime.now(timezone.utc)
+    target = min(
+        now + timedelta(days=settings.session_ttl_days),
+        session.created_at + timedelta(days=settings.session_max_age_days),
+    )
+    if target - session.expires_at >= SESSION_REFRESH_GRANULARITY:
+        db.execute(update(UserSession).where(UserSession.id == session.id).values(expires_at=target))
+        db.commit()
+
+
 def prune_sessions(db: Session) -> int:
     """Delete sessions that stopped working more than session_retention_days
     ago (expired or revoked). Run on every sign-in, which is exactly when the
@@ -90,7 +108,9 @@ def revoke_session(db: Session, token: str) -> None:
         session.revoked_at = datetime.now(timezone.utc)
 
 
-def user_for_token(db: Session, token: str | None) -> User | None:
+def session_for_token(db: Session, token: str | None) -> tuple[UserSession, User] | None:
+    """The live session a token belongs to, and its user; None when there's
+    no such session or it has ended. Using it extends it (_extend)."""
     if not token:
         return None
     row = db.execute(
@@ -103,13 +123,30 @@ def user_for_token(db: Session, token: str | None) -> User | None:
     session, user = row
     if session.revoked_at is not None or session.expires_at <= datetime.now(timezone.utc) or not user.is_active:
         return None
-    return user
+    _extend(db, session)
+    return session, user
+
+
+def user_for_token(db: Session, token: str | None) -> User | None:
+    found = session_for_token(db, token)
+    return found[1] if found else None
+
+
+PASSWORD_CHANGE_REQUIRED = "password change required"
+# What someone holding an operator-issued password may do before replacing
+# it: see who they are, replace it, or leave.
+_ALLOWED_BEFORE_PASSWORD_CHANGE = {"/auth/me", "/auth/password", "/auth/logout"}
 
 
 def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = user_for_token(db, request.cookies.get(SESSION_COOKIE))
     if user is None:
         raise HTTPException(status_code=401, detail="sign in required")
+    # Enforced here, not in the screens: every endpoint that acts as a user
+    # comes through this dependency (get_db_for_tenant and require_operator
+    # included), so none can be reached with a password someone else has seen.
+    if user.password_change_required and request.url.path not in _ALLOWED_BEFORE_PASSWORD_CHANGE:
+        raise HTTPException(status_code=403, detail=PASSWORD_CHANGE_REQUIRED)
     return user
 
 

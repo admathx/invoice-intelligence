@@ -15,7 +15,17 @@ export const SESSION_COOKIE = "ii_session";
 export const LOCATION_COOKIE = "ii_location";
 
 export type Location = { id: string; name: string; metro: string };
-export type Me = { id: string; email: string; name: string; is_operator: boolean; locations: Location[] };
+export type Me = {
+  id: string;
+  email: string;
+  name: string;
+  is_operator: boolean;
+  /** An operator issued their password; nothing else works until they replace it. */
+  password_change_required: boolean;
+  locations: Location[];
+};
+
+export const CHANGE_PASSWORD_PATH = "/account/password";
 export type Session = { user: Me; locationId: string | null };
 
 function sessionCookieHeader(): Record<string, string> {
@@ -45,5 +55,8 @@ export const getSession = cache(async (): Promise<Session | null> => {
 export async function requireSession(): Promise<Session> {
   const session = await getSession();
   if (!session) redirect("/login");
+  // The API refuses everything else until then anyway (backend app/auth.py);
+  // this sends them where they can do something about it.
+  if (session.user.password_change_required) redirect(CHANGE_PASSWORD_PATH);
   return session;
 }

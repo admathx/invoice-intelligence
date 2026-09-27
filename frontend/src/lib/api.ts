@@ -27,9 +27,19 @@ export async function api(path: string, init: RequestInit = {}): Promise<Respons
     ...init,
     headers: { ...CSRF_HEADERS, ...(init.headers as Record<string, string> | undefined) },
   });
-  if (res.status === 401 && typeof window !== "undefined") {
-    // The session ended (signed out elsewhere, expired, deactivated).
-    window.location.assign(loginPath(window.location.pathname + window.location.search));
+  if (typeof window !== "undefined") {
+    if (res.status === 401) {
+      // The session ended (signed out elsewhere, expired, deactivated).
+      window.location.assign(loginPath(window.location.pathname + window.location.search));
+    } else if (res.status === 403) {
+      // An operator reset their password mid-session: replace it first.
+      const detail = await res
+        .clone()
+        .json()
+        .then((body) => body?.detail)
+        .catch(() => null);
+      if (detail === "password change required") window.location.assign("/account/password");
+    }
   }
   return res;
 }

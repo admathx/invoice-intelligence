@@ -10,6 +10,11 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=1, max_length=1024)
+
+
 class LocationOut(BaseModel):
     id: uuid.UUID
     name: str
@@ -21,6 +26,8 @@ class MeOut(BaseModel):
     email: str
     name: str
     is_operator: bool
+    # An operator issued their password; the screens send them to change it.
+    password_change_required: bool = False
     # Every location this person may open, for the location switcher.
     # Operators get all of them.
     locations: list[LocationOut]

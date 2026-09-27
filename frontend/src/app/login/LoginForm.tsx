@@ -4,12 +4,14 @@ import { useState } from "react";
 
 import { CSRF_HEADERS } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
+import { useHydrated } from "@/lib/useHydrated";
 
 export default function LoginForm({ next }: { next: string }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hydrated = useHydrated();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -40,42 +42,45 @@ export default function LoginForm({ next }: { next: string }) {
   return (
     <div className="mx-auto mt-24 max-w-sm">
       <h1 className="mb-6 text-xl font-semibold">Invoice Intelligence</h1>
-      <form onSubmit={submit} className="space-y-4 rounded border border-gray-200 bg-white p-6">
-        <label className="block text-sm">
-          <span className="mb-1 block text-gray-600">Email</span>
-          <input
-            type="email"
-            autoComplete="username"
-            required
-            autoFocus
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className={input}
-          />
-        </label>
-        <label className="block text-sm">
-          <span className="mb-1 block text-gray-600">Password</span>
-          <input
-            type="password"
-            autoComplete="current-password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className={input}
-          />
-        </label>
-        {error && (
-          <p role="alert" className="text-sm text-red-600">
-            {error}
-          </p>
-        )}
-        <button
-          type="submit"
-          disabled={busy}
-          className="w-full rounded bg-gray-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-        >
-          {busy ? "Signing in…" : "Sign in"}
-        </button>
+      <form onSubmit={submit} className="rounded border border-gray-200 bg-white p-6">
+        {/* Disabled until interactive: see useHydrated. */}
+        <fieldset disabled={!hydrated} className="space-y-4">
+          <label className="block text-sm">
+            <span className="mb-1 block text-gray-600">Email</span>
+            <input
+              type="email"
+              autoComplete="username"
+              required
+              autoFocus
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className={input}
+            />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block text-gray-600">Password</span>
+            <input
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className={input}
+            />
+          </label>
+          {error && (
+            <p role="alert" className="text-sm text-red-600">
+              {error}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={busy}
+            className="w-full rounded bg-gray-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {busy ? "Signing in…" : "Sign in"}
+          </button>
+        </fieldset>
       </form>
     </div>
   );
