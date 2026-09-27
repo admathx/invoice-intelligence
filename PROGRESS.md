@@ -1558,3 +1558,27 @@ make their own throwaway login per run. The Playwright location is now
 ### Still open
 - No "change my own password" screen; an operator's own row has no actions
   (another operator, or the CLI, resets it).
+
+## Operators' audit log
+
+- **`/audit` (operators only)**: every event across all locations, including
+  those tied to none (sign-ins and failures, logins and access, businesses).
+  Filter by kind (invoices, review queue, users and access, sign-ins,
+  businesses), by person, by location; "Older" pages back. Each entry names
+  its location and links to its invoice.
+- `GET /audit` pages with a `(occurred_at, id)` cursor, so a page boundary
+  can't skip or repeat events that share a timestamp. The action filter is a
+  literal prefix (`_` is escaped: `invoice_` doesn't match `invoice.`).
+- **Bug found building it:** `occurred_at` defaulted to `now()`, which in
+  Postgres is the *transaction's* start time, so events written together (a
+  login created and its locations granted) shared one timestamp and listed in
+  random order. Now `clock_timestamp()` (migration 0011).
+- User-management and sign-in events now read as sentences ("gave … access
+  to Cedar Table", "deactivated …"); a failed sign-in is "Someone", not
+  "System".
+
+### Gates
+- Backend **228 passed** (3 new: operator-only and location-less events,
+  filters, paging without gaps or repeats). Frontend 26 unit, `tsc` clean,
+  Playwright 8 (the users test now also checks the audit log shows the
+  creation and deactivation).

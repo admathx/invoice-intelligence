@@ -52,6 +52,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 <a href="/users" className="whitespace-nowrap text-sm text-gray-400 hover:text-gray-900">
                   Users
                 </a>
+                <a href="/audit" className="whitespace-nowrap text-sm text-gray-400 hover:text-gray-900">
+                  Audit log
+                </a>
               </>
             )}
             <AccountMenu

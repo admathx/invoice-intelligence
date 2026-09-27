@@ -614,3 +614,64 @@ def test_production_refuses_insecure_cookies_and_http_origins():
     with pytest.raises(ValidationError, match="https"):
         Settings(app_env="production", session_cookie_secure=True, frontend_origins=["http://app.example.com"])
     assert Settings(app_env="production", session_cookie_secure=True, frontend_origins=["https://a.example.com"])
+
+
+# --- The operators' audit log ------------------------------------------------
+
+
+def test_the_audit_log_is_operator_only_and_covers_events_with_no_location(db):
+    tenant = _tenant(db, "Audit Log")
+    member = _signed_in(_user(db, locations=(tenant,)))
+    assert member.get("/audit").status_code == 403
+
+    operator_user = _user(db, operator=True)
+    operator = _signed_in(operator_user)
+    created = operator.post("/users", json={"email": f"log-{uuid.uuid4().hex[:8]}@test.invalid", "name": "Logged"}, headers=CSRF)
+    _created(db, created.json())
+
+    page = operator.get("/audit", params={"actor_id": str(operator_user.id)}).json()
+    actions = [e["action"] for e in page["events"]]
+    # Newest first, and in the order they happened even within one transaction.
+    assert actions[:1] == ["user.created"] and "auth.login" in actions
+    created_event = page["events"][0]
+    assert created_event["tenant_id"] is None and created_event["actor_email"] == operator_user.email
+
+
+def test_the_audit_log_filters_by_action_family_location_and_invoice(db):
+    first, second = _tenant(db, "First"), _tenant(db, "Second")
+    operator_user = _user(db, operator=True)
+    operator = _signed_in(operator_user)
+    member_user = _user(db)
+    invoice = _needs_review_invoice(db, first)
+    operator.patch(f"/invoices/{invoice.id}", params={"tenant_id": str(first.id)}, json={"total": "21.00"}, headers=CSRF)
+    operator.put(f"/users/{member_user.id}/locations/{second.id}", headers=CSRF)
+
+    def actions(**params):
+        return {e["action"] for e in operator.get("/audit", params={"actor_id": str(operator_user.id), **params}).json()["events"]}
+
+    assert actions(action="user.") == {"user.access_granted"}
+    assert actions(action="invoice") == {"invoice.edited"}  # "invoice" also covers invoice_line.*, none here
+    assert actions(action="invoice_") == set()  # "_" is literal, not a wildcard
+    assert actions(tenant_id=str(second.id)) == {"user.access_granted"}
+    assert actions(entity_id=str(invoice.id)) == {"invoice.edited"}
+    assert operator.get("/audit", params={"action": "user%"}).status_code == 422
+
+
+def test_audit_log_pages_never_skip_or_repeat(db):
+    operator_user = _user(db, operator=True)
+    operator = _signed_in(operator_user)
+    for i in range(7):
+        created = operator.post("/users", json={"email": f"page-{i}-{uuid.uuid4().hex[:6]}@test.invalid", "name": f"P{i}"}, headers=CSRF)
+        _created(db, created.json())
+
+    seen, cursor = [], None
+    while True:
+        params = {"actor_id": str(operator_user.id), "action": "user.", "limit": 3}
+        if cursor:
+            params["cursor"] = cursor
+        page = operator.get("/audit", params=params).json()
+        seen += [e["id"] for e in page["events"]]
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    assert len(seen) == len(set(seen)) == 7

@@ -38,6 +38,7 @@ describe("activity", () => {
     expect(actorLabel(event({}))).toBe("System");
     expect(actorLabel(event({ actor_email: "a@b.test" }))).toBe("a@b.test");
     expect(actorLabel(event({ actor_name: "Ana", actor_email: "a@b.test" }))).toBe("Ana");
+    expect(actorLabel(event({ action: "auth.login_failed" }))).toBe("Someone");
   });
 
   it("says whether extraction's numbers added up", () => {
@@ -56,7 +57,19 @@ describe("activity", () => {
     expect(eventInvoiceId(event({ entity_type: "account", entity_id: "a-1" }))).toBeNull();
   });
 
+  it("describes user management in words", () => {
+    expect(
+      describeEvent(event({ action: "user.access_granted", details: { email: "a@b.test", location: "Cedar Table" } })),
+    ).toBe("gave a@b.test access to Cedar Table");
+    expect(
+      describeEvent(event({ action: "user.updated", details: { email: "a@b.test", changes: { is_active: { from: true, to: false } } } })),
+    ).toBe("deactivated a@b.test");
+    expect(
+      describeEvent(event({ action: "user.updated", details: { email: "a@b.test", changes: { is_operator: { from: false, to: true } } } })),
+    ).toBe("made a@b.test an operator");
+  });
+
   it("falls back to something readable for an action it doesn't know", () => {
-    expect(describeEvent(event({ action: "user.access_granted" }))).toBe("user: access granted");
+    expect(describeEvent(event({ action: "vendor.renamed_thing" }))).toBe("vendor: renamed thing");
   });
 });

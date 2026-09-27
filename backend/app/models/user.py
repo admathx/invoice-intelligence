@@ -86,7 +86,9 @@ class AuditEvent(Base):
     __tablename__ = "audit_events"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    occurred_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False, index=True)
+    # clock_timestamp(), not now(): now() is the transaction's start, which
+    # gave every event in one transaction the same time (migration 0011).
+    occurred_at: Mapped[datetime] = mapped_column(server_default=func.clock_timestamp(), nullable=False, index=True)
     # NULL for the system itself (the extraction worker, email intake).
     # SET NULL rather than cascade: removing a user must never erase the record
     # of what they did.

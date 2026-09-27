@@ -300,5 +300,11 @@ test.describe("managing users", () => {
     await newcomer.reload();
     await expect(newcomer).toHaveURL(/\/login/);
     await theirs.close();
+
+    // All of it is in the operators' audit log, newest first.
+    await page.goto("/audit");
+    await page.getByLabel("What").selectOption({ label: "Users and access" });
+    await expect(page.getByText(`E2E Operator deactivated ${email}`)).toBeVisible();
+    await expect(page.getByText(`E2E Operator created a login for ${email}`)).toBeVisible();
   });
 });

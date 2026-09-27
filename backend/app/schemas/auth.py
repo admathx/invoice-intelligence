@@ -35,7 +35,17 @@ class AuditEventOut(BaseModel):
     action: str
     entity_type: str
     entity_id: uuid.UUID | None
+    # The location it happened at, if any (not every event has one: creating
+    # a business, a failed sign-in).
+    tenant_id: uuid.UUID | None = None
+    tenant_name: str | None = None
     details: dict[str, Any]
+
+
+class AuditPage(BaseModel):
+    events: list[AuditEventOut]
+    # Pass back as `cursor` for the next (older) page; None when there's no more.
+    next_cursor: str | None
 
 
 class UserOut(BaseModel):

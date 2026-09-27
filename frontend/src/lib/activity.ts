@@ -8,6 +8,8 @@ export type AuditEvent = {
   action: string;
   entity_type: string;
   entity_id: string | null;
+  tenant_id?: string | null;
+  tenant_name?: string | null;
   details: Record<string, unknown>;
 };
 
@@ -44,7 +46,9 @@ export function describeChanges(changes: Record<string, Change> | undefined): st
 }
 
 export function actorLabel(event: AuditEvent): string {
-  return event.actor_name || event.actor_email || "System";
+  if (event.actor_name || event.actor_email) return (event.actor_name || event.actor_email)!;
+  // No actor on a failed sign-in means nobody got in, not that the system acted.
+  return event.action === "auth.login_failed" ? "Someone" : "System";
 }
 
 const LINE = (d: Record<string, unknown>) => (d.line_number ? `line ${d.line_number}` : "a line");
@@ -78,6 +82,24 @@ export function describeEvent(event: AuditEvent): string {
       return `corrected the product match for ${show(d.raw_description)}`;
     case "invoice_line.reopened":
       return `sent ${show(d.raw_description)} back to review`;
+    case "auth.login":
+      return "signed in";
+    case "auth.logout":
+      return "signed out";
+    case "auth.login_failed":
+      return `failed to sign in as ${show(d.email)}`;
+    case "user.created":
+      return `created a login for ${show(d.email)}${d.is_operator ? " (operator)" : ""}`;
+    case "user.access_granted":
+      return `gave ${show(d.email)} access to ${show(d.location)}`;
+    case "user.access_revoked":
+      return `removed ${show(d.email)}'s access to ${show(d.location)}`;
+    case "user.updated":
+      return describeUserUpdate(d);
+    case "user.password_reset":
+      return `reset ${show(d.email)}'s password`;
+    case "account.created":
+      return `created the business ${show(d.name)}`;
     case "account.location_attached":
       return `added this location to ${show(d.account_name)}`;
     case "account.location_detached":
@@ -85,6 +107,17 @@ export function describeEvent(event: AuditEvent): string {
     default:
       return event.action.replaceAll("_", " ").replaceAll(".", ": ");
   }
+}
+
+function describeUserUpdate(d: Record<string, unknown>): string {
+  const changes = (d.changes ?? {}) as Record<string, Change>;
+  const who = show(d.email);
+  const parts: string[] = [];
+  if (changes.is_active) parts.push(`${changes.is_active.to ? "reactivated" : "deactivated"} ${who}`);
+  if (changes.is_operator)
+    parts.push(changes.is_operator.to ? `made ${who} an operator` : `removed ${who}'s operator access`);
+  if (changes.name) parts.push(`renamed ${who} from ${show(changes.name.from)} to ${show(changes.name.to)}`);
+  return parts.length ? parts.join("; ") : `changed ${who}`;
 }
 
 /** The per-field detail lines under an event, if it has any. */
