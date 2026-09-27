@@ -308,3 +308,106 @@ test.describe("managing users", () => {
     await expect(page.getByText(`E2E Operator created a login for ${email}`)).toBeVisible();
   });
 });
+
+test.describe("operators' screens", () => {
+  test.skip(!TENANT_ID, "E2E_TENANT_ID not set in frontend/.env.local");
+  test.afterAll(() => {
+    runFixture("cleanup-locations");
+    runFixture("cleanup-users");
+  });
+
+  test.beforeEach(async ({ page }) => {
+    const operator = runFixture("login-operator") as Login;
+    expect((await page.request.post("/api/auth/login", { data: operator, headers: CSRF })).ok()).toBeTruthy();
+  });
+
+  test("adding a location shows where it forwards invoices, and a refused one keeps what was typed", async ({ page }) => {
+    const name = `E2E Location ${Date.now()}`;
+    await page.goto("/accounts");
+    await page.getByLabel("Location name").fill(name);
+    await page.getByLabel("Metro").fill("Austin, TX");
+    await page.getByLabel("Annual food spend").selectOption({ label: "$1M–$3M" });
+    await page.getByRole("button", { name: "Add location" }).click();
+
+    const slug = name.toLowerCase().replaceAll(" ", "-");
+    await expect(page.getByRole("status")).toContainText(`Added ${name}`);
+    await expect(page.getByRole("status")).toContainText(`${slug}@`);
+    const row = page.getByRole("row", { name: new RegExp(name) });
+    await expect(row).toContainText("Austin, TX");
+    await expect(page.getByLabel("Location name")).toHaveValue("");
+
+    // The server refuses the next one: the form must keep the name.
+    await page.route("**/api/tenants", (route) =>
+      route.request().method() === "POST"
+        ? route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ detail: "try again" }) })
+        : route.continue(),
+    );
+    await page.getByLabel("Location name").fill(`${name} Two`);
+    await page.getByRole("button", { name: "Add location" }).click();
+    await expect(page.getByText("try again")).toBeVisible();
+    await expect(page.getByLabel("Location name")).toHaveValue(`${name} Two`);
+  });
+
+  test("the audit log pages back through everything without gaps or repeats", async ({ page }) => {
+    // Enough events of one kind by one person: three logins created.
+    for (let i = 0; i < 3; i++) {
+      const resp = await page.request.post("/api/users", {
+        data: { email: `e2e-new-page-${Date.now()}-${i}@dev.test`, name: `E2E Paging ${i}` },
+        headers: CSRF,
+      });
+      expect(resp.ok()).toBeTruthy();
+    }
+    // Pages of two instead of a hundred, so paging happens.
+    await page.route("**/api/audit?*", (route) => route.continue({ url: route.request().url().replace("limit=100", "limit=2") }));
+
+    await page.goto("/audit");
+    await page.getByLabel("What").selectOption({ label: "Users and access" });
+    await page.getByLabel("Who").selectOption({ label: "E2E Operator" });
+    const entries = page.locator("main ol > li");
+    await expect(entries).toHaveCount(2);
+    const older = page.getByRole("button", { name: "Older" });
+    while (await older.isVisible()) {
+      const before = await entries.count();
+      await older.click();
+      await expect(entries).not.toHaveCount(before);
+    }
+    const texts = await entries.allInnerTexts();
+    const created = texts.filter((t) => t.includes("created a login for e2e-new-page-"));
+    expect(created.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(texts).size).toBe(texts.length);
+  });
+});
+
+test.describe("reading times", () => {
+  test.skip(!TENANT_ID, "E2E_TENANT_ID not set in frontend/.env.local");
+  test.afterAll(() => {
+    if (TENANT_ID) runFixture("cleanup", TENANT_ID);
+  });
+
+  test("history shows times in the reader's timezone, not the server's", async ({ browser }) => {
+    // A zone this machine (the server) is unlikely to be in.
+    const zone = "Asia/Tokyo";
+    const context = await browser.newContext({ baseURL: test.info().project.use.baseURL, timezoneId: zone });
+    const page = await context.newPage();
+    expect((await page.request.post("/api/auth/login", { data: e2eLogin(), headers: CSRF })).ok()).toBeTruthy();
+    const fixture = runFixture("setup-needs-review", TENANT_ID) as { invoice_id: string };
+
+    await page.goto(`/invoices/${fixture.invoice_id}`);
+    await page.getByLabel("Line 1 unit price").fill("47.50");
+    await page.getByRole("button", { name: "Save & re-check" }).click();
+
+    const history = page.locator("section", { has: page.getByRole("heading", { name: "History" }) });
+    const stamp = history.locator("time[data-local]").first();
+    await expect(stamp).toBeVisible();
+    const iso = await stamp.getAttribute("datetime");
+    const expected = new Date(iso!).toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: zone,
+    });
+    await expect(stamp).toHaveText(expected);
+    await context.close();
+  });
+});

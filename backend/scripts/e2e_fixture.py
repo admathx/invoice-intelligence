@@ -16,6 +16,8 @@ Subcommands (see backend/scripts/e2e_fixture.py --help via argparse):
   login-operator             the same for an e2e operator login.
   cleanup-users              deletes the logins the Users-screen test created
                              (e2e-new-*@dev.test) and their history.
+  cleanup-locations          deletes the locations the Businesses test created
+                             ("E2E Location *") and their history.
   verify-alias <distributor_id> <raw_sku> <raw_description>
                              calls the real matcher again for that
                              (distributor, raw_sku) pair and prints the
@@ -44,6 +46,7 @@ from app.models import (  # noqa: E402
     InvoiceLineItem,
     PriceObservation,
     SkuAlias,
+    Tenant,
     User,
 )
 from app.models.enums import InvoiceSource, InvoiceStatus, ReviewStatus  # noqa: E402
@@ -352,6 +355,8 @@ E2E_LOGIN = ("e2e@dev.test", "E2E Reviewer")
 E2E_OPERATOR = ("e2e-operator@dev.test", "E2E Operator")
 # Logins the Users-screen test creates through the UI.
 E2E_CREATED_PATTERN = "e2e-new-%@dev.test"
+# Locations the Businesses-screen test creates through the UI.
+E2E_LOCATION_PATTERN = "E2E Location %"
 
 
 def cmd_login(tenant_id: str) -> None:
@@ -389,6 +394,19 @@ def cmd_cleanup_users() -> None:
             db.execute(sqlalchemy.delete(User).where(User.id.in_(ids)))  # memberships and sessions cascade
             db.commit()
         print(json.dumps({"deleted_users": len(ids)}))
+    finally:
+        db.close()
+
+
+def cmd_cleanup_locations() -> None:
+    db = SessionLocal()
+    try:
+        ids = list(db.scalars(sqlalchemy.select(Tenant.id).where(Tenant.name.like(E2E_LOCATION_PATTERN))))
+        if ids:
+            db.execute(sqlalchemy.delete(AuditEvent).where(AuditEvent.tenant_id.in_(ids)))
+            db.execute(sqlalchemy.delete(Tenant).where(Tenant.id.in_(ids)))
+            db.commit()
+        print(json.dumps({"deleted_locations": len(ids)}))
     finally:
         db.close()
 
@@ -444,6 +462,7 @@ def main() -> None:
 
     sub.add_parser("login-operator")
     sub.add_parser("cleanup-users")
+    sub.add_parser("cleanup-locations")
 
     cleanup_p = sub.add_parser("cleanup")
     cleanup_p.add_argument("tenant_id")
@@ -469,6 +488,8 @@ def main() -> None:
         cmd_login_operator()
     elif args.command == "cleanup-users":
         cmd_cleanup_users()
+    elif args.command == "cleanup-locations":
+        cmd_cleanup_locations()
     elif args.command == "cleanup":
         cmd_cleanup(args.tenant_id)
     elif args.command == "verify-alias":

@@ -15,7 +15,7 @@ against them filter explicitly.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Index, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -84,6 +84,22 @@ class AuditEvent(Base):
     """
 
     __tablename__ = "audit_events"
+    __table_args__ = (
+        # Lookups inside details (migration 0012): an invoice's history finds
+        # its lines' events by invoice_id; sign-in throttling counts failures
+        # by email.
+        Index(
+            "ix_audit_events_details_invoice_id",
+            text("(details ->> 'invoice_id')"),
+            postgresql_where=text("details ? 'invoice_id'"),
+        ),
+        Index(
+            "ix_audit_events_failed_login_email",
+            text("(details ->> 'email')"),
+            "occurred_at",
+            postgresql_where=text("action = 'auth.login_failed'"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # clock_timestamp(), not now(): now() is the transaction's start, which

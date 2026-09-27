@@ -1785,3 +1785,31 @@ once restaurants are reviewing, `make calibration-report` periodically.
 ### Gates
 Backend **266 passed** (9 new), frontend 28 unit, `tsc` clean, Playwright 8,
 `make smoke` on the fake extractor with the job carrying the 1800 s limit.
+
+## Times in the reader's zone, indexed audit lookups, browser tests for operators
+
+- **Activity and History showed server time.** They were formatted where
+  the page renders: the laptop's zone in development, UTC in the production
+  container, so a restaurant would have seen an 8:40 AM correction as
+  3:40 PM (and the Audit log, formatted in the browser, would disagree with
+  both). `LocalTime` formats in the browser, after hydration; the server's
+  first render says "UTC" explicitly. Playwright test runs the browser in
+  Asia/Tokyo against a server on EDT: the old code showed "Sep 27, 2:01 PM"
+  where "Sep 28, 3:01 AM" was right.
+- **Audit lookups inside `details` indexed** (migration 0012): an invoice's
+  history by `details->>'invoice_id'`, sign-in throttling by
+  `details->>'email'`. Measured on a scratch database with 300k events for
+  one location: history went from a sequential scan of the whole log (21 ms,
+  growing with every event) to an index lookup (0.04 ms). That needed the
+  query to state the partial index's condition (`details ? 'invoice_id'`);
+  without it Postgres ignored the index, so the first version of this fix
+  would have changed nothing. Throttling under 50k failed sign-ins: 0.07 ms
+  on its index.
+- **Browser tests for the operators' screens:** adding a location (the
+  forwarding address shown, the row listed, and a refused create keeping
+  the typed name), and audit-log paging (pages of two, walked to the end,
+  nothing missing or repeated).
+
+### Gates
+Backend 266 passed, frontend 28 unit, `tsc` clean, Playwright **11**
+(3 new). Test data cleaned up after the run (verified).

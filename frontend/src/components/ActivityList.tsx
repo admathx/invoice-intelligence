@@ -1,13 +1,5 @@
+import LocalTime from "@/components/LocalTime";
 import { actorLabel, describeEvent, eventDetailLines, eventInvoiceId, type AuditEvent } from "@/lib/activity";
-
-function when(iso: string): string {
-  return new Date(iso).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
 
 /** Who did what, newest first. `linkInvoices` adds a link to the invoice an
  *  event is about (pointless on that invoice's own page); `showLocation`
@@ -30,9 +22,7 @@ export default function ActivityList({
         return (
           <li key={event.id} className="py-2">
             <div className="flex gap-3">
-              <time dateTime={event.occurred_at} className="w-32 flex-none text-gray-400">
-                {when(event.occurred_at)}
-              </time>
+              <LocalTime iso={event.occurred_at} className="w-32 flex-none text-gray-400" />
               <div>
                 <span className="font-medium">{actorLabel(event)}</span> {describeEvent(event)}
                 {showLocation && event.tenant_name && (
