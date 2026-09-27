@@ -69,6 +69,12 @@ describe("activity", () => {
     ).toBe("made a@b.test an operator");
   });
 
+  it("says why an email didn't become invoices", () => {
+    expect(
+      describeEvent(event({ action: "email.rejected", details: { reason: "no PDF attachment (attachments: none)" } })),
+    ).toBe("couldn't take an email: no PDF attachment (attachments: none)");
+  });
+
   it("falls back to something readable for an action it doesn't know", () => {
     expect(describeEvent(event({ action: "vendor.renamed_thing" }))).toBe("vendor: renamed thing");
   });

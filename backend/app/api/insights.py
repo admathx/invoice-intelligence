@@ -7,7 +7,6 @@ read into a required write (and a full per-tenant recompute) on every page
 load, refresh, or browser prefetch, a code-review finding on Phase 5.
 """
 import uuid
-from datetime import date
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select

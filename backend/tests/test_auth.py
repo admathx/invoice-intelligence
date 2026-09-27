@@ -346,13 +346,12 @@ def test_businesses_and_the_tenant_list_are_operator_only(db):
     assert str(tenant.id) in {loc["id"] for loc in me["locations"]}
 
 
-def test_page_images_are_authorized_like_the_invoice(db, tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+def test_page_images_are_authorized_like_the_invoice(db, isolated_storage):
+    from app.storage import render_key
+
     mine, theirs = _tenant(db, "Mine"), _tenant(db, "Theirs")
     invoice = _needs_review_invoice(db, theirs)
-    render_dir = tmp_path / "renders" / str(invoice.id)
-    render_dir.mkdir(parents=True)
-    (render_dir / "page_001.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    isolated_storage.put(render_key(invoice.id, "page_001.png"), b"\x89PNG\r\n\x1a\nfake")
 
     owner = _signed_in(_user(db, locations=(theirs,)))
     detail = owner.get(f"/invoices/{invoice.id}", params={"tenant_id": str(theirs.id)}).json()

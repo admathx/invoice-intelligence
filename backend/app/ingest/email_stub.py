@@ -1,12 +1,14 @@
-"""SPEC.md §10 Phase 6: email intake — the real-world entry point, minus real
-mail infrastructure.
+"""SPEC.md §10 Phase 6: email intake.
 
-A watch directory stands in for an inbound mail server: drop an `.eml` in
-`inbox/`, and this parses it, routes it to a tenant by the address it was
-sent to, and turns each PDF attachment into an invoice on the same queue the
-HTTP upload endpoint uses. Nothing here talks to a mail provider — swapping
-in a real inbound webhook later means replacing `scan_inbox`, not the
-routing/attachment logic underneath it.
+An email is parsed, routed to a tenant by the address it was sent to, and
+each PDF attachment becomes an invoice on the same queue the HTTP upload
+endpoint uses. Two ways in, one path underneath (route_email ->
+record_invoices -> enqueue_invoices):
+
+- the inbound webhook (app/api/inbound.py), which a mail provider posts each
+  message to: production;
+- a watch directory (`inbox/`, scan_inbox): drop an `.eml` in, for local
+  development and demos without a mail provider.
 
 SPEC.md's exit criterion is that nothing is ever *silently* dropped: an email
 that can't be routed, carries no invoice, or fails to parse at all gets moved
@@ -199,44 +201,170 @@ def _already_ingested(db: Session, tenant_id: uuid.UUID, message_id: str) -> boo
     )
 
 
-def ingest_email_file(db: Session, path: Path, inbox_dir: Path | None = None) -> IngestResult:
-    """Turns one `.eml` into invoices, or quarantines it with a reason."""
-    inbox_dir = inbox_dir or Path(settings.inbox_dir)
-    source_name = path.name
+@dataclass
+class _Routed:
+    """An email that can become invoices: whose they are, and which PDFs."""
 
+    parsed: ParsedEmail
+    tenant: Tenant
+    pdfs: list[EmailAttachment]
+
+    @property
+    def context(self) -> str:
+        return _context(self.parsed)
+
+
+@dataclass
+class _Rejected:
+    reason: str
+    parsed: ParsedEmail | None = None
+    tenant: Tenant | None = None
+
+
+def _context(parsed: ParsedEmail | None) -> str:
+    # Carried into every rejection: a human reading it needs to recognise
+    # which message this was without opening the raw email.
+    return f' (subject: "{parsed.subject}")' if parsed and parsed.subject else ""
+
+
+def route_email(db: Session, raw: bytes) -> _Routed | _Rejected:
+    """Everything that decides whether an email becomes invoices, and whose,
+    without writing anything. Shared by the watch directory and the inbound
+    webhook (app/api/inbound.py), so the two can't disagree."""
     try:
-        parsed = parse_email(path.read_bytes())
-    except Exception as exc:  # malformed mail must not take down the whole scan
-        return _quarantine(path, inbox_dir, f"could not parse email: {exc}")
+        parsed = parse_email(raw)
+    except Exception as exc:  # malformed mail must not take down the caller
+        return _Rejected(f"could not parse email: {exc}")
 
-    # Carried into every rejection below: a human reading quarantine/ needs to
-    # recognise which message this was without opening the .eml.
-    context = f' (subject: "{parsed.subject}")' if parsed.subject else ""
-
+    context = _context(parsed)
     if not parsed.recipients:
-        return _quarantine(path, inbox_dir, f"no recipient address found in headers{context}")
+        return _Rejected(f"no recipient address found in headers{context}", parsed)
 
     tenant = find_tenant_for_recipients(db, parsed.recipients)
     if tenant is None:
-        return _quarantine(
-            path, inbox_dir, f"no tenant for recipient address(es): {', '.join(parsed.recipients)}{context}"
-        )
+        return _Rejected(f"no tenant for recipient address(es): {', '.join(parsed.recipients)}{context}", parsed)
 
     pdfs = parsed.pdf_attachments
     if not pdfs:
         other = ", ".join(a.filename for a in parsed.attachments) or "none"
-        return _quarantine(path, inbox_dir, f"no PDF attachment (attachments: {other}){context}")
+        return _Rejected(f"no PDF attachment (attachments: {other}){context}", parsed, tenant)
 
     # The same gate the upload endpoint applies, so the two entry points can't
     # disagree about what's acceptable. Email used to skip the size limit and
     # write a 300 MB scan to disk, invoice it, and hand it to the renderer.
-    # Quarantined as a whole, not dropped attachment by attachment: nothing in
+    # Rejected as a whole, not dropped attachment by attachment: nothing in
     # an email is silently discarded (SPEC.md §10 Phase 6).
     for attachment in pdfs:
         try:
             validate_invoice_bytes(attachment.content)
         except InvalidInvoiceFileError as exc:
-            return _quarantine(path, inbox_dir, f"attachment {attachment.filename!r} rejected: {exc}{context}")
+            return _Rejected(f"attachment {attachment.filename!r} rejected: {exc}{context}", parsed, tenant)
+
+    return _Routed(parsed, tenant, pdfs)
+
+
+def _lock_message(db: Session, tenant_id: uuid.UUID, message_id: str) -> None:
+    """Serialize concurrent deliveries of the same message (a provider
+    retrying while the first attempt is still running) until this
+    transaction ends, so the duplicate check below can't pass for both."""
+    db.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(f"{tenant_id}|{message_id}", 0))))
+
+
+def record_invoices(db: Session, routed: _Routed) -> list[uuid.UUID] | None:
+    """One invoice per PDF, committed. None if this message already became
+    invoices (checked again under a lock, see _lock_message)."""
+    tenant, parsed = routed.tenant, routed.parsed
+    bind_tenant(db, tenant.id)
+    if parsed.message_id:
+        _lock_message(db, tenant.id, parsed.message_id)
+        if _already_ingested(db, tenant.id, parsed.message_id):
+            db.rollback()
+            return None
+    invoice_ids: list[uuid.UUID] = []
+    for attachment in routed.pdfs:
+        # One invoice per PDF: a distributor mailing a week's invoices as
+        # several attachments is a single email but several invoices.
+        invoice = Invoice(
+            id=uuid.uuid4(),
+            tenant_id=tenant.id,
+            source=InvoiceSource.email,
+            source_message_id=parsed.message_id,
+            status=InvoiceStatus.received,
+            original_file_uri="",
+        )
+        invoice.original_file_uri = save_invoice_bytes(invoice.id, attachment.filename, attachment.content)
+        db.add(invoice)
+        audit.record(
+            db,
+            None,
+            "invoice.received_by_email",
+            "invoice",
+            invoice.id,
+            tenant.id,
+            filename=attachment.filename,
+            message_id=parsed.message_id,
+        )
+        invoice_ids.append(invoice.id)
+    db.commit()
+    return invoice_ids
+
+
+def enqueue_invoices(invoice_ids: list[uuid.UUID]) -> str | None:
+    """Queue each for extraction. Deliberately non-fatal: the invoices are
+    committed and durable; a Redis outage should leave them in `received` for
+    a requeue, not reopen whether the email was ingested (it was)."""
+    for invoice_id in invoice_ids:
+        try:
+            invoice_queue.enqueue(process_invoice, str(invoice_id))
+        except Exception as exc:
+            return f"invoices recorded but could not be queued for extraction: {exc}"
+    return None
+
+
+def ingest_email_bytes(db: Session, raw: bytes, source_name: str) -> IngestResult:
+    """The inbound webhook's path: one email's bytes in, invoices or a reason
+    out. A rejection is returned, not stored; the caller decides where a
+    rejected email goes. Database errors propagate, so the provider retries
+    (safe: a retry of an ingested message comes back as a duplicate)."""
+    routed = route_email(db, raw)
+    if isinstance(routed, _Rejected):
+        return IngestResult(
+            source_name=source_name,
+            status="quarantined",
+            reason=routed.reason,
+            tenant_id=routed.tenant.id if routed.tenant else None,
+        )
+    invoice_ids = record_invoices(db, routed)
+    if invoice_ids is None:
+        return IngestResult(
+            source_name=source_name,
+            status="duplicate",
+            reason=f"already ingested (message-id {routed.parsed.message_id}){routed.context}",
+            tenant_id=routed.tenant.id,
+        )
+    return IngestResult(
+        source_name=source_name,
+        status="ingested",
+        reason=enqueue_invoices(invoice_ids),
+        tenant_id=routed.tenant.id,
+        invoice_ids=invoice_ids,
+    )
+
+
+def ingest_email_file(db: Session, path: Path, inbox_dir: Path | None = None) -> IngestResult:
+    """Turns one `.eml` from the watch directory into invoices, or
+    quarantines it with a reason."""
+    inbox_dir = inbox_dir or Path(settings.inbox_dir)
+    source_name = path.name
+
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return _quarantine(path, inbox_dir, f"could not read email: {exc}")
+    routed = route_email(db, raw)
+    if isinstance(routed, _Rejected):
+        return _quarantine(path, inbox_dir, routed.reason)
+    tenant, parsed, context = routed.tenant, routed.parsed, routed.context
 
     if parsed.message_id and _already_ingested(db, tenant.id, parsed.message_id):
         # Filed as processed, not quarantined: nothing is wrong with this
@@ -265,54 +393,24 @@ def ingest_email_file(db: Session, path: Path, inbox_dir: Path | None = None) ->
     except OSError as exc:
         return _quarantine(path, inbox_dir, f"could not claim email for processing: {exc}{context}")
 
-    bind_tenant(db, tenant.id)
-    invoice_ids: list[uuid.UUID] = []
     try:
-        for attachment in pdfs:
-            # One invoice per PDF: a distributor mailing a week's invoices as
-            # several attachments is a single email but several invoices.
-            invoice = Invoice(
-                id=uuid.uuid4(),
-                tenant_id=tenant.id,
-                source=InvoiceSource.email,
-                source_message_id=parsed.message_id,
-                status=InvoiceStatus.received,
-                original_file_uri="",
-            )
-            invoice.original_file_uri = save_invoice_bytes(invoice.id, attachment.filename, attachment.content)
-            db.add(invoice)
-            audit.record(
-                db,
-                None,
-                "invoice.received_by_email",
-                "invoice",
-                invoice.id,
-                tenant.id,
-                filename=attachment.filename,
-                message_id=parsed.message_id,
-            )
-            invoice_ids.append(invoice.id)
-        db.commit()
+        invoice_ids = record_invoices(db, routed)
     except Exception as exc:
         db.rollback()
         return _quarantine(claimed, inbox_dir, f"could not record invoices: {exc}{context}", source_name=source_name)
-
-    # Enqueue last, and deliberately non-fatal. The invoices are committed and
-    # durable at this point; a Redis outage should leave them sitting in
-    # `received` for a requeue, not re-open the question of whether this email
-    # was ingested (it was) or move it somewhere a human might re-drop it.
-    enqueue_error: str | None = None
-    for invoice_id in invoice_ids:
-        try:
-            invoice_queue.enqueue(process_invoice, str(invoice_id))
-        except Exception as exc:
-            enqueue_error = f"invoices recorded but could not be queued for extraction: {exc}"
-            break
+    if invoice_ids is None:  # another delivery of the same message won the race
+        return IngestResult(
+            source_name=source_name,
+            status="duplicate",
+            reason=f"already ingested (message-id {parsed.message_id}){context}",
+            tenant_id=tenant.id,
+            destination=claimed,
+        )
 
     return IngestResult(
         source_name=source_name,
         status="ingested",
-        reason=enqueue_error,
+        reason=enqueue_invoices(invoice_ids),
         tenant_id=tenant.id,
         invoice_ids=invoice_ids,
         destination=claimed,

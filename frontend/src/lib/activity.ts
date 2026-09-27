@@ -66,6 +66,8 @@ export function describeEvent(event: AuditEvent): string {
       return d.status === "extracted"
         ? `read ${show(d.line_count)} lines; the numbers added up`
         : `read ${show(d.line_count)} lines; held for review`;
+    case "email.rejected":
+      return `couldn't take an email: ${show(d.reason)}`;
     case "invoice.extraction_failed":
       return "couldn't read the invoice";
     case "invoice.edited":

@@ -1582,3 +1582,45 @@ make their own throwaway login per run. The Playwright location is now
   filters, paging without gaps or repeats). Frontend 26 unit, `tsc` clean,
   Playwright 8 (the users test now also checks the audit log shows the
   creation and deactivation).
+
+## Production plumbing, part 1: file storage and real inbound email
+
+### Storage (`app/storage.py`)
+- One interface, two backends: **local** (a directory; dev and single-server)
+  and **s3** (any S3-compatible bucket: AWS, Cloudflare R2, MinIO), set by
+  `STORAGE_BACKEND`. Needed once the API and worker don't share a disk.
+- Originals are stored at `originals/<invoice>.pdf`, pages at
+  `renders/<invoice>/page_NNN.png`. The invoice row keeps a URI, and reads
+  follow the URI's scheme, so invoices recorded before a switch still open.
+- The worker reads the original from storage, renders into a scratch
+  directory, and stores the pages (clearing an earlier attempt's first). The
+  review screen and the page endpoint read pages from storage.
+- Tests no longer write into the real `backend/uploads`: every test gets its
+  own temporary storage. A full upload -> extract -> page-view run is tested
+  against a mocked S3 bucket (moto).
+
+### Inbound email webhook (`POST /inbound/email`, via `/api/inbound/email`)
+- Takes whatever a provider sends: the raw message, SendGrid's raw form
+  field, Mailgun's `body-mime`, or Postmark's `RawEmail`. Authenticated by a
+  shared secret (Basic password in the webhook URL, or Bearer); off unless
+  `INBOUND_EMAIL_SECRET` is set.
+- Same routing as the watch directory: intake was split into
+  route -> record -> enqueue, and both entry points use it.
+- **Nothing silently dropped:** an email that can't become invoices is kept
+  in storage under `inbound/rejected/` and logged as `email.rejected`,
+  visible on that location's Activity page when the recipient was known, and
+  in the operators' audit log either way. The provider gets a 200 so it
+  doesn't retry the impossible.
+- **Exactly once:** a retry of an ingested message is a duplicate. A Postgres
+  advisory lock on (location, Message-ID) makes the duplicate check hold even
+  for simultaneous deliveries; the test for that fails 3/3 with the lock
+  disabled.
+- Form bodies are parsed with Python's email parser, not Starlette's: newer
+  Starlette caps a text field at 1 MB, and SendGrid sends the whole message,
+  PDFs included, as one.
+
+### Gates
+- Backend **244 passed** (16 new: storage on both backends, S3 end to end,
+  webhook formats, auth, rejections, retries, races, size limit).
+- Frontend 27 unit, Playwright 8. `make smoke` passes on the fake extractor
+  with the new storage path (the real-API smoke is still on hold).

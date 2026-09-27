@@ -23,7 +23,6 @@ benchmarks other tenants are looking at with no trace of why.
 import logging
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, func, or_, select
@@ -33,8 +32,8 @@ from app import audit
 from app.analytics.price_creep import upsert_creep_alerts
 from app.api.deps import get_tenant_or_404
 from app.auth import current_user, get_db_for_tenant
-from app.config import settings
 from app.extract.confidence import check_arithmetic
+from app.storage import page_names
 from app.models.distributor import UNRECOGNIZED_SLUG
 from app.models import (
     CanonicalSku,
@@ -170,15 +169,9 @@ def build_invoice_detail(db: Session, invoice: Invoice) -> InvoiceDetailOut:
     distributor = _distributor(db, invoice)
     check = check_stored_invoice(invoice, lines, distributor)
 
-    render_dir = Path(settings.upload_dir) / "renders" / str(invoice.id)
-    page_image_urls = (
-        [
-            f"/invoices/{invoice.id}/pages/{p.name}?tenant_id={invoice.tenant_id}"
-            for p in sorted(render_dir.glob("page_*.png"))
-        ]
-        if render_dir.is_dir()
-        else []
-    )
+    page_image_urls = [
+        f"/invoices/{invoice.id}/pages/{name}?tenant_id={invoice.tenant_id}" for name in page_names(invoice.id)
+    ]
     return InvoiceDetailOut(
         **InvoiceOut.model_validate(invoice).model_dump(),
         distributor_name=distributor.name if distributor else None,

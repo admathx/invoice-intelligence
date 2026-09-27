@@ -50,7 +50,7 @@ from app.models import (  # noqa: E402
 )
 from app.models.enums import InvoiceSource, InvoiceStatus, ReviewStatus, VolumeTier  # noqa: E402
 from app.normalize.matcher import MatchResult, _apply_pack_size, match_line_item  # noqa: E402
-from app.normalize.pack_size import PackSizeParseError, parse_pack_size  # noqa: E402
+from app.normalize.pack_size import parse_pack_size  # noqa: E402
 from synthetic.tenants import build_tenants  # noqa: E402
 
 OUT_DIR = REPO_ROOT / "synthetic" / "out"

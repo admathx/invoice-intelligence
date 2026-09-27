@@ -26,7 +26,18 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     anthropic_api_key: str = ""
 
+    # --- file storage (app/storage.py) ---
+    # "local" keeps files under upload_dir; "s3" puts them in a bucket, which
+    # any deployment where the API and worker don't share a disk needs.
+    storage_backend: Literal["local", "s3"] = "local"
     upload_dir: str = str(BACKEND_DIR / "uploads")
+    s3_bucket: str = ""
+    # Optional key prefix inside the bucket, to share one bucket between
+    # environments ("staging/", "prod/").
+    s3_prefix: str = ""
+    # For S3-compatible services (Cloudflare R2, MinIO); empty means AWS.
+    s3_endpoint_url: str = ""
+    s3_region: str = ""
     inbox_dir: str = str(BACKEND_DIR.parent / "inbox")
     # A multi-page scanned invoice is a few MB; 25 MB is generous headroom
     # while still refusing to read a runaway file into API memory.
@@ -35,6 +46,11 @@ class Settings(BaseSettings):
     # app/ingest/email_stub.py's inbox_address_for). Configurable because the
     # real deployment's inbound domain won't be this placeholder.
     inbox_domain: str = "invoices.example.com"
+    # Shared secret the mail provider presents when posting to
+    # /inbound/email (app/api/inbound.py). Empty disables the endpoint.
+    inbound_email_secret: str = ""
+    # Several PDFs per email is normal; a whole mailbox in one is not.
+    max_inbound_email_bytes: int = 60 * 1024 * 1024
 
     extraction_model: str = "claude-sonnet-4-6"
 

@@ -18,6 +18,7 @@ const KINDS: { label: string; prefix: string }[] = [
   { label: "Users and access", prefix: "user." },
   { label: "Sign-ins", prefix: "auth." },
   { label: "Businesses", prefix: "account." },
+  { label: "Rejected emails", prefix: "email." },
 ];
 
 export default function AuditPage() {

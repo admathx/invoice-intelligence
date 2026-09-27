@@ -7,6 +7,7 @@ from app.api import (
     activity,
     auth,
     distributors,
+    inbound,
     insights,
     invoice_review,
     invoices,
@@ -54,6 +55,7 @@ app.include_router(invoices.router)
 app.include_router(invoice_review.router)
 app.include_router(activity.router)
 app.include_router(distributors.router)
+app.include_router(inbound.router)
 app.include_router(skus.router)
 app.include_router(review.router)
 app.include_router(insights.router)

@@ -106,3 +106,20 @@ def signed_in_as_operator(request, test_operator):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_auth: use real sign-in instead of the injected test operator")
+
+
+@pytest.fixture(autouse=True)
+def isolated_storage(tmp_path, monkeypatch):
+    """Every test stores files in its own temporary directory, not the real
+    backend/uploads (where uploads made by tests used to pile up). Returns
+    that LocalStorage; tests of the S3 backend switch it themselves."""
+    from app.config import settings
+    from app.storage import get_storage
+
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
+    monkeypatch.setattr(settings, "storage_backend", "local")
+    get_storage.cache_clear()
+    try:
+        yield get_storage()
+    finally:
+        get_storage.cache_clear()

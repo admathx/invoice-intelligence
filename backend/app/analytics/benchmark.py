@@ -25,7 +25,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import yaml
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.enums import VolumeTier

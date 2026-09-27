@@ -1,7 +1,7 @@
 import uuid
-from pathlib import Path
 
 from app.config import settings
+from app.storage import get_storage, original_key
 
 # The PDF header. Checking for it is what makes "this is a PDF" a fact about
 # the bytes rather than about a filename or a Content-Type header, both of
@@ -43,18 +43,12 @@ def validate_invoice_bytes(data: bytes) -> None:
 
 
 def save_invoice_bytes(invoice_id: uuid.UUID, filename: str | None, data: bytes) -> str:
-    """Persist invoice bytes to disk and return their storage URI.
+    """Store an invoice's original file and return its storage URI.
 
-    Shared by the HTTP upload path and the email watch directory
-    (app/ingest/email_stub.py) so both name and place files identically —
-    app/workers/tasks.py's renderer resolves whatever URI lands here.
-    Callers validate first (validate_invoice_bytes).
+    Shared by the HTTP upload path and email intake (app/ingest/email_stub.py)
+    so both name and place files identically; app/workers/tasks.py reads back
+    whatever URI lands here (app.storage.read_uri). Callers validate first
+    (validate_invoice_bytes). The suffix is always .pdf: validation has
+    established the bytes are one, whatever the sender called the file.
     """
-    upload_dir = Path(settings.upload_dir)
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    suffix = Path(filename or "invoice.pdf").suffix or ".pdf"
-    dest = upload_dir / f"{invoice_id}{suffix}"
-    dest.write_bytes(data)
-
-    return f"file://{dest.resolve()}"
+    return get_storage().put(original_key(invoice_id, ".pdf"), data)

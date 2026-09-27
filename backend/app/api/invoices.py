@@ -1,9 +1,8 @@
 import re
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,6 +16,7 @@ from app.models import Invoice, User
 from app.models.enums import InvoiceSource, InvoiceStatus
 from app.queue import invoice_queue as queue
 from app.schemas.invoices import InvoiceDetailOut, InvoiceOut, InvoiceUploadResponse
+from app.storage import get_storage, render_key
 from app.workers.tasks import process_invoice
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
@@ -91,16 +91,16 @@ _PAGE_NAME = re.compile(r"page_\d{3}\.png")
 @router.get("/{invoice_id}/pages/{page_name}")
 def get_page_image(
     invoice_id: uuid.UUID, page_name: str, tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)
-) -> FileResponse:
+) -> Response:
     """A rendered page of the invoice, for the review screen. Authorized like
     every other read of the invoice: the tenant-scoped lookup below is what
     makes another location's invoice id a 404."""
     get_tenant_or_404(db, tenant_id)
     if db.get(Invoice, invoice_id) is None or not _PAGE_NAME.fullmatch(page_name):
         raise HTTPException(status_code=404, detail="page not found")
-    path = Path(settings.upload_dir) / "renders" / str(invoice_id) / page_name
-    if not path.is_file():
+    data = get_storage().get(render_key(invoice_id, page_name))
+    if data is None:
         raise HTTPException(status_code=404, detail="page not found")
     # Not cached anywhere, the browser included: a restaurant's office PC is
     # often shared, and signing out has to take the invoices with it.
-    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+    return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})

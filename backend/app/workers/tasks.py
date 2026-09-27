@@ -1,4 +1,5 @@
 import logging
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -17,6 +18,7 @@ from app.models import Distributor, Invoice, InvoiceLineItem, PriceObservation, 
 from app.models.distributor import UNRECOGNIZED_SLUG
 from app.models.enums import InvoiceStatus, ReviewStatus
 from app.normalize.matcher import apply_match, match_line_item
+from app.storage import get_storage, read_uri, render_key, renders_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -76,13 +78,20 @@ def process_invoice(invoice_id: str) -> None:
         invoice.status = InvoiceStatus.rendering
         db.commit()
 
-        render_dir = Path(settings.upload_dir) / "renders" / invoice_id
-        page_paths = render_pdf_to_pngs(invoice.original_file_uri, render_dir)
+        # Rendered into a scratch directory for the extractor, then stored
+        # for the review screen. Any pages an earlier attempt stored are
+        # cleared first: a retry of a shorter re-upload mustn't show stale ones.
+        storage = get_storage()
+        storage.delete_prefix(renders_prefix(invoice.id))
+        with tempfile.TemporaryDirectory(prefix=f"render-{invoice_id}-") as scratch:
+            page_paths = render_pdf_to_pngs(read_uri(invoice.original_file_uri), Path(scratch))
+            for page_path in page_paths:
+                storage.put(render_key(invoice.id, page_path.name), page_path.read_bytes())
 
-        invoice.status = InvoiceStatus.extracting
-        db.commit()
+            invoice.status = InvoiceStatus.extracting
+            db.commit()
 
-        extracted, cost_usd = extractor.extract(page_paths)
+            extracted, cost_usd = extractor.extract(page_paths)
 
         distributor = db.scalar(select(Distributor).where(Distributor.slug == extracted.distributor))
 
