@@ -3,6 +3,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.models.enums import VolumeTier
+
 
 class AccountCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
@@ -14,6 +16,17 @@ class TenantSummary(BaseModel):
     metro: str
     volume_tier: str
     account_id: uuid.UUID | None
+    # Where the restaurant forwards its invoices (app/api/inbound.py).
+    inbox_address: str | None = None
+
+
+class TenantCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    # Benchmark cells are per metro, so spelling matters: "Austin, TX" and
+    # "austin tx" would be two thin cells instead of one. The screen offers
+    # the existing ones to pick from.
+    metro: str = Field(min_length=1, max_length=100)
+    volume_tier: VolumeTier
 
 
 class AccountSummary(BaseModel):

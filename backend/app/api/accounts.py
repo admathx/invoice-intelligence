@@ -33,6 +33,7 @@ def _tenant_summary(tenant: Tenant) -> TenantSummary:
         metro=tenant.metro,
         volume_tier=tenant.volume_tier.value,
         account_id=tenant.account_id,
+        inbox_address=tenant.inbox_address,
     )
 
 

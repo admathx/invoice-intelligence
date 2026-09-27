@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useSession } from "@/components/SessionContext";
 import { api, jsonInit } from "@/lib/api";
+import { formatApiError } from "@/lib/apiError";
 
 type TenantSummary = {
   id: string;
@@ -11,7 +12,16 @@ type TenantSummary = {
   metro: string;
   volume_tier: string;
   account_id: string | null;
+  inbox_address: string | null;
 };
+
+// Annual food spend bands (backend app/models/enums.py VolumeTier).
+const VOLUME_TIERS: { value: string; label: string }[] = [
+  { value: "under_500k", label: "Under $500k" },
+  { value: "500k_1m", label: "$500k–$1M" },
+  { value: "1m_3m", label: "$1M–$3M" },
+  { value: "over_3m", label: "Over $3M" },
+];
 
 type Account = {
   id: string;
@@ -32,7 +42,9 @@ export default function AccountsPage() {
 
 function Businesses() {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
-  const [unassigned, setUnassigned] = useState<TenantSummary[]>([]);
+  const [tenants, setTenants] = useState<TenantSummary[]>([]);
+  const unassigned = tenants.filter((t) => t.account_id === null);
+  const [created, setCreated] = useState<TenantSummary | null>(null);
   const [newName, setNewName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -47,7 +59,7 @@ function Businesses() {
         list.map(async (a) => (await api(`/accounts/${a.id}`)).json())
       );
       setAccounts(detailed);
-      setUnassigned(await (await api("/tenants?unassigned=true")).json());
+      setTenants(await (await api("/tenants")).json());
       setError(null);
     } catch {
       setAccounts([]);
@@ -59,14 +71,18 @@ function Businesses() {
     void load();
   }, [load]);
 
-  async function act(run: () => Promise<Response>) {
+  async function act(run: () => Promise<Response>, onOk?: (body: unknown) => void) {
     setBusy(true);
     try {
       const resp = await run();
       // The 409 on re-parenting is the one error a user can actually hit by
       // hand, so it gets shown rather than swallowed into a silent no-op.
-      if (!resp.ok) setError(((await resp.json().catch(() => null)) as { detail?: string } | null)?.detail ?? "Request failed.");
-      else setError(null);
+      const body = await resp.json().catch(() => null);
+      if (!resp.ok) setError(formatApiError(body?.detail, "Request failed."));
+      else {
+        setError(null);
+        onOk?.(body);
+      }
       await load();
     } catch {
       setError("Couldn't reach the API.");
@@ -79,15 +95,29 @@ function Businesses() {
 
   return (
     <div className="max-w-3xl">
-      <h1 className="text-xl font-semibold">Businesses</h1>
+      <h1 className="text-xl font-semibold">Locations and businesses</h1>
+
+      {error && <p className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+
+      <AddLocation
+        busy={busy}
+        metros={Array.from(new Set(tenants.map((t) => t.metro))).sort()}
+        onSubmit={(body) => act(() => post("/tenants", body), (t) => setCreated(t as TenantSummary))}
+      />
+      {created && (
+        <p role="status" className="mt-3 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+          Added <strong>{created.name}</strong>. They forward invoices to{" "}
+          <code className="rounded bg-white px-1">{created.inbox_address}</code>. Give someone access on the Users page.
+        </p>
+      )}
+
+      <h2 className="mt-8 text-base font-semibold">Businesses</h2>
       <p className="mt-1 max-w-2xl text-sm text-gray-600">
         Group a multi-unit operator&rsquo;s locations into one business. A business counts{" "}
         <strong>once</strong> in a peer benchmark no matter how many locations it has, and its locations
         can&rsquo;t corroborate each other&rsquo;s SKU corrections &mdash; without this, a five-location group
         clears the five-business privacy threshold using nothing but itself.
       </p>
-
-      {error && <p className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
       <form
         className="mt-4 flex gap-2"
@@ -172,6 +202,77 @@ function Businesses() {
           </div>
         ))}
       </div>
+
+      <h2 className="mt-8 text-base font-semibold">All locations</h2>
+      <table className="mt-2 w-full border-collapse text-sm">
+        <thead>
+          <tr className="border-b text-left text-gray-500">
+            <th className="py-2 pr-4">Location</th>
+            <th className="py-2 pr-4">Metro</th>
+            <th className="py-2">Forwards invoices to</th>
+          </tr>
+        </thead>
+        <tbody>
+          {tenants.map((t) => (
+            <tr key={t.id} className="border-b">
+              <td className="py-2 pr-4">{t.name}</td>
+              <td className="py-2 pr-4 text-gray-600">{t.metro}</td>
+              <td className="py-2 font-mono text-xs text-gray-600">{t.inbox_address ?? "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
+  );
+}
+
+function AddLocation({
+  busy,
+  metros,
+  onSubmit,
+}: {
+  busy: boolean;
+  metros: string[];
+  onSubmit: (body: { name: string; metro: string; volume_tier: string }) => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [metro, setMetro] = useState("");
+  const [tier, setTier] = useState("under_500k");
+  const input = "rounded border border-gray-300 px-3 py-1.5 text-sm";
+  return (
+    <form
+      className="mt-4 rounded border border-gray-200 bg-white p-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void onSubmit({ name: name.trim(), metro: metro.trim(), volume_tier: tier }).then(() => {
+          setName("");
+        });
+      }}
+    >
+      <h2 className="text-sm font-semibold">Add a location</h2>
+      <p className="mt-0.5 text-xs text-gray-500">
+        A new restaurant, or a new site of an existing one. Pick an existing metro where one fits: benchmarks compare
+        within a metro, so a second spelling splits it.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <input aria-label="Location name" placeholder="Name" required value={name} onChange={(e) => setName(e.target.value)} className={`${input} flex-1`} />
+        <input aria-label="Metro" placeholder="Metro, e.g. Austin, TX" required list="known-metros" value={metro} onChange={(e) => setMetro(e.target.value)} className={input} />
+        <datalist id="known-metros">
+          {metros.map((m) => (
+            <option key={m} value={m} />
+          ))}
+        </datalist>
+        <select aria-label="Annual food spend" value={tier} onChange={(e) => setTier(e.target.value)} className={input}>
+          {VOLUME_TIERS.map((t) => (
+            <option key={t.value} value={t.value}>
+              {t.label}
+            </option>
+          ))}
+        </select>
+        <button type="submit" disabled={busy || !name.trim() || !metro.trim()} className="rounded bg-gray-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+          Add location
+        </button>
+      </div>
+    </form>
   );
 }

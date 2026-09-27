@@ -1624,3 +1624,12 @@ make their own throwaway login per run. The Playwright location is now
   webhook formats, auth, rejections, retries, races, size limit).
 - Frontend 27 unit, Playwright 8. `make smoke` passes on the fake extractor
   with the new storage path (the real-API smoke is still on hold).
+
+### Adding locations
+A real deployment had no way to create a location: tenants only ever came
+from the synthetic seed. Operators now add one on the Businesses page (name,
+metro picked from the existing ones where it fits, since benchmarks compare
+within a metro, and annual food-spend band). Each gets a unique invoice
+forwarding address, numbered if another location has the same name, shown
+on creation and in an "All locations" table. `POST /tenants`, operator-only,
+audited as `tenant.created`. Backend 246 passed.

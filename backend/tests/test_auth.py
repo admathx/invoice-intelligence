@@ -674,3 +674,32 @@ def test_audit_log_pages_never_skip_or_repeat(db):
         if cursor is None:
             break
     assert len(seen) == len(set(seen)) == 7
+
+
+# --- Creating locations ---------------------------------------------------------
+
+
+def test_an_operator_adds_a_location_with_its_own_forwarding_address(db):
+    operator = _signed_in(_user(db, operator=True))
+    name = f"Corner Ladle {uuid.uuid4().hex[:6]}"
+    first = operator.post("/tenants", json={"name": name, "metro": " Austin, TX ", "volume_tier": "1m_3m"}, headers=CSRF)
+    assert first.status_code == 201, first.text
+    second = operator.post("/tenants", json={"name": name, "metro": "Austin, TX", "volume_tier": "under_500k"}, headers=CSRF)
+    for resp in (first, second):
+        db.info["_created"]["tenants"].append(uuid.UUID(resp.json()["id"]))
+
+    a, b = first.json(), second.json()
+    assert a["metro"] == "Austin, TX"
+    slug = name.lower().replace(" ", "-")
+    assert a["inbox_address"] == f"{slug}@{settings.inbox_domain}"
+    # Same name, a different address: it's the routing key for inbound email.
+    assert b["inbox_address"] == f"{slug}-2@{settings.inbox_domain}"
+    event = db.scalar(select(AuditEvent).where(AuditEvent.action == "tenant.created", AuditEvent.entity_id == uuid.UUID(a["id"])))
+    assert event is not None and event.tenant_id == uuid.UUID(a["id"])
+
+
+def test_only_operators_add_locations(db):
+    tenant = _tenant(db, "Member")
+    member = _signed_in(_user(db, locations=(tenant,)))
+    resp = member.post("/tenants", json={"name": "Nope", "metro": "Austin, TX", "volume_tier": "under_500k"}, headers=CSRF)
+    assert resp.status_code == 403
