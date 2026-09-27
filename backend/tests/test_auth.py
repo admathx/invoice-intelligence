@@ -449,6 +449,9 @@ def test_a_review_correction_names_who_made_it(db):
     event = db.scalar(select(AuditEvent).where(AuditEvent.entity_id == line_id))
     assert event.action == "invoice_line.match_corrected" and event.actor_user_id == user.id
     assert event.details["canonical_sku"] == {"from": None, "to": str(sku.id)}
+    # Recorded even with nothing to record, so the calibration report can tell
+    # "no score" from "logged before scores were kept".
+    assert event.details["suggested_confidence"] == "none"
     assert event.details["invoice_id"] == str(invoice.id)
 
 
@@ -728,3 +731,39 @@ def test_a_review_verdict_records_how_sure_the_matcher_was(db):
     event = db.scalar(select(AuditEvent).where(AuditEvent.entity_id == line_id))
     assert event.action == "invoice_line.match_confirmed"
     assert event.details["suggested_confidence"] == "0.85"
+
+
+def test_simultaneous_locations_with_one_name_get_distinct_addresses(db):
+    import threading
+
+    operator = _signed_in(_user(db, operator=True))
+    name = f"Rush Hour {uuid.uuid4().hex[:6]}"
+    results = []
+
+    def create():
+        results.append(
+            operator.post("/tenants", json={"name": name, "metro": "Austin, TX", "volume_tier": "under_500k"}, headers=CSRF)
+        )
+
+    threads = [threading.Thread(target=create) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    for resp in results:
+        if resp.status_code == 201:
+            db.info["_created"]["tenants"].append(uuid.UUID(resp.json()["id"]))
+    assert [r.status_code for r in results] == [201] * 4
+    assert len({r.json()["inbox_address"] for r in results}) == 4
+
+
+def test_a_new_location_joins_the_existing_spelling_of_its_metro(db):
+    """Benchmarks compare metro exactly; "austin,  tx" must not start a cell of its own."""
+    existing = _tenant(db, "Existing")  # metro "auth-test-metro"
+    operator = _signed_in(_user(db, operator=True))
+    resp = operator.post("/tenants", json={"name": "Same Town", "metro": "  AUTH-TEST-METRO ", "volume_tier": "under_500k"}, headers=CSRF)
+    db.info["_created"]["tenants"].append(uuid.UUID(resp.json()["id"]))
+    assert resp.json()["metro"] == existing.metro
+    new_place = operator.post("/tenants", json={"name": "Elsewhere", "metro": "Boise,   ID", "volume_tier": "under_500k"}, headers=CSRF)
+    db.info["_created"]["tenants"].append(uuid.UUID(new_place.json()["id"]))
+    assert new_place.json()["metro"] == "Boise, ID"

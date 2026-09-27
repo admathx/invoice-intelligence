@@ -14,10 +14,9 @@ from app.config import settings
 from app.ingest.upload import InvalidInvoiceFileError, save_invoice_bytes, validate_invoice_bytes
 from app.models import Invoice, User
 from app.models.enums import InvoiceSource, InvoiceStatus
-from app.queue import invoice_queue as queue
+from app.queue import enqueue_extraction
 from app.schemas.invoices import InvoiceDetailOut, InvoiceOut, InvoiceUploadResponse
-from app.storage import get_storage, render_key
-from app.workers.tasks import process_invoice
+from app.storage import forget_original, get_storage, render_key
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
@@ -50,14 +49,22 @@ def upload_invoice(
     db.add(invoice)
     db.flush()
 
-    invoice.original_file_uri = save_invoice_bytes(invoice.id, file.filename, data)
-    audit.record(
-        db, user, "invoice.uploaded", "invoice", invoice.id, tenant_id, filename=file.filename, size_bytes=len(data)
-    )
-    db.commit()
+    invoice_id = invoice.id  # still needed after a rollback discards the row
+    try:
+        invoice.original_file_uri = save_invoice_bytes(invoice_id, file.filename, data)
+        audit.record(
+            db, user, "invoice.uploaded", "invoice", invoice.id, tenant_id, filename=file.filename, size_bytes=len(data)
+        )
+        db.commit()
+    except Exception:
+        # The file is stored before the row commits; if the row doesn't make
+        # it, neither should the file, or it sits in storage unreferenced.
+        db.rollback()
+        forget_original(invoice_id)
+        raise
     db.refresh(invoice)
 
-    queue.enqueue(process_invoice, str(invoice.id))
+    enqueue_extraction(invoice.id)
 
     return InvoiceUploadResponse(id=invoice.id, status=invoice.status)
 

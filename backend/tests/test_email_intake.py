@@ -34,7 +34,7 @@ def no_real_queue(monkeypatch):
     """The worker does real extraction; these tests are about intake only."""
     enqueued: list[str] = []
     monkeypatch.setattr(
-        "app.ingest.email_stub.invoice_queue.enqueue", lambda _fn, invoice_id: enqueued.append(invoice_id)
+        "app.queue.invoice_queue.enqueue", lambda _fn, invoice_id, **_: enqueued.append(invoice_id)
     )
     return enqueued
 
@@ -340,7 +340,7 @@ def test_a_failed_enqueue_still_counts_as_ingested(db_session, inbox, tenant, mo
     send the operator to re-drop the email and create a second set.
     """
     monkeypatch.setattr(
-        "app.ingest.email_stub.invoice_queue.enqueue",
+        "app.queue.invoice_queue.enqueue",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ConnectionError("redis is down")),
     )
     path = _write_eml(inbox, to=tenant.inbox_address, attachments=[("invoice.pdf", "pdf", _pdf_bytes())])

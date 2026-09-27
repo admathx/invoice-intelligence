@@ -18,7 +18,7 @@ import functools
 import mimetypes
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from app.config import settings
 
@@ -39,6 +39,9 @@ class Storage(Protocol):
 
     def delete_prefix(self, prefix: str) -> None:
         """Remove every key under prefix (a retried extraction's old renders)."""
+
+    def delete(self, key: str) -> None:
+        """Remove one key; nothing if it isn't there."""
 
 
 def _check_key(key: str) -> str:
@@ -81,6 +84,9 @@ class LocalStorage:
         for key in self.list(prefix):
             self._path(key).unlink(missing_ok=True)
 
+    def delete(self, key: str) -> None:
+        self._path(key).unlink(missing_ok=True)
+
 
 class S3Storage:
     def __init__(self, bucket: str, prefix: str = "", endpoint_url: str | None = None, region: str | None = None):
@@ -121,6 +127,9 @@ class S3Storage:
             batch = [{"Key": self._key(k)} for k in keys[start : start + 1000]]
             self.client.delete_objects(Bucket=self.bucket, Delete={"Objects": batch, "Quiet": True})
 
+    def delete(self, key: str) -> None:
+        self.client.delete_object(Bucket=self.bucket, Key=self._key(key))
+
 
 @functools.lru_cache(maxsize=1)
 def get_storage() -> Storage:
@@ -134,7 +143,11 @@ def read_uri(uri: str) -> bytes:
     backend wrote it."""
     parsed = urlparse(uri)
     if parsed.scheme == "file":
-        path = Path(parsed.path)
+        # Decoded: LocalStorage.put writes Path.as_uri(), which percent-encodes
+        # ("/My Projects" -> "/My%20Projects"). Reading the encoded form
+        # literally meant any upload directory with a space in its path could
+        # never read back its own originals.
+        path = Path(unquote(parsed.path))
         if not path.is_file():
             raise StorageError(f"file not found: {uri}")
         return path.read_bytes()
@@ -152,6 +165,15 @@ def read_uri(uri: str) -> bytes:
 
 def original_key(invoice_id, suffix: str = ".pdf") -> str:
     return f"originals/{invoice_id}{suffix}"
+
+
+def forget_original(invoice_id) -> None:
+    """Remove a stored original whose invoice row never got committed, so a
+    failed write doesn't leave a file nothing points to."""
+    try:
+        get_storage().delete(original_key(invoice_id, ".pdf"))
+    except Exception:  # best effort: the caller is already handling a failure
+        pass
 
 
 def renders_prefix(invoice_id) -> str:

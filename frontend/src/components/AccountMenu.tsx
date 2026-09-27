@@ -15,7 +15,10 @@ export default function AccountMenu({
   locationId: string | null;
 }) {
   function switchTo(id: string) {
-    document.cookie = `${LOCATION_COOKIE}=${id}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
+    // Secure when the page is: over https, a cookie without it can be set or
+    // replaced by anything on the network path over plain http.
+    const secure = window.location.protocol === "https:" ? "; secure" : "";
+    document.cookie = `${LOCATION_COOKIE}=${id}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax${secure}`;
     // A full reload, not router.refresh(): the client screens hold data
     // fetched for the previous location in their own state.
     window.location.reload();

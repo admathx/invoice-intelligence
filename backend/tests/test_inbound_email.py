@@ -27,7 +27,7 @@ BEARER = {"Authorization": f"Bearer {SECRET}"}
 @pytest.fixture(autouse=True)
 def configured(monkeypatch):
     monkeypatch.setattr(settings, "inbound_email_secret", SECRET)
-    monkeypatch.setattr("app.ingest.email_stub.invoice_queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
 
 
 @pytest.fixture()
@@ -205,3 +205,33 @@ def test_an_oversized_email_is_refused_before_it_is_read(monkeypatch, tenant):
     resp = _post(_email(tenant.inbox_address, padding=20_000))
     assert resp.status_code == 413
     assert _invoices(tenant.id) == []
+
+
+def test_extraction_is_queued_with_a_time_limit_that_fits_a_large_invoice(monkeypatch, tenant):
+    calls = []
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: calls.append(k))
+    assert _post(_email(tenant.inbox_address)).json()["status"] == "ingested"
+    # RQ's own default (180 s) killed long extractions mid-stream.
+    assert calls == [{"job_timeout": settings.extraction_job_timeout_seconds}]
+    assert settings.extraction_job_timeout_seconds >= 900
+
+
+def test_a_retried_email_without_a_message_id_is_still_a_duplicate(tenant):
+    """Scanners and some relays send no Message-ID. A provider's retry of one
+    is the same bytes, so the message's own hash identifies it."""
+    message = EmailMessage()
+    message["To"] = tenant.inbox_address
+    message["Subject"] = "Scan from copier"
+    message.add_attachment(_pdf(), maintype="application", subtype="pdf", filename="scan.pdf")
+    raw = message.as_bytes()
+    assert "Message-ID" not in message
+
+    assert _post(raw).json()["status"] == "ingested"
+    assert _post(raw).json()["status"] == "duplicate"
+    # A different scan (different bytes) is a different message.
+    other = EmailMessage()
+    other["To"] = tenant.inbox_address
+    other["Subject"] = "Scan from copier"
+    other.add_attachment(_pdf(padding=10), maintype="application", subtype="pdf", filename="scan.pdf")
+    assert _post(other.as_bytes()).json()["status"] == "ingested"
+    assert len(_invoices(tenant.id)) == 2

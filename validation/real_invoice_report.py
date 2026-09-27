@@ -33,7 +33,6 @@ import argparse
 import json
 import sys
 import tempfile
-from decimal import Decimal
 from pathlib import Path
 
 import yaml
@@ -195,7 +194,7 @@ def main() -> int:
 
     if not args.fake:
         RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        RESULTS_PATH.write_text(json.dumps(summary, indent=2, default=lambda o: str(o) if isinstance(o, Decimal) else o))
+        RESULTS_PATH.write_text(json.dumps(summary, indent=2, default=str))
     return 0
 
 

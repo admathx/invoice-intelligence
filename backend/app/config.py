@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     max_inbound_email_bytes: int = 60 * 1024 * 1024
 
     extraction_model: str = "claude-sonnet-4-6"
+    # How long one invoice's extraction job may run before the worker gives
+    # up on it. RQ's own default is 180 s, and a large invoice streams up to
+    # 64k output tokens, possibly twice (the retry): minutes, not seconds.
+    extraction_job_timeout_seconds: int = 1800
 
     # --- login (app/auth.py) ---
     # The browser origins allowed to make credentialed (cookie-carrying)

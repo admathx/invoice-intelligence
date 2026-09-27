@@ -15,6 +15,7 @@ that can't be routed, carries no invoice, or fails to parse at all gets moved
 to `inbox/quarantine/` with a `.reason.txt` beside it, so a human can see
 exactly what arrived and why it didn't become an invoice.
 """
+import hashlib
 import re
 import time
 import uuid
@@ -31,10 +32,10 @@ from app import audit
 from app.config import settings
 from app.db import bind_tenant
 from app.ingest.upload import InvalidInvoiceFileError, is_pdf_bytes, save_invoice_bytes, validate_invoice_bytes
+from app.storage import forget_original
 from app.models import Invoice, Tenant
 from app.models.enums import InvoiceSource, InvoiceStatus
-from app.queue import invoice_queue
-from app.workers.tasks import process_invoice
+from app.queue import enqueue_extraction
 
 # Headers a forwarded message can carry the *original* recipient in. `To`
 # alone isn't enough: a restaurant forwarding a distributor's invoice usually
@@ -208,6 +209,11 @@ class _Routed:
     parsed: ParsedEmail
     tenant: Tenant
     pdfs: list[EmailAttachment]
+    # What makes a second delivery of this message recognisable: its
+    # Message-ID, or when it has none (scanners, some relays), a hash of the
+    # message itself, which a provider's retry reproduces byte for byte.
+    # Stored as the invoices' source_message_id.
+    dedupe_key: str
 
     @property
     def context(self) -> str:
@@ -260,7 +266,8 @@ def route_email(db: Session, raw: bytes) -> _Routed | _Rejected:
         except InvalidInvoiceFileError as exc:
             return _Rejected(f"attachment {attachment.filename!r} rejected: {exc}{context}", parsed, tenant)
 
-    return _Routed(parsed, tenant, pdfs)
+    dedupe_key = parsed.message_id or f"<sha256:{hashlib.sha256(raw).hexdigest()}@no-message-id>"
+    return _Routed(parsed, tenant, pdfs, dedupe_key)
 
 
 def _lock_message(db: Session, tenant_id: uuid.UUID, message_id: str) -> None:
@@ -273,14 +280,29 @@ def _lock_message(db: Session, tenant_id: uuid.UUID, message_id: str) -> None:
 def record_invoices(db: Session, routed: _Routed) -> list[uuid.UUID] | None:
     """One invoice per PDF, committed. None if this message already became
     invoices (checked again under a lock, see _lock_message)."""
-    tenant, parsed = routed.tenant, routed.parsed
+    tenant = routed.tenant
     bind_tenant(db, tenant.id)
-    if parsed.message_id:
-        _lock_message(db, tenant.id, parsed.message_id)
-        if _already_ingested(db, tenant.id, parsed.message_id):
-            db.rollback()
-            return None
+    _lock_message(db, tenant.id, routed.dedupe_key)
+    if _already_ingested(db, tenant.id, routed.dedupe_key):
+        db.rollback()
+        return None
     invoice_ids: list[uuid.UUID] = []
+    try:
+        _add_invoices(db, routed, invoice_ids)
+        db.commit()
+    except Exception:
+        # Files are stored as each invoice is built, before the commit; if the
+        # commit doesn't happen, they'd be left referenced by nothing (and a
+        # provider's retry would store another copy each time).
+        db.rollback()
+        for invoice_id in invoice_ids:
+            forget_original(invoice_id)
+        raise
+    return invoice_ids
+
+
+def _add_invoices(db: Session, routed: _Routed, invoice_ids: list[uuid.UUID]) -> None:
+    tenant, parsed = routed.tenant, routed.parsed
     for attachment in routed.pdfs:
         # One invoice per PDF: a distributor mailing a week's invoices as
         # several attachments is a single email but several invoices.
@@ -288,10 +310,11 @@ def record_invoices(db: Session, routed: _Routed) -> list[uuid.UUID] | None:
             id=uuid.uuid4(),
             tenant_id=tenant.id,
             source=InvoiceSource.email,
-            source_message_id=parsed.message_id,
+            source_message_id=routed.dedupe_key,
             status=InvoiceStatus.received,
             original_file_uri="",
         )
+        invoice_ids.append(invoice.id)  # before the write, so a failed write is cleaned up too
         invoice.original_file_uri = save_invoice_bytes(invoice.id, attachment.filename, attachment.content)
         db.add(invoice)
         audit.record(
@@ -304,9 +327,6 @@ def record_invoices(db: Session, routed: _Routed) -> list[uuid.UUID] | None:
             filename=attachment.filename,
             message_id=parsed.message_id,
         )
-        invoice_ids.append(invoice.id)
-    db.commit()
-    return invoice_ids
 
 
 def enqueue_invoices(invoice_ids: list[uuid.UUID]) -> str | None:
@@ -315,7 +335,7 @@ def enqueue_invoices(invoice_ids: list[uuid.UUID]) -> str | None:
     a requeue, not reopen whether the email was ingested (it was)."""
     for invoice_id in invoice_ids:
         try:
-            invoice_queue.enqueue(process_invoice, str(invoice_id))
+            enqueue_extraction(invoice_id)
         except Exception as exc:
             return f"invoices recorded but could not be queued for extraction: {exc}"
     return None
@@ -339,7 +359,7 @@ def ingest_email_bytes(db: Session, raw: bytes, source_name: str) -> IngestResul
         return IngestResult(
             source_name=source_name,
             status="duplicate",
-            reason=f"already ingested (message-id {routed.parsed.message_id}){routed.context}",
+            reason=f"already ingested (message-id {routed.dedupe_key}){routed.context}",
             tenant_id=routed.tenant.id,
         )
     return IngestResult(
@@ -364,9 +384,9 @@ def ingest_email_file(db: Session, path: Path, inbox_dir: Path | None = None) ->
     routed = route_email(db, raw)
     if isinstance(routed, _Rejected):
         return _quarantine(path, inbox_dir, routed.reason)
-    tenant, parsed, context = routed.tenant, routed.parsed, routed.context
+    tenant, context = routed.tenant, routed.context
 
-    if parsed.message_id and _already_ingested(db, tenant.id, parsed.message_id):
+    if _already_ingested(db, tenant.id, routed.dedupe_key):
         # Filed as processed, not quarantined: nothing is wrong with this
         # email, it simply already became invoices. Quarantining it would
         # invite the operator to re-drop it and create the duplicates all over.
@@ -375,7 +395,7 @@ def ingest_email_file(db: Session, path: Path, inbox_dir: Path | None = None) ->
         return IngestResult(
             source_name=source_name,
             status="duplicate",
-            reason=f"already ingested (message-id {parsed.message_id}){context}",
+            reason=f"already ingested (message-id {routed.dedupe_key}){context}",
             tenant_id=tenant.id,
             destination=destination,
         )
@@ -402,7 +422,7 @@ def ingest_email_file(db: Session, path: Path, inbox_dir: Path | None = None) ->
         return IngestResult(
             source_name=source_name,
             status="duplicate",
-            reason=f"already ingested (message-id {parsed.message_id}){context}",
+            reason=f"already ingested (message-id {routed.dedupe_key}){context}",
             tenant_id=tenant.id,
             destination=claimed,
         )

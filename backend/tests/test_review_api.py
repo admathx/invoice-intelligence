@@ -220,7 +220,7 @@ def test_worker_writes_price_observations_for_auto_matched_lines(db_session, ten
     if the live pipeline doesn't write them, real invoices never show up in
     price creep, benchmarks, or negotiation sheets.
     """
-    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
     monkeypatch.setattr("app.workers.tasks.extractor", FakeExtractorClient())
 
     _pin_fake_line_to_auto(db_session, tenant)
@@ -322,7 +322,7 @@ def test_an_invoice_that_fails_arithmetic_writes_no_price_observations(db_sessio
     """
     misread = FAKE_PAYLOAD.model_copy(deep=True)
     misread.line_items[0].unit_price = "74.50"  # 47.50 read as 74.50; extended still 95.00
-    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
     monkeypatch.setattr("app.workers.tasks.extractor", _FixedExtractor(misread))
     _pin_fake_line_to_auto(db_session, tenant)
     invoice_id = _upload(tenant)
@@ -356,7 +356,7 @@ def test_confirming_a_line_on_an_unverified_invoice_writes_no_observation(db_ses
 
 
 def test_rerunning_the_job_does_not_duplicate_line_items(db_session, tenant, monkeypatch):
-    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
     monkeypatch.setattr("app.workers.tasks.extractor", FakeExtractorClient())
     invoice_id = _upload(tenant)
 
@@ -382,7 +382,7 @@ def test_an_alert_refresh_failure_does_not_fail_a_committed_invoice(db_session, 
     def _boom(*_args, **_kwargs):
         raise RuntimeError("transient database error")
 
-    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
     monkeypatch.setattr("app.workers.tasks.extractor", FakeExtractorClient())
     monkeypatch.setattr("app.workers.tasks.upsert_creep_alerts", _boom)
     _pin_fake_line_to_auto(db_session, tenant)
@@ -399,7 +399,7 @@ def test_a_failed_extraction_still_records_what_it_cost(db_session, tenant, monk
     """Both attempts were billed. Dropping the cost undercounts exactly the
     hard invoices SPEC.md's per-invoice cost gate most needs to see.
     """
-    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
     monkeypatch.setattr(
         "app.workers.tasks.extractor",
         _FixedExtractor(error=ExtractionFailedError("did not validate", cost_usd=0.0731)),
@@ -465,7 +465,7 @@ def test_upload_rejects_an_oversized_file_before_writing_it(tenant, monkeypatch)
 def test_upload_accepts_a_pdf_whose_header_isnt_at_byte_zero(tenant, monkeypatch):
     """Readers accept the header anywhere in the first 1024 bytes, and real
     files arrive with a BOM or a stray newline in front of it."""
-    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
     resp = TestClient(app).post(
         f"/invoices?tenant_id={tenant.id}",
         files={"file": ("invoice.pdf", b"\xef\xbb\xbf\r\n" + _make_test_pdf(), "application/pdf")},
@@ -484,7 +484,7 @@ def test_the_worker_does_not_match_lines_against_the_other_pseudo_distributor(db
                             raw_description="MOZZ SHRD WHL MLK 4/5 LB", raw_sku="4001122"))
     db_session.commit()
     unattributed = FAKE_PAYLOAD.model_copy(update={"distributor": "other"})
-    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
     monkeypatch.setattr("app.workers.tasks.extractor", _FixedExtractor(unattributed))
     invoice_id = _upload(tenant)
 

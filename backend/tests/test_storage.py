@@ -99,7 +99,7 @@ def _two_page_pdf() -> bytes:
 
 
 def test_upload_render_and_review_screen_work_on_a_bucket(s3, monkeypatch):
-    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
     monkeypatch.setattr("app.workers.tasks.extractor", FakeExtractorClient())
     db = SessionLocal()
     tenant = Tenant(name=f"Bucket Tenant {uuid.uuid4().hex[:6]}", metro="bucket-metro", volume_tier=VolumeTier.under_500k)
@@ -141,6 +141,102 @@ def test_upload_render_and_review_screen_work_on_a_bucket(s3, monkeypatch):
         db.execute(delete(PriceAlert).where(PriceAlert.tenant_id == tenant_id))
         db.execute(delete(InvoiceLineItem).where(InvoiceLineItem.tenant_id == tenant_id))
         db.execute(delete(Invoice).where(Invoice.tenant_id == tenant_id))
+        db.execute(delete(Tenant).where(Tenant.id == tenant_id))
+        db.commit()
+        db.close()
+
+
+def test_a_directory_with_spaces_can_read_back_what_it_stored(tmp_path):
+    storage = LocalStorage(tmp_path / "My Projects" / "uploads ü")
+    uri = storage.put("originals/x.pdf", b"%PDF-spaced")
+    assert "%20" in uri  # as_uri encodes; read_uri has to decode
+    assert read_uri(uri) == b"%PDF-spaced"
+
+
+def test_delete_removes_one_key(storage):
+    storage.put("originals/a.pdf", b"a")
+    storage.put("originals/b.pdf", b"b")
+    storage.delete("originals/a.pdf")
+    storage.delete("originals/missing.pdf")  # no error
+    assert storage.list("originals/") == ["originals/b.pdf"]
+
+
+def test_a_failed_database_write_leaves_no_stored_original(monkeypatch, isolated_storage):
+    """The file is stored before the row commits; when the write fails after
+    that, the file goes too, instead of sitting in storage referenced by
+    nothing."""
+    db = SessionLocal()
+    tenant = Tenant(name=f"Orphan Tenant {uuid.uuid4().hex[:6]}", metro="orphan-metro", volume_tier=VolumeTier.under_500k)
+    db.add(tenant)
+    db.commit()
+    tenant_id = tenant.id
+
+    def database_went_away(*args, **kwargs):
+        raise RuntimeError("database went away")
+
+    try:
+        # Fails between storing the file and committing the row.
+        monkeypatch.setattr("app.api.invoices.audit.record", database_went_away)
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.post(
+            "/invoices", params={"tenant_id": str(tenant_id)}, files={"file": ("x.pdf", _two_page_pdf(), "application/pdf")}
+        )
+        assert resp.status_code == 500
+        assert isolated_storage.list("originals/") == []
+        assert db.scalar(
+            select(Invoice.id).where(Invoice.tenant_id == tenant_id).execution_options(tenant_scope_bypass=True)
+        ) is None
+    finally:
+        monkeypatch.undo()
+        db.execute(delete(Invoice).where(Invoice.tenant_id == tenant_id))
+        db.execute(delete(Tenant).where(Tenant.id == tenant_id))
+        db.commit()
+        db.close()
+
+
+def test_switching_to_a_bucket_keeps_existing_invoices_whole(tmp_path, s3):
+    """Rendered pages are looked up in the current backend only, so after a
+    switch an existing invoice lost its page images until they were moved;
+    scripts/migrate_storage.py moves originals and pages, and re-running it
+    moves nothing twice."""
+    from scripts.migrate_storage import migrate
+
+    from app.storage import page_names, render_key
+
+    old = LocalStorage(tmp_path / "old-uploads")
+    db = SessionLocal()
+    tenant = Tenant(name=f"Migrating Tenant {uuid.uuid4().hex[:6]}", metro="m", volume_tier=VolumeTier.under_500k)
+    db.add(tenant)
+    db.commit()
+    tenant_id = tenant.id
+    invoice_id = uuid.uuid4()
+    try:
+        db.add(
+            Invoice(
+                id=invoice_id,
+                tenant_id=tenant_id,
+                source="upload",
+                status=InvoiceStatus.extracted,
+                original_file_uri=old.put(f"originals/{invoice_id}.pdf", b"%PDF-old"),
+            )
+        )
+        db.commit()
+        old.put(render_key(invoice_id, "page_001.png"), b"\x89PNG one")
+        old.put(render_key(invoice_id, "page_002.png"), b"\x89PNG two")
+        assert page_names(invoice_id) == []  # the bucket has nothing yet: the bug
+
+        # Restricted to this test's invoice: the dev database has others.
+        first = migrate(db, old, s3, only=[invoice_id])
+        assert (first.originals_copied, first.pages_copied) == (1, 2)
+        assert page_names(invoice_id) == ["page_001.png", "page_002.png"]
+        uri = db.scalar(select(Invoice.original_file_uri).where(Invoice.id == invoice_id).execution_options(tenant_scope_bypass=True))
+        assert uri.startswith(f"s3://{BUCKET}/") and read_uri(uri) == b"%PDF-old"
+
+        again = migrate(db, old, s3, only=[invoice_id])
+        assert (again.originals_copied, again.pages_copied, again.originals_already_there) == (0, 0, 1)
+    finally:
+        db.rollback()
+        db.execute(delete(Invoice).where(Invoice.id == invoice_id))
         db.execute(delete(Tenant).where(Tenant.id == tenant_id))
         db.commit()
         db.close()

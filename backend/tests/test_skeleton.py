@@ -78,7 +78,7 @@ def test_upload_job_rows_api_read(tenant, other_tenant, monkeypatch):
     # Don't push onto the real Redis queue: if a dev worker (`make up`) is also
     # running against the same Redis, it races this test's own synchronous call
     # to process_invoice below and double-processes the invoice.
-    monkeypatch.setattr("app.api.invoices.queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
     # This is the Phase 0 walking-skeleton test: pin the deterministic fake
     # extractor regardless of whether ANTHROPIC_API_KEY happens to be set in
     # this environment, so the test doesn't spend real API budget or depend on

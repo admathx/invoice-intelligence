@@ -1734,3 +1734,54 @@ Needs what can't be built: real invoices and API credit. Gather 20-50 real
 PDFs, `make real-invoice-report DIR=... ARGS="--extract --limit 20"` (roughly
 $0.10 each at the Phase 2 measurement), correct the truth files, score. And
 once restaurants are reviewing, `make calibration-report` periodically.
+
+## Code review of this round (10 findings) and interaction bugs (6), all fixed
+
+### Review findings
+1. **Uploads couldn't be read back from a path with a space.** `LocalStorage`
+   writes `Path.as_uri()` (percent-encoded); `read_uri` didn't decode it.
+   Reproduced, fixed, tested with a spaced and non-ASCII path.
+2. **Large invoices would time out.** Jobs were queued with RQ's default
+   180 s limit; a big invoice streams for minutes (twice with the retry).
+   Both entry points now go through `enqueue_extraction` with
+   `EXTRACTION_JOB_TIMEOUT_SECONDS` (1800); verified on the live queue.
+3. **The guide's backup command produced corrupt dumps** (`compose exec`
+   without `-T` puts the binary dump through a terminal). Fixed, with a
+   restore command; both verified by backing up the dev database and
+   restoring it into a scratch one (39,331 invoice lines back).
+4. **Emails without a Message-ID were never deduplicated,** so a provider's
+   retry doubled the invoices. They now dedupe on a hash of the raw message.
+5. Businesses page: the Add location and Create business forms cleared
+   what was typed even when the API refused it.
+6. **Orphaned files:** originals were stored before the row committed; a
+   failed write now removes them (upload and email). Test fails without it.
+7. **Two locations with one name created at once** hit the inbox-address
+   unique index and 500'd; now retried with the next number (test fails 3/3
+   without the retry).
+8. `TenantSummary.from_tenant` replaces two hand-built copies.
+9. Dev, smoke and e2e logins go through `app/users.py`, so their resets and
+   grants are audited like everyone else's.
+10. `real_invoice_report` writes results with `default=str`.
+
+### Interaction bugs (this round's code against what was there)
+- **Switching storage to S3 would have blanked every existing invoice's page
+  images:** originals follow their stored URI, but pages are looked up in the
+  current backend only, and the guide said the opposite. New
+  `scripts/migrate_storage.py` (dry run, re-runnable, deletes nothing) moves
+  originals and pages; the guide now says to run it. Tested against a mocked
+  bucket.
+- **A new location's metro could split a benchmark cell:** "austin, tx" and
+  "Austin, TX" are different cells to benchmarks and observations. A metro
+  matching an existing one (case, spacing) takes the existing spelling.
+- **A fresh deployment's first operator was told to "ask whoever set up your
+  login"** on every page, having no locations yet. Operators are now pointed
+  at Businesses and Users.
+- **Calibration couldn't classify verdicts on unscored suggestions:**
+  `audit.record` drops `None`, which looked the same as a pre-release event.
+  Recorded as `"none"` now.
+- The location cookie is set `Secure` over https.
+- `tenant.created` reads as a sentence in Activity.
+
+### Gates
+Backend **266 passed** (9 new), frontend 28 unit, `tsc` clean, Playwright 8,
+`make smoke` on the fake extractor with the job carrying the 1800 s limit.

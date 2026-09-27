@@ -69,6 +69,12 @@ describe("activity", () => {
     ).toBe("made a@b.test an operator");
   });
 
+  it("names a new location's forwarding address", () => {
+    expect(
+      describeEvent(event({ action: "tenant.created", details: { metro: "Austin, TX", inbox_address: "x@invoices.example.com" } })),
+    ).toBe("added this location (Austin, TX); invoices forward to x@invoices.example.com");
+  });
+
   it("says why an email didn't become invoices", () => {
     expect(
       describeEvent(event({ action: "email.rejected", details: { reason: "no PDF attachment (attachments: none)" } })),

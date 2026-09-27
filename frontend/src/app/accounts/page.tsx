@@ -71,21 +71,27 @@ function Businesses() {
     void load();
   }, [load]);
 
-  async function act(run: () => Promise<Response>, onOk?: (body: unknown) => void) {
+  /** Runs one change and reloads. Resolves true only if the change was
+   *  accepted, so a form can keep what was typed when it wasn't. */
+  async function act(run: () => Promise<Response>, onOk?: (body: unknown) => void): Promise<boolean> {
     setBusy(true);
     try {
       const resp = await run();
       // The 409 on re-parenting is the one error a user can actually hit by
       // hand, so it gets shown rather than swallowed into a silent no-op.
       const body = await resp.json().catch(() => null);
-      if (!resp.ok) setError(formatApiError(body?.detail, "Request failed."));
-      else {
-        setError(null);
-        onOk?.(body);
+      if (!resp.ok) {
+        setError(formatApiError(body?.detail, "Request failed."));
+        await load();
+        return false;
       }
+      setError(null);
+      onOk?.(body);
       await load();
+      return true;
     } catch {
       setError("Couldn't reach the API.");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -124,7 +130,7 @@ function Businesses() {
         onSubmit={(e) => {
           e.preventDefault();
           if (!newName.trim()) return;
-          void act(() => post("/accounts", { name: newName.trim() })).then(() => setNewName(""));
+          void act(() => post("/accounts", { name: newName.trim() })).then((ok) => ok && setNewName(""));
         }}
       >
         <input
@@ -233,7 +239,7 @@ function AddLocation({
 }: {
   busy: boolean;
   metros: string[];
-  onSubmit: (body: { name: string; metro: string; volume_tier: string }) => Promise<void>;
+  onSubmit: (body: { name: string; metro: string; volume_tier: string }) => Promise<boolean>;
 }) {
   const [name, setName] = useState("");
   const [metro, setMetro] = useState("");
@@ -244,9 +250,8 @@ function AddLocation({
       className="mt-4 rounded border border-gray-200 bg-white p-4"
       onSubmit={(e) => {
         e.preventDefault();
-        void onSubmit({ name: name.trim(), metro: metro.trim(), volume_tier: tier }).then(() => {
-          setName("");
-        });
+        // Cleared only once the location exists: a refused one keeps what was typed.
+        void onSubmit({ name: name.trim(), metro: metro.trim(), volume_tier: tier }).then((ok) => ok && setName(""));
       }}
     >
       <h2 className="text-sm font-semibold">Add a location</h2>

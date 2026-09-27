@@ -147,7 +147,10 @@ def _finalize(
         # How sure the matcher was about what the person just judged. With
         # the verdict, this is what calibrates the auto-accept and review
         # thresholds on real invoices (validation/calibration_report.py).
-        suggested_confidence=suggested_confidence,
+        # "none", not omitted: audit.record drops None, and an absent key is
+        # also what verdicts from before this was recorded look like, which
+        # the calibration report has to leave out rather than guess at.
+        suggested_confidence=suggested_confidence if suggested_confidence is not None else "none",
         review_status=line.review_status,
     )
     db.commit()

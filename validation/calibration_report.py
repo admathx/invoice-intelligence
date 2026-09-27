@@ -251,7 +251,9 @@ def _load(db) -> tuple[list, int, int, dict]:
         )
     ).all():
         if "suggested_confidence" in details:
-            decisions.append((action, Decimal(str(details["suggested_confidence"]))))
+            value = details["suggested_confidence"]
+            # "none": nothing suggested, or suggested without a score.
+            decisions.append((action, None if value == "none" else Decimal(str(value))))
         elif (details.get("canonical_sku") or {}).get("from") is None:
             # Nothing was suggested (a None confidence isn't stored).
             decisions.append((action, None))

@@ -8,6 +8,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import audit
@@ -18,18 +19,9 @@ from app.ingest.email_stub import inbox_address_for
 from app.models import Tenant, User
 from app.schemas.accounts import TenantCreate, TenantSummary
 
+_ADDRESS_ATTEMPTS = 5
+
 router = APIRouter(prefix="/tenants", tags=["tenants"], dependencies=[Depends(require_operator)])
-
-
-def _summary(t: Tenant) -> TenantSummary:
-    return TenantSummary(
-        id=t.id,
-        name=t.name,
-        metro=t.metro,
-        volume_tier=t.volume_tier.value,
-        account_id=t.account_id,
-        inbox_address=t.inbox_address,
-    )
 
 
 @router.get("", response_model=list[TenantSummary])
@@ -40,7 +32,20 @@ def list_tenants(unassigned: bool = False, db: Session = Depends(get_db)) -> lis
     query = select(Tenant).order_by(Tenant.name)
     if unassigned:
         query = query.where(Tenant.account_id.is_(None))
-    return [_summary(t) for t in db.scalars(query)]
+    return [TenantSummary.from_tenant(t) for t in db.scalars(query)]
+
+
+def _known_metro(db: Session, typed: str) -> str:
+    """The existing spelling of a metro, when the typed one is the same place
+    written differently ("austin, tx", "Austin,  TX"). Benchmark cells and
+    price observations compare metro exactly, so a second spelling would put
+    the new location in a cell of its own, where it has no peers."""
+    collapsed = " ".join(typed.split())
+    key = collapsed.replace(" ,", ",").lower()
+    for existing in db.scalars(select(Tenant.metro).distinct()):
+        if " ".join(existing.split()).replace(" ,", ",").lower() == key:
+            return existing
+    return collapsed
 
 
 def _free_inbox_address(db: Session, name: str) -> str:
@@ -64,17 +69,29 @@ def _free_inbox_address(db: Session, name: str) -> str:
 def create_tenant(
     body: TenantCreate, db: Session = Depends(get_db), operator: User = Depends(require_operator)
 ) -> TenantSummary:
-    name, metro = body.name.strip(), body.metro.strip()
+    name, metro = body.name.strip(), _known_metro(db, body.metro)
     if not name or not metro:
         raise HTTPException(status_code=422, detail="enter a name and a metro")
-    tenant = Tenant(
-        id=uuid.uuid4(),
-        name=name,
-        metro=metro,
-        volume_tier=body.volume_tier,
-        inbox_address=_free_inbox_address(db, name),
-    )
-    db.add(tenant)
+    # Two locations created with the same name at once would both pick the
+    # same free address; the unique index refuses the second, which then
+    # takes the next number (once the first commits, the lookup sees it).
+    for _ in range(_ADDRESS_ATTEMPTS):
+        tenant = Tenant(
+            id=uuid.uuid4(),
+            name=name,
+            metro=metro,
+            volume_tier=body.volume_tier,
+            inbox_address=_free_inbox_address(db, name),
+        )
+        try:
+            with db.begin_nested():
+                db.add(tenant)
+                db.flush()
+            break
+        except IntegrityError:
+            continue
+    else:
+        raise HTTPException(status_code=409, detail="couldn't allocate a forwarding address; try again")
     audit.record(
         db,
         operator,
@@ -88,9 +105,9 @@ def create_tenant(
         inbox_address=tenant.inbox_address,
     )
     db.commit()
-    return _summary(tenant)
+    return TenantSummary.from_tenant(tenant)
 
 
 @router.get("/{tenant_id}", response_model=TenantSummary)
 def get_tenant(tenant_id: uuid.UUID, db: Session = Depends(get_db)) -> TenantSummary:
-    return _summary(get_tenant_or_404(db, tenant_id))
+    return TenantSummary.from_tenant(get_tenant_or_404(db, tenant_id))

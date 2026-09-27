@@ -102,6 +102,8 @@ export function describeEvent(event: AuditEvent): string {
       return `reset ${show(d.email)}'s password`;
     case "account.created":
       return `created the business ${show(d.name)}`;
+    case "tenant.created":
+      return `added this location (${show(d.metro)}); invoices forward to ${show(d.inbox_address)}`;
     case "account.location_attached":
       return `added this location to ${show(d.account_name)}`;
     case "account.location_detached":

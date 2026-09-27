@@ -18,7 +18,6 @@ each makes its own throwaway login with a password that exists only for the
 length of the run.
 """
 import json
-import secrets
 import sys
 import uuid
 from pathlib import Path
@@ -26,11 +25,10 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.engine import make_url
 
-from app.auth import hash_password
-from app.users import revoke_sessions
+from app.users import create_user, generate_password, grant_access, set_password, update_user
 from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS, SessionLocal
-from app.models import Invoice, Tenant, TenantMembership, User
+from app.models import Invoice, Tenant, User
 
 OUTPUT = Path(__file__).resolve().parents[1] / "dev_users.local.json"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -48,25 +46,20 @@ def upsert_login(
     db, email: str, name: str, *, operator: bool = False, tenant_ids: tuple[uuid.UUID, ...] = ()
 ) -> tuple[User, str]:
     """Create or reset a local login with a fresh random password and access to
-    tenant_ids (added to, never removed from). Commits."""
+    tenant_ids (added to, never removed from). Commits.
+
+    Goes through app/users.py like every other change to a login, so these
+    grants and resets appear in the audit trail too (as the system)."""
     require_local_database()
-    password = secrets.token_urlsafe(12)
+    password = generate_password()
     user = db.scalar(select(User).where(User.email == email))
     if user is None:
-        user = User(id=uuid.uuid4(), email=email, name=name, password_hash="", is_operator=operator)
-        db.add(user)
-    user.password_hash = hash_password(password)
-    user.is_operator = operator
-    user.is_active = True
-    db.flush()
-    revoke_sessions(db, user)
+        user = create_user(db, None, email=email, name=name, password=password, is_operator=operator)
+    else:
+        set_password(db, None, user, password)  # also signs out its old sessions
+        update_user(db, None, user, is_operator=operator, is_active=True)
     for tenant_id in tenant_ids:
-        if not db.scalar(
-            select(TenantMembership.id).where(
-                TenantMembership.user_id == user.id, TenantMembership.tenant_id == tenant_id
-            )
-        ):
-            db.add(TenantMembership(user_id=user.id, tenant_id=tenant_id))
+        grant_access(db, None, user, tenant_id)
     db.commit()
     return user, password
 

@@ -19,6 +19,17 @@ class TenantSummary(BaseModel):
     # Where the restaurant forwards its invoices (app/api/inbound.py).
     inbox_address: str | None = None
 
+    @classmethod
+    def from_tenant(cls, tenant) -> "TenantSummary":
+        return cls(
+            id=tenant.id,
+            name=tenant.name,
+            metro=tenant.metro,
+            volume_tier=tenant.volume_tier.value,
+            account_id=tenant.account_id,
+            inbox_address=tenant.inbox_address,
+        )
+
 
 class TenantCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)

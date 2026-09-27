@@ -92,8 +92,21 @@ they're stored under `inbound/rejected/` and appear in the Audit log
 `STORAGE_BACKEND=local` keeps PDFs and page images in the `uploads` volume.
 Set `STORAGE_BACKEND=s3` with `S3_BUCKET` (and `S3_ENDPOINT_URL` for R2 or
 MinIO) to use a bucket; credentials come from the standard AWS variables or
-an instance role. Invoices stored before a switch keep opening from where
-they were written, as long as that location is still reachable.
+an instance role.
+
+Switching an existing deployment from local to S3: set the new variables,
+then move what's already stored (originals and rendered pages; re-runnable,
+deletes nothing):
+
+```
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production \
+  run --rm api python scripts/migrate_storage.py --dry-run
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production \
+  run --rm api python scripts/migrate_storage.py
+```
+
+Skipping it, invoices recorded earlier still open their original PDF, but
+their page images disappear from the review screen.
 
 ## 8. Backups
 
@@ -101,7 +114,18 @@ The database is the thing to back up; everything else can be rebuilt.
 
 ```
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production \
-  exec postgres pg_dump -U invoice -Fc invoice_intelligence > backup-$(date +%F).dump
+  exec -T postgres pg_dump -U invoice -Fc invoice_intelligence > backup-$(date +%F).dump
+```
+
+`-T` matters: without it compose attaches a terminal, which rewrites line
+endings in the binary dump, and the file only turns out to be corrupt when
+you try to restore it. Check a backup is readable with
+`pg_restore --list backup-....dump > /dev/null`. To restore into a fresh
+deployment (stop `api` and `worker` first):
+
+```
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production \
+  exec -T postgres pg_restore -U invoice -d invoice_intelligence --clean --if-exists < backup-....dump
 ```
 
 With local storage, also back up the `uploads` volume (original PDFs).

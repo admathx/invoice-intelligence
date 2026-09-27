@@ -26,17 +26,6 @@ from app.schemas.accounts import AccountCreate, AccountDetail, AccountSummary, A
 router = APIRouter(prefix="/accounts", tags=["accounts"], dependencies=[Depends(require_operator)])
 
 
-def _tenant_summary(tenant: Tenant) -> TenantSummary:
-    return TenantSummary(
-        id=tenant.id,
-        name=tenant.name,
-        metro=tenant.metro,
-        volume_tier=tenant.volume_tier.value,
-        account_id=tenant.account_id,
-        inbox_address=tenant.inbox_address,
-    )
-
-
 def _get_account_or_404(db: Session, account_id: uuid.UUID) -> Account:
     account = db.get(Account, account_id)
     if account is None:
@@ -89,7 +78,7 @@ def get_account(account_id: uuid.UUID, db: Session = Depends(get_db)) -> Account
         name=account.name,
         created_at=account.created_at,
         location_count=len(locations),
-        locations=[_tenant_summary(t) for t in locations],
+        locations=[TenantSummary.from_tenant(t) for t in locations],
     )
 
 
