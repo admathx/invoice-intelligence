@@ -225,15 +225,18 @@ test.describe("ingest -> review -> negotiation sheet", () => {
   });
 
   test("lines can be entered by hand when extraction found none, starting from a past purchase", async ({ page }) => {
-    const fixture = runFixture("setup-empty-invoice", TENANT_ID) as { invoice_id: string };
+    // `search`: a word from something this location really bought from the
+    // invoice's distributor. Searching a fixed word ("chicken") assumed a
+    // purchase history that differs by location, and CI's location varied.
+    const fixture = runFixture("setup-empty-invoice", TENANT_ID) as { invoice_id: string; search: string };
 
     await page.goto(`/invoices/${fixture.invoice_id}`);
     await expect(page.getByText("No line items were detected")).toBeVisible();
     await page.getByRole("button", { name: "+ Add line item" }).click();
 
     const dialog = page.getByRole("dialog", { name: "Add line item" });
-    await dialog.getByLabel("Search past purchases").fill("chicken");
-    await dialog.getByRole("button").filter({ hasText: /CHICKEN/ }).first().click();
+    await dialog.getByLabel("Search past purchases").fill(fixture.search.toLowerCase());
+    await dialog.getByRole("button").filter({ hasText: new RegExp(fixture.search, "i") }).first().click();
 
     // Identity comes from the past purchase; the price deliberately doesn't.
     // A prefilled price left untouched would record "no increase" and hide

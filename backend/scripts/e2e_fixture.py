@@ -319,11 +319,28 @@ def cmd_setup_empty_invoice(tenant_id: str) -> None:
 
     distributor_id = db.execute(
         sqlalchemy.select(Invoice.distributor_id, sqlalchemy.func.count())
+        .join(Distributor, Distributor.id == Invoice.distributor_id)
         .where(Invoice.tenant_id == uuid.UUID(tenant_id), Invoice.distributor_id.is_not(None))
-        .group_by(Invoice.distributor_id)
-        .order_by(sqlalchemy.func.count().desc())
+        .group_by(Invoice.distributor_id, Distributor.slug)
+        .order_by(sqlalchemy.func.count().desc(), Distributor.slug)  # ties by slug, not at random
         .limit(1)
     ).scalar()
+    # Something this location really bought from that distributor, for the
+    # test to search its history for, rather than assuming what's in it.
+    description = db.scalar(
+        sqlalchemy.select(InvoiceLineItem.raw_description)
+        .join(Invoice, Invoice.id == InvoiceLineItem.invoice_id)
+        .where(
+            Invoice.tenant_id == uuid.UUID(tenant_id),
+            Invoice.distributor_id == distributor_id,
+            Invoice.status.in_([InvoiceStatus.extracted, InvoiceStatus.confirmed]),
+        )
+        .order_by(Invoice.invoice_date.desc(), InvoiceLineItem.raw_description)
+        .limit(1)
+    )
+    search = next((w for w in (description or "").split() if w.isalpha() and len(w) >= 3), None)
+    if search is None:
+        sys.exit("this location has no purchase history to search: run the corpus pipeline first")
     tag = uuid.uuid4().hex[:8]
     invoice = Invoice(
         id=uuid.uuid4(),
@@ -337,7 +354,7 @@ def cmd_setup_empty_invoice(tenant_id: str) -> None:
     )
     db.add(invoice)
     db.commit()
-    print(json.dumps({"invoice_id": str(invoice.id), "invoice_number": invoice.invoice_number}))
+    print(json.dumps({"invoice_id": str(invoice.id), "invoice_number": invoice.invoice_number, "search": search}))
 
 
 def cmd_cleanup(tenant_id: str) -> None:
@@ -403,10 +420,14 @@ def cmd_cleanup_users() -> None:
 def cmd_pick_tenant() -> None:
     db = SessionLocal()
     try:
+        # Tied on invoice count (every seeded location has 26), so ties go by
+        # name: the ids are random per database, and breaking ties by id
+        # made CI test a different location on every run.
         tenant_id = db.scalar(
             sqlalchemy.select(Invoice.tenant_id)
-            .group_by(Invoice.tenant_id)
-            .order_by(sqlalchemy.func.count(Invoice.id).desc(), Invoice.tenant_id)
+            .join(Tenant, Tenant.id == Invoice.tenant_id)
+            .group_by(Invoice.tenant_id, Tenant.name)
+            .order_by(sqlalchemy.func.count(Invoice.id).desc(), Tenant.name)
             .limit(1)
             .execution_options(tenant_scope_bypass=True)
         )
