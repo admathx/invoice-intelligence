@@ -14,6 +14,7 @@ from app.auth import (
     create_session,
     normalize_email,
     prune_sessions,
+    current_user,
     revoke_session,
     rotate_session,
     session_for_token,
@@ -25,7 +26,7 @@ from app.config import settings
 from app.db import get_db
 from app.models import AuditEvent, Tenant, User
 from app import users as user_service
-from app.schemas.auth import LocationOut, LoginRequest, MeOut, PasswordChange
+from app.schemas.auth import AccountUpdate, LocationOut, LoginRequest, MeOut, PasswordChange
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -47,6 +48,7 @@ def _me(db: Session, user: User) -> MeOut:
         name=user.name,
         is_operator=user.is_operator,
         password_change_required=user.password_change_required,
+        digest_enabled=user.digest_enabled,
         locations=[LocationOut(id=t.id, name=t.name, metro=t.metro) for t in tenants],
     )
 
@@ -174,3 +176,14 @@ def change_password(body: PasswordChange, request: Request, db: Session = Depend
     response = Response(status_code=204)
     _set_session_cookie(response, token)
     return response
+
+
+@router.patch("/me", response_model=MeOut)
+def update_me(body: AccountUpdate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> MeOut:
+    """Your own preferences. Only the weekly email, for now."""
+    if body.digest_enabled is not None and body.digest_enabled != user.digest_enabled:
+        user.digest_enabled = body.digest_enabled
+        action = "user.digest_subscribed" if body.digest_enabled else "user.digest_unsubscribed"
+        audit.record(db, user, action, "user", user.id, email=user.email)
+        db.commit()
+    return _me(db, user)

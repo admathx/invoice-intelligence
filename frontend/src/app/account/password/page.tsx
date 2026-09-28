@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getSession } from "@/lib/server";
 
 import ChangePasswordForm from "./ChangePasswordForm";
+import EmailPreferences from "./EmailPreferences";
 
 export const metadata = { title: "Change password · Invoice Intelligence" };
 
@@ -11,5 +12,12 @@ export const metadata = { title: "Change password · Invoice Intelligence" };
 export default async function ChangePasswordPage() {
   const session = await getSession();
   if (!session) redirect("/login");
-  return <ChangePasswordForm required={session.user.password_change_required} email={session.user.email} />;
+  const { user } = session;
+  return (
+    <div className="space-y-8">
+      <ChangePasswordForm required={user.password_change_required} email={user.email} />
+      {/* After the password is theirs: nothing else is reachable before that. */}
+      {!user.password_change_required && <EmailPreferences initiallyEnabled={user.digest_enabled} />}
+    </div>
+  );
 }

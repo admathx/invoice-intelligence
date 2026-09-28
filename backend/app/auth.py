@@ -212,6 +212,12 @@ def csrf_ok(request: Request) -> bool:
     forged into acting as a user, so only those need the header."""
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return True
+    # Authorized by the signed link, not the cookie, so riding a cookie gains
+    # a forger nothing; and it must work as a plain form post, or straight
+    # from a mail client's one-click unsubscribe, neither of which can add
+    # a header. (Suffix match: stays right behind a path prefix.)
+    if request.url.path.endswith("/digest/unsubscribe"):
+        return True
     if SESSION_COOKIE not in request.cookies:
         return True
     return request.headers.get(CSRF_HEADER) == CSRF_HEADER_VALUE

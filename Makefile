@@ -1,4 +1,4 @@
-.PHONY: up down migrate seed seed-analytics dev-users calibration-report real-invoice-report smoke watch-inbox test test-e2e validate extraction-report frontend-install frontend-dev
+.PHONY: up down migrate seed seed-analytics dev-users digests digest-preview calibration-report real-invoice-report smoke watch-inbox test test-e2e validate extraction-report frontend-install frontend-dev
 
 VENV := .venv/bin
 RUN_DIR := .run
@@ -46,6 +46,16 @@ seed-analytics:
 # Real users: backend/scripts/manage_users.py (prompts for the password).
 dev-users:
 	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/seed_dev_users.py
+
+# The weekly digest. Locally it's written to backend/outbox/ as .eml files
+# (MAIL_BACKEND=outbox, the default), never sent.
+#   make digest-preview EMAIL=member@dev.test   (one person's; records nothing)
+#   make digests                                (everyone due this week)
+digests:
+	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/send_digests.py
+
+digest-preview:
+	PYTHONPATH=backend backend/$(VENV)/python backend/scripts/send_digests.py --preview $(EMAIL)
 
 # Threshold calibration from real use: reads human verdicts from the audit
 # trail. Free; run it once people have been reviewing real invoices.

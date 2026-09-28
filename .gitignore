@@ -33,6 +33,8 @@ validation/results/*
 
 # Uploaded invoice originals
 backend/uploads/
+# Emails written instead of sent in development (MAIL_BACKEND=outbox)
+backend/outbox/
 inbox/*
 !inbox/.gitkeep
 

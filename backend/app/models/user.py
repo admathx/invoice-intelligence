@@ -13,9 +13,9 @@ would otherwise hide from the very operators who need to read them. Queries
 against them filter explicitly.
 """
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, ForeignKey, Index, String, UniqueConstraint, text
+from sqlalchemy import Boolean, Date, ForeignKey, Index, Integer, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -43,6 +43,9 @@ class User(Base):
     password_change_required: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # The weekly email (app/digest.py). Off from the account page or the
+    # unsubscribe link in any digest.
+    digest_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 
 
@@ -126,3 +129,20 @@ class AuditEvent(Base):
     # is exactly what should outlive it.
     entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class DigestSend(Base):
+    """One weekly digest sent to one person. Unique per (user, week), which is
+    what makes sending idempotent (app.digest.send_due_digests)."""
+
+    __tablename__ = "digest_sends"
+    __table_args__ = (UniqueConstraint("user_id", "week_of", name="uq_digest_sends_user_week"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    # The Monday of the week the digest covers up to.
+    week_of: Mapped[date] = mapped_column(Date, nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    location_count: Mapped[int] = mapped_column(Integer, nullable=False)

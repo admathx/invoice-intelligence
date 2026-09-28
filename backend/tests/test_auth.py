@@ -615,7 +615,14 @@ def test_production_refuses_insecure_cookies_and_http_origins():
         Settings(app_env="production", session_cookie_secure=False, frontend_origins=["https://app.example.com"])
     with pytest.raises(ValidationError, match="https"):
         Settings(app_env="production", session_cookie_secure=True, frontend_origins=["http://app.example.com"])
-    assert Settings(app_env="production", session_cookie_secure=True, frontend_origins=["https://a.example.com"])
+    assert Settings(
+        app_env="production",
+        session_cookie_secure=True,
+        frontend_origins=["https://a.example.com"],
+        public_base_url="https://a.example.com",
+        secret_key="k" * 40,
+        mail_backend="smtp",
+    )
 
 
 # --- The operators' audit log ------------------------------------------------

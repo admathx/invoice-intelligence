@@ -82,6 +82,33 @@ class Settings(BaseSettings):
     # "why was I signed out?" question can still be answered from the table.
     session_retention_days: int = 30
 
+    # --- outgoing mail and the weekly digest (app/mail.py, app/digest.py) ---
+    # Where links in emails point: the dashboard's public address.
+    public_base_url: str = "http://localhost:3000"
+    # Signs unsubscribe links, so one can't be forged for someone else.
+    # Development falls back to a fixed value; production must set its own.
+    secret_key: str = ""
+    # "outbox" writes each message as an .eml file into outbox_dir (open it in
+    # any mail client); "smtp" sends it. Postmark, SendGrid and Mailgun all
+    # accept SMTP, with the credentials their dashboards give you.
+    mail_backend: Literal["outbox", "smtp"] = "outbox"
+    outbox_dir: str = str(BACKEND_DIR / "outbox")
+    mail_from: str = "Invoice Intelligence <digest@invoices.example.com>"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_starttls: bool = True
+    digests_enabled: bool = True
+    # When the weekly digest goes out (scripts/digest_scheduler.py): Monday,
+    # 12:00 UTC, which is morning across the US.
+    digest_weekday: int = 0
+    digest_hour_utc: int = 12
+
+    @property
+    def signing_key(self) -> bytes:
+        return (self.secret_key or "development-only-signing-key").encode()
+
     @model_validator(mode="after")
     def _production_safety(self) -> "Settings":
         if self.app_env == "production":
@@ -90,6 +117,12 @@ class Settings(BaseSettings):
                 problems.append("SESSION_COOKIE_SECURE must be true (session cookies would travel over plain http)")
             if any(origin.startswith("http://") for origin in self.frontend_origins):
                 problems.append("FRONTEND_ORIGINS must all be https")
+            if len(self.secret_key) < 32:
+                problems.append("SECRET_KEY must be set (32+ characters): it signs unsubscribe links")
+            if not self.public_base_url.startswith("https://"):
+                problems.append("PUBLIC_BASE_URL must be https (links in emails point there)")
+            if self.digests_enabled and self.mail_backend != "smtp":
+                problems.append("digests need MAIL_BACKEND=smtp (or set DIGESTS_ENABLED=false)")
             if problems:
                 raise ValueError("refusing to start with APP_ENV=production: " + "; ".join(problems))
         return self

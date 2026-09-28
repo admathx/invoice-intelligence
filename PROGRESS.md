@@ -1907,3 +1907,50 @@ a dev server.
    else in CI exercised.
 
 Backend **279 passed**, frontend 29 unit, Playwright 11.
+
+## The weekly email digest
+
+Alerts and invoices that need a look only helped if someone opened the
+dashboard. Now each person gets one email a week (Monday 12:00 UTC) with a
+section per location they belong to: new price increases (with units), the
+invoices that couldn't be read or don't add up, lines waiting in the review
+queue, what arrived and its total, and the three biggest savings on the
+negotiation sheet. A location with a quiet week is left out; if all of
+someone's locations were quiet, they get nothing. Links carry `?location=`,
+which the dashboard's middleware turns into the selected location, so a
+link from one location's section never opens in another's.
+
+- **Recipients:** active users with at least one location who haven't
+  turned it off. Operators only for locations they're members of.
+- **Turning it off:** a toggle on the account page, or the signed
+  unsubscribe link in every digest. The link shows a confirmation page,
+  because mail security scanners open every link and a GET that acted would
+  unsubscribe people who never clicked; POST (the button, or a mail client's
+  own one-click unsubscribe per RFC 8058's List-Unsubscribe-Post) does it.
+  Forged links (another person's id with your signature) do nothing.
+- **Sending:** SMTP (every major provider has a relay), or in development
+  an `outbox` folder of `.eml` files. `make digest-preview EMAIL=...` writes
+  one person's digest there without sending or recording.
+- **Idempotent:** each (person, week) is claimed in `digest_sends` under a
+  unique constraint before sending; a failed send releases its claim and is
+  retried on the scheduler's next check. The deployment's `scheduler`
+  service checks every five minutes, so restarts and redeploys are safe and
+  there is no missed window.
+- **Production guard:** refuses to start without a `SECRET_KEY` (it signs
+  the links), an https `PUBLIC_BASE_URL`, and SMTP, unless
+  `DIGESTS_ENABLED=false`.
+
+### Found building it
+- The account page toggle only moved when the server answered, so for that
+  moment a click looked ignored (Playwright's `uncheck` noticed). It now
+  moves at once and reverts if the save fails.
+- Test logins accumulated state between runs: the e2e member kept every
+  location it had ever been given (a run against CI's location left it with
+  two, and the dashboard then opened on the wrong one), and a run stopped
+  mid-test could leave it unsubscribed. The fixture now gives it exactly one
+  location, and resets preferences with the password. Verified by running
+  against CI's location and then the local one back to back.
+
+### Gates
+Backend **294 passed** (15 new), frontend 29 unit, `tsc` clean, Playwright
+**13** (2 new: a digest link opening on its location; the account toggle).

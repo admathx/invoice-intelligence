@@ -6,6 +6,7 @@ from app.api import (
     accounts,
     activity,
     auth,
+    digest,
     distributors,
     inbound,
     insights,
@@ -51,6 +52,7 @@ app.add_middleware(
 # so they're served by an authorized endpoint (invoices.get_page_image).
 
 app.include_router(auth.router)
+app.include_router(digest.router)
 app.include_router(invoices.router)
 app.include_router(invoice_review.router)
 app.include_router(activity.router)

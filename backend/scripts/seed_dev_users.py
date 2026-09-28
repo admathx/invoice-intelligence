@@ -58,6 +58,9 @@ def upsert_login(
     else:
         set_password(db, None, user, password)  # also signs out its old sessions
         update_user(db, None, user, is_operator=operator, is_active=True)
+        # Back to defaults, like the password: a run that stopped halfway
+        # (a failed test that had just unsubscribed) mustn't shape the next.
+        user.digest_enabled = True
     for tenant_id in tenant_ids:
         grant_access(db, None, user, tenant_id)
     db.commit()

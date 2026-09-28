@@ -19,6 +19,8 @@ x-backend: &backend
     UPLOAD_DIR: /srv/backend/uploads
     SESSION_COOKIE_SECURE: "true"
     FRONTEND_ORIGINS: '["https://${DOMAIN:?set DOMAIN}${PUBLIC_PORT_SUFFIX:-}"]'
+    # Links in emails (the weekly digest) point here.
+    PUBLIC_BASE_URL: https://${DOMAIN}${PUBLIC_PORT_SUFFIX:-}
   volumes:
     - uploads:/srv/backend/uploads
   restart: unless-stopped
@@ -80,6 +82,17 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+
+  # Sends the weekly digest when it's due (scripts/digest_scheduler.py).
+  # Idempotent per person per week, so restarts and redeploys are safe.
+  scheduler:
+    <<: *backend
+    command: ["python", "scripts/digest_scheduler.py"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
   frontend:
     build:

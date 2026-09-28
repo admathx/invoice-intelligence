@@ -24,6 +24,8 @@ export type Me = {
   is_operator: boolean;
   /** An operator issued their password; nothing else works until they replace it. */
   password_change_required: boolean;
+  /** Gets the weekly email. */
+  digest_enabled: boolean;
   locations: Location[];
 };
 

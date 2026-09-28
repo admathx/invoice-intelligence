@@ -425,3 +425,32 @@ test.describe("reading times", () => {
     await context.close();
   });
 });
+
+test.describe("weekly email", () => {
+  test.skip(!TENANT_ID, "E2E_TENANT_ID not set in frontend/.env.local");
+
+  test("a link from the digest opens on the location it was about", async ({ page }) => {
+    // An operator can open every location, so which one shows is the question.
+    const operator = runFixture("login-operator") as Login;
+    expect((await page.request.post("/api/auth/login", { data: operator, headers: CSRF })).ok()).toBeTruthy();
+
+    await page.goto(`/insights?location=${TENANT_ID}`);
+    await expect(page).toHaveURL(/\/insights$/);
+    const cookies = await page.context().cookies();
+    expect(cookies.find((c) => c.name === "ii_location")?.value).toBe(TENANT_ID);
+    await expect(page.getByRole("navigation").getByRole("combobox")).toHaveValue(TENANT_ID);
+  });
+
+  test("the weekly summary can be turned off and on from the account page", async ({ page }) => {
+    expect((await page.request.post("/api/auth/login", { data: e2eLogin(), headers: CSRF })).ok()).toBeTruthy();
+    await page.goto("/account/password");
+    const toggle = page.getByLabel(/Weekly summary/);
+    await expect(toggle).toBeChecked();
+    await toggle.uncheck();
+    await expect(toggle).not.toBeChecked();
+    await page.reload();
+    await expect(page.getByLabel(/Weekly summary/)).not.toBeChecked();
+    await page.getByLabel(/Weekly summary/).check();
+    await expect(page.getByLabel(/Weekly summary/)).toBeChecked();
+  });
+});

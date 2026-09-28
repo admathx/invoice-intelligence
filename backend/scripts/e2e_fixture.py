@@ -49,6 +49,7 @@ from app.models import (  # noqa: E402
     PriceObservation,
     SkuAlias,
     Tenant,
+    TenantMembership,
     User,
 )
 from app.models.enums import InvoiceSource, InvoiceStatus, ReviewStatus  # noqa: E402
@@ -381,9 +382,23 @@ E2E_LOCATION_PATTERN = "E2E Location %"
 def cmd_login(tenant_id: str) -> None:
     from scripts.seed_dev_users import upsert_login
 
+    from app.users import revoke_access
+
     db = SessionLocal()
     try:
         user, password = upsert_login(db, *E2E_LOGIN, tenant_ids=(uuid.UUID(tenant_id),))
+        # Exactly this location. upsert_login only adds, so a run against
+        # another location (E2E_TENANT_ID changed, or CI's pick) left this
+        # login with two, and the dashboard opened on the other one, where
+        # none of the fixtures are.
+        others = db.scalars(
+            sqlalchemy.select(TenantMembership.tenant_id).where(
+                TenantMembership.user_id == user.id, TenantMembership.tenant_id != uuid.UUID(tenant_id)
+            )
+        ).all()
+        for other in others:
+            revoke_access(db, None, user, other)
+        db.commit()
         print(json.dumps({"email": user.email, "password": password}))
     finally:
         db.close()

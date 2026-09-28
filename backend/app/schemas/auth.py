@@ -10,6 +10,10 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+class AccountUpdate(BaseModel):
+    digest_enabled: bool | None = None
+
+
 class PasswordChange(BaseModel):
     current_password: str = Field(min_length=1, max_length=1024)
     new_password: str = Field(min_length=1, max_length=1024)
@@ -28,6 +32,8 @@ class MeOut(BaseModel):
     is_operator: bool
     # An operator issued their password; the screens send them to change it.
     password_change_required: bool = False
+    # Wants the weekly email (app/digest.py).
+    digest_enabled: bool = True
     # Every location this person may open, for the location switcher.
     # Operators get all of them.
     locations: list[LocationOut]

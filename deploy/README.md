@@ -89,7 +89,29 @@ Emails that can't become invoices (unknown address, no PDF) are not dropped:
 they're stored under `inbound/rejected/` and appear in the Audit log
 ("Rejected emails") with the reason.
 
-## 7. Storage
+## 7. The weekly email
+
+Every Monday at 12:00 UTC the `scheduler` service emails each person a
+summary of their locations' week: new price increases, invoices to check,
+the review queue, what arrived, and the biggest savings on the negotiation
+sheet. Nothing is sent to someone whose locations had a quiet week.
+
+It sends through your provider's SMTP relay (`SMTP_*` and `MAIL_FROM` in
+`.env.production`); set up SPF and DKIM for the `MAIL_FROM` domain as your
+provider describes, or the digests will land in spam. People turn it off
+from their account page or the unsubscribe link in any digest. To see what
+someone would get, without sending it:
+
+```
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production \
+  run --rm api python scripts/send_digests.py --preview someone@example.com
+```
+
+(It's written to the `outbox` folder inside the container.) No provider yet:
+set `DIGESTS_ENABLED=false`; the API refuses to start in production with the
+digest on and no SMTP configured, rather than silently sending nothing.
+
+## 8. Storage
 
 `STORAGE_BACKEND=local` keeps PDFs and page images in the `uploads` volume.
 Set `STORAGE_BACKEND=s3` with `S3_BUCKET` (and `S3_ENDPOINT_URL` for R2 or
@@ -110,7 +132,7 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.producti
 Skipping it, invoices recorded earlier still open their original PDF, but
 their page images disappear from the review screen.
 
-## 8. Backups
+## 9. Backups
 
 The database is the thing to back up; everything else can be rebuilt.
 
@@ -132,7 +154,7 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.producti
 
 With local storage, also back up the `uploads` volume (original PDFs).
 
-## 9. Updating
+## 10. Updating
 
 ```
 git pull
