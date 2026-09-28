@@ -116,7 +116,10 @@ function Businesses() {
       {created && (
         <p role="status" className="mt-3 rounded-lg border border-brand-200 border-l-4 border-l-brand-400 bg-brand-50 px-4 py-2.5 text-sm text-brand-950">
           Added <strong>{created.name}</strong>. They forward invoices to{" "}
-          <code className="rounded bg-white px-1.5 py-0.5 font-semibold ring-1 ring-brand-200">{created.inbox_address}</code>. Give
+          <code className="rounded bg-white px-1.5 py-0.5 font-semibold ring-1 ring-brand-200 [overflow-wrap:anywhere]">
+            {created.inbox_address}
+          </code>
+          . Give
           someone access on the Users page.
         </p>
       )}
@@ -226,11 +229,11 @@ function Businesses() {
         <tbody>
           {tenants.map((t) => (
             <tr key={t.id} className="border-b border-gray-100 last:border-0">
-              <td className="py-2.5 pl-4 pr-4 font-medium">{t.name}</td>
+              <td className="min-w-[10rem] py-2.5 pl-4 pr-4 font-medium">{t.name}</td>
               <td className="py-2.5 pr-4">
                 <span className="badge bg-sky-100 text-sky-800">{t.metro}</span>
               </td>
-              <td className="py-2.5 pr-4 font-mono text-xs text-brand-800">{t.inbox_address ?? "—"}</td>
+              <td className="whitespace-nowrap py-2.5 pr-4 font-mono text-xs text-brand-800">{t.inbox_address ?? "—"}</td>
             </tr>
           ))}
         </tbody>

@@ -31,8 +31,11 @@ export default function ActivityList({
           <li key={event.id} className="py-2.5">
             <div className="flex gap-3">
               <span aria-hidden className={`mt-1.5 h-2 w-2 flex-none rounded-full ${EVENT_DOT[eventKind(event)]}`} />
-              <LocalTime iso={event.occurred_at} className="num w-36 flex-none text-gray-400" />
-              <div className="min-w-0">
+              <LocalTime iso={event.occurred_at} className="num w-24 flex-none text-gray-400 sm:w-36" />
+              {/* Events carry email and forwarding addresses, which have no
+                  spaces to wrap at: allowed to break anywhere rather than
+                  run off a phone screen. */}
+              <div className="min-w-0 [overflow-wrap:anywhere]">
                 <span className="font-medium">{actorLabel(event)}</span> {describeEvent(event)}
                 {showLocation && event.tenant_name && (
                   <span className="text-gray-400"> · {event.tenant_name}</span>

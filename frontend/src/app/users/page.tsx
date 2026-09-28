@@ -159,7 +159,7 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
                     {user.name}
                     {user.id === selfId && <span className="ml-1 text-xs font-normal text-gray-400">(you)</span>}
                   </div>
-                  <div className="text-gray-500">{user.email}</div>
+                  <div className="text-gray-500 [overflow-wrap:anywhere]">{user.email}</div>
                   {!user.is_active && <span className="badge mt-1 bg-red-100 uppercase text-red-700">Deactivated</span>}
                 </td>
                 <td className="py-3 pr-4">
@@ -176,9 +176,10 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
                   )}
                 </td>
                 <td className="py-3 pr-4 whitespace-nowrap">{when(user.last_sign_in)}</td>
-                <td className="py-3 text-right whitespace-nowrap">
+                <td className="py-3 text-right">
                   {user.id !== selfId && (
-                    <div className="flex justify-end gap-2 pr-4">
+                    // Wraps rather than running past the card when the table is narrow.
+                    <div className="flex flex-wrap justify-end gap-2 pr-4">
                       {user.is_active && (
                         <button type="button" disabled={busy} onClick={() => resetPassword(user)} className="btn-secondary btn-sm">
                           Reset password
@@ -253,7 +254,7 @@ function LocationAccess({
           disabled={busy}
           value=""
           onChange={(e) => e.target.value && onGrant(e.target.value)}
-          className="input px-1.5 py-0.5 text-xs text-gray-600"
+          className="input max-w-48 px-1.5 py-0.5 text-xs text-gray-600"
         >
           <option value="">+ location</option>
           {grantable.map((l) => (

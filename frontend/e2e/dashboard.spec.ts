@@ -446,8 +446,10 @@ test.describe("weekly email", () => {
     await page.goto("/account/password");
     const toggle = page.getByLabel(/Weekly summary/);
     await expect(toggle).toBeChecked();
+    const saved = page.waitForResponse((r) => r.url().includes("/api/auth/me") && r.request().method() === "PATCH");
     await toggle.uncheck();
     await expect(toggle).not.toBeChecked();
+    expect((await saved).ok()).toBeTruthy();
     await page.reload();
     await expect(page.getByLabel(/Weekly summary/)).not.toBeChecked();
     await page.getByLabel(/Weekly summary/).check();

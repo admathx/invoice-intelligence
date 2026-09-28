@@ -107,15 +107,15 @@ export default function NegotiationPage() {
     <div className="max-w-5xl">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 print:hidden">
         <h1 className="page-title">Negotiation sheet</h1>
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex rounded-lg bg-gray-100 p-1 text-sm">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-3">
+          <div className="flex max-w-full overflow-x-auto rounded-lg bg-gray-100 p-1 text-sm">
             {BASIS_OPTIONS.map((option) => (
               <button
                 key={option.value}
                 title={option.hint}
                 onClick={() => setBasis(option.value)}
                 aria-pressed={basis === option.value}
-                className={`rounded-md px-3 py-1.5 font-medium transition-colors ${
+                className={`whitespace-nowrap rounded-md px-3 py-1.5 font-medium transition-colors ${
                   basis === option.value ? "bg-white text-brand-800 shadow-sm ring-1 ring-brand-300" : "text-gray-600 hover:text-gray-900"
                 }`}
               >
@@ -160,14 +160,18 @@ export default function NegotiationPage() {
               <tbody>
                 {sheet.lines.map((line) => (
                   <tr key={line.canonical_sku_id} className="border-b border-gray-100 last:border-0">
-                    <td className="py-2.5 pl-4 pr-4 font-medium">{line.canonical_sku_name}</td>
-                    <td className="num py-2.5 pr-4 text-right font-medium text-red-600">{unitPrice(line.current_price)}</td>
-                    <td className="py-2.5 pr-4 text-right">
+                    <td className="min-w-[10rem] py-2.5 pl-4 pr-4 font-medium">{line.canonical_sku_name}</td>
+                    <td className="num whitespace-nowrap py-2.5 pr-4 text-right font-medium text-red-600">
+                      {unitPrice(line.current_price)}
+                    </td>
+                    <td className="whitespace-nowrap py-2.5 pr-4 text-right">
                       <div className="num font-medium text-brand-700">{unitPrice(line.target_price)}</div>
                       <TargetEvidence line={line} />
                     </td>
-                    <td className="num py-2.5 pr-4 text-right text-gray-600">{quantity(line.trailing_quantity)}</td>
-                    <td className="num py-2.5 pr-4 text-right text-brand-700">{money(line.recoverable_in_window)}</td>
+                    <td className="num whitespace-nowrap py-2.5 pr-4 text-right text-gray-600">{quantity(line.trailing_quantity)}</td>
+                    <td className="num whitespace-nowrap py-2.5 pr-4 text-right text-brand-700">
+                      {money(line.recoverable_in_window)}
+                    </td>
                     <td className="num py-2.5 pr-4 text-right">
                       <span className="badge bg-brand-100 text-sm text-brand-800">{money(line.annualized_savings)}</span>
                     </td>

@@ -95,7 +95,9 @@ function AuditLog() {
     setCursor(page.next_cursor);
   }
 
-  const select = "input py-1.5";
+  // A select is as wide as its longest option, and location and people names
+  // can be long: capped to the space there is.
+  const select = "input min-w-0 max-w-full py-1.5 sm:max-w-xs";
   return (
     <div className="max-w-4xl">
       <h1 className="page-title">Audit log</h1>

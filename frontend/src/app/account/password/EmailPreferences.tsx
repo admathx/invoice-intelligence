@@ -19,7 +19,9 @@ export default function EmailPreferences({ initiallyEnabled }: { initiallyEnable
     setBusy(true);
     setError(null);
     try {
-      const res = await api("/auth/me", jsonInit("PATCH", { digest_enabled: next }));
+      // keepalive: the box has already moved, so someone may leave the page at
+      // once; the save must still land.
+      const res = await api("/auth/me", { ...jsonInit("PATCH", { digest_enabled: next }), keepalive: true });
       if (!res.ok) {
         setEnabled(!next);
         setError("Couldn't save that. Try again.");

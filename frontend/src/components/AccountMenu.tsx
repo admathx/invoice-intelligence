@@ -26,13 +26,15 @@ export default function AccountMenu({
   }
 
   return (
-    <div className="ml-auto flex flex-none items-center gap-3 whitespace-nowrap text-sm">
+    // Its own full-width row on a phone, where the picker shrinks to fit;
+    // beside the links from there up.
+    <div className="flex w-full min-w-0 items-center gap-3 whitespace-nowrap text-sm sm:ml-auto sm:w-auto sm:flex-none">
       {locations.length > 1 ? (
         <select
           aria-label="Location"
           value={locationId ?? ""}
           onChange={(e) => switchTo(e.target.value)}
-          className="input max-w-48 py-1.5"
+          className="input min-w-0 flex-1 py-1.5 sm:max-w-48 sm:flex-none"
         >
           {locations.map((l) => (
             <option key={l.id} value={l.id}>
@@ -41,9 +43,13 @@ export default function AccountMenu({
           ))}
         </select>
       ) : (
-        <span className="rounded-md bg-brand-50 px-2.5 py-1 font-medium text-brand-800">{locations[0]?.name ?? "No locations"}</span>
+        <span className="min-w-0 truncate rounded-md bg-brand-50 px-2.5 py-1 font-medium text-brand-800">{locations[0]?.name ?? "No locations"}</span>
       )}
-      <a href={CHANGE_PASSWORD_PATH} title="Your account" className="font-medium text-gray-600 hover:text-brand-700">
+      <a
+        href={CHANGE_PASSWORD_PATH}
+        title="Your account"
+        className="min-w-0 max-w-40 truncate font-medium text-gray-600 hover:text-brand-700"
+      >
         {name}
       </a>
       {/* A form, not a click handler: works before hydration (app/logout/route.ts). */}

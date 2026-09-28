@@ -1994,3 +1994,55 @@ Backend **294 passed** (15 new), frontend 29 unit, `tsc` clean, Playwright
 
 ### Gates
 Backend 294, frontend 35 unit (6 new), `tsc` clean, Playwright 13.
+
+## Visual audit of the new theme: spills, overflow and alignment
+
+Every page was measured, not eyeballed, at 1440 / 1280 / 1024 / 768 /
+390px with a Playwright script: horizontal page scroll, anything past the
+viewport (outside deliberate scroll areas), text wider than its own box, and
+anything poking out of its card, table cell, button, badge or list row.
+Stress data: a location and a person with very long names, a 70-character
+product description, a 60-character word with no spaces, a $1.2M line, an
+invoice that doesn't add up, and an empty failed invoice (all removed after).
+Screenshots of each page and width were then reviewed for alignment.
+
+First pass: every page clean from 768px up; **169 findings at phone width**.
+Fixed, to zero:
+- **Header** overflowed every phone page by 7px (location picker + name +
+  sign out); the account row now takes its own line with a picker that
+  shrinks, and the current section scrolls into view in the link row.
+- **Invoice review** was 248px wider than a phone: a fixed 288px page-image
+  column sat beside the table even when there was no image. It's now shown
+  only when there's an image, beside the table from 1280px up (it also
+  clipped the Match and Remove columns at 1024px). An invoice with no lines
+  shows one empty-state box, not a header row over nothing.
+- **Audit log filters** ran 280px past a phone screen: a select is as wide
+  as its longest option, and names can be long. Capped; same for the Users
+  page's location picker.
+- **Long addresses** (emails, forwarding addresses) with no spaces ran off
+  the activity feed; they break anywhere now, and stay on one line inside
+  scrolling tables.
+- **Wrapping mid-value:** dates broke onto three lines ("2026- / 08- /
+  24"), a price's ▲ split from its percentage, table headers wrapped
+  ("PRICE / LB"), a "needs review" badge became two pills, the negotiation
+  basis buttons wrapped their labels. Values, headers and badges no longer
+  wrap; tables scroll instead, and name columns keep a readable minimum.
+- **Users at 768px:** the action buttons pushed Deactivate off the card;
+  they wrap now.
+- **Edit boxes** showed raw stored decimals ("2.0000", "74.5000"); they
+  start as "2", "74.50" and keep sub-cent places only when meaningful
+  ("0.6656"). Edits are still compared as numbers, so nothing reads as a
+  change that isn't.
+
+**Digest at phone width (375px):** each location's box ran 10px past the
+edge (a 100%-wide table plus its border), the ▲ split from its percentage,
+and whole prices crushed product names to three lines. Fixed; measured
+clean at 320 / 375 / 600px.
+
+**One race, found by the test suite:** the optimistic email toggle moved at
+once, so a reload right after could beat the save; the save is sent with
+`keepalive` (it lands even if the page is left) and the test waits for it.
+
+### Gates
+Audit 0 findings across all pages and widths; backend 294, frontend 36
+unit, `tsc` clean, Playwright 13 (twice in a row).

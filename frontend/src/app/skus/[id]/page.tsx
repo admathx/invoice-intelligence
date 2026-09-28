@@ -76,10 +76,10 @@ export default async function SkuDetailPage({ params }: { params: { id: string }
                   : null;
               return (
                 <tr key={i} className="border-b border-gray-100 last:border-0">
-                  <td className="py-2.5 pl-4 pr-4 text-gray-600">{l.invoice_date ?? "—"}</td>
-                  <td className="py-2.5 pr-4">{l.distributor_name}</td>
-                  <td className="py-2.5 pr-4">{l.raw_description}</td>
-                  <td className="num py-2.5 pr-4 text-right">
+                  <td className="whitespace-nowrap py-2.5 pl-4 pr-4 text-gray-600">{l.invoice_date ?? "—"}</td>
+                  <td className="whitespace-nowrap py-2.5 pr-4">{l.distributor_name}</td>
+                  <td className="min-w-[10rem] py-2.5 pr-4">{l.raw_description}</td>
+                  <td className="num whitespace-nowrap py-2.5 pr-4 text-right">
                     <span className="font-medium">{unitPrice(l.normalized_unit_price)}</span>
                     {change !== null && Math.abs(change) >= 0.0005 && (
                       <span className={`ml-2 text-xs font-semibold ${TONE_TEXT[priceChangeTone(change)]}`}>

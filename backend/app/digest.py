@@ -291,17 +291,18 @@ def _button(href: str, label: str) -> str:
 
 def _pill(text: str, fg: str, bg: str) -> str:
     return (
-        f"<span style='display:inline-block;background:{bg};color:{fg};font-weight:700;font-size:12px;"
+        f"<span style='display:inline-block;white-space:nowrap;background:{bg};color:{fg};font-weight:700;font-size:12px;"
         f"padding:2px 8px;border-radius:999px'>{html.escape(text)}</span>"
     )
 
 
 def _sections_html(week: LocationWeek) -> str:
     e = html.escape
+    # A block, not a 100%-wide table: a table's border adds to its width, and
+    # on a phone the box ran past the edge of the email.
     parts = [
-        "<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
-        "style='margin:20px 0 0;border:1px solid #e5e7eb;border-left:4px solid #86efac;border-radius:8px'>"
-        "<tr><td style='padding:16px 18px'>",
+        "<div style='margin:20px 0 0;border:1px solid #e5e7eb;border-left:4px solid #86efac;border-radius:8px;"
+        "padding:16px 18px'>",
         f"<h2 style='font-size:17px;margin:0 0 10px'>{e(week.name)}</h2>",
     ]
 
@@ -312,8 +313,10 @@ def _sections_html(week: LocationWeek) -> str:
         rows = "".join(
             "<tr>"
             f"<td style='padding:4px 12px 4px 0'>{e(p.sku)}</td>"
-            f"<td style='padding:4px 12px 4px 0;color:{_MUTED};white-space:nowrap'>{e(_per(p.before, p.unit))} &rarr; "
-            f"<strong style='color:#111827'>{e(_per(p.now, p.unit))}</strong></td>"
+            # Each price stays whole; the pair may wrap at the arrow, so a
+            # narrow screen doesn't crush the product name instead.
+            f"<td style='padding:4px 12px 4px 0;color:{_MUTED}'><span style='white-space:nowrap'>{e(_per(p.before, p.unit))} &rarr;</span> "
+            f"<strong style='color:#111827;white-space:nowrap'>{e(_per(p.now, p.unit))}</strong></td>"
             f"<td style='padding:4px 0;text-align:right'>{_pill(f'▲ +{p.pct_change:.1%}', _RED_TEXT, _RED_TINT)}</td>"
             "</tr>"
             for p in week.new_increases
@@ -328,7 +331,7 @@ def _sections_html(week: LocationWeek) -> str:
         )
     if week.held_count:
         items = "".join(
-            f"<li style='margin:2px 0'><a href='{e(link(f'/invoices/{h.invoice_id}'))}' style='color:{_GREEN_TEXT};font-weight:600'>"
+            f"<li style='margin:2px 0;overflow-wrap:anywhere'><a href='{e(link(f'/invoices/{h.invoice_id}'))}' style='color:{_GREEN_TEXT};font-weight:600'>"
             f"{e(h.label)}</a></li>"
             for h in week.held
         )
@@ -364,7 +367,7 @@ def _sections_html(week: LocationWeek) -> str:
             f"<table role='presentation' cellpadding='0' cellspacing='0' style='font-size:14px;border-collapse:collapse'>{rows}</table>"
             f"<p style='margin:10px 0 0'>{_button(link('/negotiation'), 'Open the sheet')}</p></div>"
         )
-    parts.append("</td></tr></table>")
+    parts.append("</div>")
     return "".join(parts)
 
 

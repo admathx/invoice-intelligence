@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { money, percent, priceChangeTone, quantity, unitPrice } from "./format";
+import { editableNumber, money, percent, priceChangeTone, quantity, unitPrice } from "./format";
 
 describe("format", () => {
   it("shows totals in dollars and cents with separators", () => {
@@ -25,6 +25,17 @@ describe("format", () => {
     expect(percent("0.2423", { signed: true })).toBe("+24.2%");
     expect(percent("-0.05", { signed: true })).toBe("-5.0%");
     expect(percent("0.5")).toBe("50.0%");
+  });
+
+  it("starts edit boxes without padding zeros, keeping cents on money", () => {
+    expect(editableNumber("74.5000", "money")).toBe("74.50");
+    expect(editableNumber("0.6656", "money")).toBe("0.6656");
+    expect(editableNumber("0.0000", "money")).toBe("0.00");
+    expect(editableNumber("1234567.8900", "money")).toBe("1234567.89");
+    expect(editableNumber("2.0000", "quantity")).toBe("2");
+    expect(editableNumber("2.5000", "quantity")).toBe("2.5");
+    expect(editableNumber(null, "money")).toBe("");
+    expect(editableNumber("not a number", "money")).toBe("not a number");
   });
 
   it("reads a price change from the buyer's side", () => {

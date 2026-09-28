@@ -1,6 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
+import { useEffect, useRef } from "react";
 
 type Item = { href: string; label: string };
 
@@ -39,9 +40,19 @@ function Link({ item, current }: { item: Item; current: boolean }) {
 export default function NavLinks({ operator }: { operator: boolean }) {
   const pathname = usePathname();
   const isCurrent = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
+  const row = useRef<HTMLDivElement>(null);
+
+  // On a phone the row scrolls; bring the current section into view rather
+  // than leaving it off the edge.
+  useEffect(() => {
+    const current = row.current?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (current && row.current && row.current.scrollWidth > row.current.clientWidth) {
+      row.current.scrollLeft = current.offsetLeft - (row.current.clientWidth - current.offsetWidth) / 2;
+    }
+  }, [pathname]);
   return (
     // One scrolling row on narrow screens, rather than wrapping into several.
-    <div data-nav-links className="-mx-2 flex min-w-0 max-w-full flex-auto items-center gap-1 overflow-x-auto px-2 md:mx-0 md:px-0">
+    <div ref={row} data-nav-links className="-mx-2 flex min-w-0 max-w-full flex-auto items-center gap-1 overflow-x-auto px-2 md:mx-0 md:px-0">
       {MAIN.map((item) => (
         <Link key={item.href} item={item} current={isCurrent(item.href)} />
       ))}

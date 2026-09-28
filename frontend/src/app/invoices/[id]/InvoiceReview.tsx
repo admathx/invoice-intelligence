@@ -6,7 +6,7 @@ import { useMemo, useState } from "react";
 import { useLocationId } from "@/components/SessionContext";
 import { api } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
-import { money, quantity, REVIEW_BADGE, STATUS_BADGE, STATUS_LABEL, unitPrice } from "@/lib/format";
+import { editableNumber, money, quantity, REVIEW_BADGE, STATUS_BADGE, STATUS_LABEL, unitPrice } from "@/lib/format";
 
 import AddLineModal from "./AddLineModal";
 
@@ -220,7 +220,12 @@ export default function InvoiceReview({
 
   const failed = new Set(invoice.check.failed_line_numbers);
   const lineValue = (li: LineItem, f: LineField) =>
-    lineDrafts[li.id]?.[f] ?? li[f] ?? "";
+    lineDrafts[li.id]?.[f] ??
+    (f === "quantity"
+      ? editableNumber(li[f], "quantity")
+      : f === "unit_price" || f === "extended_price"
+        ? editableNumber(li[f], "money")
+        : (li[f] ?? ""));
   const setLine =
     (li: LineItem, f: LineField) => (e: React.ChangeEvent<HTMLInputElement>) =>
       setLineDrafts((d) => ({
@@ -228,7 +233,9 @@ export default function InvoiceReview({
         [li.id]: { ...d[li.id], [f]: e.target.value },
       }));
   const textInput = "input px-1.5 py-0.5";
-  const headerValue = (f: HeaderField) => headerDrafts[f] ?? invoice[f] ?? "";
+  const headerValue = (f: HeaderField) =>
+    headerDrafts[f] ??
+    (f === "subtotal" || f === "tax" || f === "total" ? editableNumber(invoice[f], "money") : (invoice[f] ?? ""));
   const moneyInput = "input num w-24 px-1.5 py-0.5 text-right";
 
   return (
@@ -280,11 +287,15 @@ export default function InvoiceReview({
         </p>
       )}
 
-      <div className="flex gap-6">
-        <div className="w-72 flex-none">
-          {invoice.page_image_urls.length > 0 ? (
-            <div className="space-y-3">
-              {invoice.page_image_urls.map((url) => (
+      {/* Side by side where there's room; the page image above the lines on
+          smaller screens (a fixed 288px column beside the table pushed a
+          phone-width page 250px past the screen). */}
+      <div className="flex flex-col gap-6 xl:flex-row">
+        {/* Only when there's an image: an empty 288px column beside the
+            table clipped its last columns at laptop widths. */}
+        {invoice.page_image_urls.length > 0 && (
+          <div className="w-full max-w-sm space-y-3 xl:w-72 xl:flex-none">
+            {invoice.page_image_urls.map((url) => (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   key={url}
@@ -293,13 +304,8 @@ export default function InvoiceReview({
                   className="w-full rounded-lg border border-gray-200 shadow-sm"
                 />
               ))}
-            </div>
-          ) : (
-            <p className="text-sm text-gray-400">
-              No page image available for this invoice.
-            </p>
-          )}
-        </div>
+          </div>
+        )}
 
         <div className="min-w-0 flex-1">
           {editable && (
@@ -346,6 +352,7 @@ export default function InvoiceReview({
             </div>
           )}
 
+          {invoice.line_items.length > 0 && (
           <div className="card overflow-x-auto">
             <table className="w-full border-collapse text-sm">
               <thead className="bg-gray-50">
@@ -376,6 +383,7 @@ export default function InvoiceReview({
                           <>
                             <input
                               aria-label={`Line ${li.line_number} description`}
+                              title={lineValue(li, "raw_description")}
                               value={lineValue(li, "raw_description")}
                               onChange={setLine(li, "raw_description")}
                               className={`${textInput} w-full`}
@@ -390,6 +398,7 @@ export default function InvoiceReview({
                               />
                               <input
                                 aria-label={`Line ${li.line_number} pack size`}
+                                title={lineValue(li, "raw_pack_size")}
                                 placeholder="pack size"
                                 value={lineValue(li, "raw_pack_size")}
                                 onChange={setLine(li, "raw_pack_size")}
@@ -494,8 +503,10 @@ export default function InvoiceReview({
               </tbody>
             </table>
           </div>
+          )}
+          {/* No header row over nothing: one box that says what to do. */}
           {invoice.line_items.length === 0 && (
-            <p className="py-4 text-sm text-gray-500">
+            <p className="rounded-lg border-2 border-dashed border-gray-300 bg-white px-4 py-6 text-center text-sm text-gray-500">
               No line items were detected on this invoice.
               {editable && " Add them from the invoice image."}
             </p>

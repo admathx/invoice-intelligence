@@ -86,3 +86,18 @@ export const REVIEW_BADGE: Record<string, string> = {
 export const STATUS_LABEL: Record<string, string> = {
   needs_review: "needs review",
 };
+
+/** A stored decimal as the starting text of an edit box: no padding zeros
+ *  and no separators (it has to parse back). Money keeps its cents ("74.50",
+ *  "0.00") and any sub-cent places that carry information ("0.6656");
+ *  quantities keep only what's there ("2", "2.5"). The value itself is
+ *  unchanged: edits are compared as numbers. */
+export function editableNumber(value: string | null | undefined, kind: "money" | "quantity"): string {
+  if (value === null || value === undefined) return "";
+  const text = String(value).trim();
+  if (!/^-?\d+(\.\d+)?$/.test(text)) return text;
+  const [whole, fraction = ""] = text.split(".");
+  const trimmed = fraction.replace(/0+$/, "");
+  if (kind === "quantity") return trimmed ? `${whole}.${trimmed}` : whole;
+  return `${whole}.${trimmed.padEnd(2, "0")}`;
+}
