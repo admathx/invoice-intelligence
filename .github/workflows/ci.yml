@@ -10,9 +10,11 @@ on:
     branches: [main]
   pull_request:
 
+# A newer push to a pull request supersedes the run in progress. On main every
+# commit's run finishes: cancelling one there would hide a failure it found.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # The same services docker-compose.yml gives a developer.
@@ -111,6 +113,11 @@ jobs:
           for i in $(seq 30); do curl -sf http://localhost:8000/health && exit 0; sleep 1; done
           cat logs/api.log; exit 1
 
+      # The queue path the other tests never touch: an upload through the
+      # running API, extracted by the running worker (fake extractor: no key).
+      - name: Smoke (upload -> queue -> worker -> extracted)
+        run: PYTHONPATH=backend backend/.venv/bin/python backend/scripts/smoke.py
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -120,6 +127,20 @@ jobs:
         working-directory: frontend
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
+
+      # The production build, served the way the Docker image serves it (not
+      # `next dev`, which compiles each page on first visit: slow and flaky
+      # on a cold runner, and not what users get). Playwright reuses it.
+      - name: Build and start the dashboard
+        working-directory: frontend
+        env:
+          API_BASE: http://localhost:8000
+        run: |
+          npm run build
+          cp -r .next/static .next/standalone/.next/static
+          PORT=3001 HOSTNAME=0.0.0.0 nohup node .next/standalone/server.js > ../logs/frontend.log 2>&1 &
+          for i in $(seq 30); do curl -sf -o /dev/null http://localhost:3001/login && exit 0; sleep 1; done
+          cat ../logs/frontend.log; exit 1
 
       - name: Playwright
         working-directory: frontend

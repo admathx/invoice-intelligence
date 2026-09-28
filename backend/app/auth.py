@@ -102,6 +102,15 @@ def prune_sessions(db: Session) -> int:
     ).rowcount
 
 
+def rotate_session(db: Session, session: UserSession) -> str:
+    """Give a live session a new token and return it (the old one stops
+    working). After a password change, whoever else holds a copy of this
+    browser's cookie is out too, not only the other sessions."""
+    token = secrets.token_urlsafe(32)
+    db.execute(update(UserSession).where(UserSession.id == session.id).values(token_hash=_token_hash(token)))
+    return token
+
+
 def revoke_session(db: Session, token: str) -> None:
     session = db.scalar(select(UserSession).where(UserSession.token_hash == _token_hash(token)))
     if session is not None and session.revoked_at is None:
@@ -133,19 +142,26 @@ def user_for_token(db: Session, token: str | None) -> User | None:
 
 
 PASSWORD_CHANGE_REQUIRED = "password change required"
-# What someone holding an operator-issued password may do before replacing
-# it: see who they are, replace it, or leave.
-_ALLOWED_BEFORE_PASSWORD_CHANGE = {"/auth/me", "/auth/password", "/auth/logout"}
 
 
-def current_user(request: Request, db: Session = Depends(get_db)) -> User:
+def signed_in_user(request: Request, db: Session = Depends(get_db)) -> User:
+    """Whoever the session cookie belongs to, even if they still have to
+    replace an operator-issued password. Only for the endpoints that exist to
+    let them do that (who am I, change password); everything else uses
+    current_user."""
     user = user_for_token(db, request.cookies.get(SESSION_COOKIE))
     if user is None:
         raise HTTPException(status_code=401, detail="sign in required")
+    return user
+
+
+def current_user(user: User = Depends(signed_in_user)) -> User:
     # Enforced here, not in the screens: every endpoint that acts as a user
     # comes through this dependency (get_db_for_tenant and require_operator
     # included), so none can be reached with a password someone else has seen.
-    if user.password_change_required and request.url.path not in _ALLOWED_BEFORE_PASSWORD_CHANGE:
+    # Which endpoints are exempt is decided by which dependency they declare,
+    # not by matching URL paths, which a proxy prefix would silently change.
+    if user.password_change_required:
         raise HTTPException(status_code=403, detail=PASSWORD_CHANGE_REQUIRED)
     return user
 

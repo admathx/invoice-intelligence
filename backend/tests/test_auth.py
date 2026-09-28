@@ -910,3 +910,69 @@ def test_a_new_password_must_be_long_and_actually_new(db):
     assert same.status_code == 422
     short = client.post("/auth/password", json={"current_password": PASSWORD, "new_password": "short"}, headers=CSRF)
     assert short.status_code == 422 and "12 characters" in short.json()["detail"]
+
+
+def test_a_password_set_from_the_command_line_must_be_replaced_unless_permanent(db):
+    """The person at the terminal knows it, as an operator on the Users
+    screen would; only the owner's own (--permanent) is exempt."""
+    import subprocess
+    import sys
+
+    user = _user(db)
+    for flags, expected in (([], True), (["--permanent"], False)):
+        subprocess.run(
+            [sys.executable, "scripts/manage_users.py", "set-password", user.email, *flags],
+            input="typed by the operator\n",
+            text=True,
+            check=True,
+            capture_output=True,
+            env={**__import__("os").environ, "PYTHONPATH": "."},
+        )
+        db.expire_all()
+        assert db.get(User, user.id).password_change_required is expected
+    db.execute(delete(AuditEvent).where(AuditEvent.entity_id == user.id))
+    db.commit()
+
+
+def test_a_wrong_current_password_is_logged_as_that_user_not_an_anonymous_sign_in(db):
+    user = _user(db)
+    client = _signed_in(user)
+    client.post("/auth/password", json={"current_password": "nope", "new_password": "x" * 20}, headers=CSRF)
+    event = db.scalar(select(AuditEvent).where(AuditEvent.entity_id == user.id, AuditEvent.action == "auth.password_change_failed"))
+    assert event is not None and event.actor_user_id == user.id
+
+
+def test_changing_your_password_gives_this_browser_a_new_token(db):
+    """A copy of the old cookie (someone at a shared PC) stops working too."""
+    user = _user(db)
+    client = _signed_in(user)
+    old_token = client.cookies[SESSION_COOKIE]
+    resp = client.post("/auth/password", json={"current_password": PASSWORD, "new_password": "brand new passphrase"}, headers=CSRF)
+    assert resp.status_code == 204
+    assert client.cookies[SESSION_COOKIE] != old_token
+    assert client.get("/auth/me").status_code == 200
+
+    copy = TestClient(app)
+    copy.cookies.set(SESSION_COOKIE, old_token)
+    assert copy.get("/auth/me").status_code == 401
+
+
+def test_a_flagged_user_can_still_change_their_password_behind_a_path_prefix(db):
+    """Served under a prefix, the ASGI path carries it (scope path
+    "/api/auth/me" with root_path "/api", what current servers send), so
+    request.url.path is "/api/auth/me". The exemption used to be a list of
+    literal paths, so a user who had to change their password couldn't reach
+    the change itself."""
+    tenant = _tenant(db, "Prefixed")
+    operator = _signed_in(_user(db, operator=True))
+    email, issued = _issued_login(db, operator, tenant)
+
+    prefixed = TestClient(app, root_path="/api")
+    assert prefixed.post("/api/auth/login", json={"email": email, "password": issued}, headers=CSRF).status_code == 200
+    assert prefixed.get("/api/auth/me").status_code == 200
+    assert prefixed.get("/api/invoices", params={"tenant_id": str(tenant.id)}).status_code == 403
+    changed = prefixed.post(
+        "/api/auth/password", json={"current_password": issued, "new_password": "mine and mine alone"}, headers=CSRF
+    )
+    assert changed.status_code == 204
+    assert prefixed.get("/api/invoices", params={"tenant_id": str(tenant.id)}).status_code == 200

@@ -51,10 +51,12 @@ after that, operators add everyone else on the Users page.
 
 ```
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production \
-  run --rm api python scripts/manage_users.py create you@yourcompany.com "Your Name" --operator
+  run --rm api python scripts/manage_users.py create you@yourcompany.com "Your Name" --operator --permanent
 ```
 
-It prompts for the password. Then sign in at `https://DOMAIN`.
+It prompts for the password (`--permanent`: it's your own, so you aren't
+asked to replace it at first sign-in, as someone given a password would be).
+Then sign in at `https://DOMAIN`.
 
 ## 5. Onboard a restaurant
 

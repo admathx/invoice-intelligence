@@ -8,6 +8,12 @@
  */
 export const CSRF_HEADERS = { "X-Requested-With": "invoice-intelligence" } as const;
 
+/** Where someone holding an operator-issued password goes to replace it,
+ *  and how the API says that's what's needed (backend app/auth.py
+ *  PASSWORD_CHANGE_REQUIRED). One definition for every page that redirects. */
+export const CHANGE_PASSWORD_PATH = "/account/password";
+export const PASSWORD_CHANGE_REQUIRED = "password change required";
+
 /** Where a signed-out user is sent, remembering where they were. */
 export function loginPath(next: string): string {
   return `/login?next=${encodeURIComponent(next)}`;
@@ -38,7 +44,7 @@ export async function api(path: string, init: RequestInit = {}): Promise<Respons
         .json()
         .then((body) => body?.detail)
         .catch(() => null);
-      if (detail === "password change required") window.location.assign("/account/password");
+      if (detail === PASSWORD_CHANGE_REQUIRED) window.location.assign(CHANGE_PASSWORD_PATH);
     }
   }
   return res;

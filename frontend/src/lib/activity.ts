@@ -98,6 +98,10 @@ export function describeEvent(event: AuditEvent): string {
       return `removed ${show(d.email)}'s access to ${show(d.location)}`;
     case "user.updated":
       return describeUserUpdate(d);
+    case "user.password_changed":
+      return "changed their password";
+    case "auth.password_change_failed":
+      return "entered the wrong current password while changing it";
     case "user.password_reset":
       return `reset ${show(d.email)}'s password`;
     case "account.created":

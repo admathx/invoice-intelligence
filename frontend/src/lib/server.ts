@@ -8,6 +8,8 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
 
+import { CHANGE_PASSWORD_PATH } from "./api";
+
 export const BACKEND = process.env.API_BASE ?? "http://localhost:8000";
 export const SESSION_COOKIE = "ii_session";
 /** Which of the user's locations the screens show. Only a preference: the API
@@ -25,7 +27,7 @@ export type Me = {
   locations: Location[];
 };
 
-export const CHANGE_PASSWORD_PATH = "/account/password";
+
 export type Session = { user: Me; locationId: string | null };
 
 function sessionCookieHeader(): Record<string, string> {

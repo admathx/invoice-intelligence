@@ -3,11 +3,9 @@
 import { usePathname } from "next/navigation";
 import { createContext, useContext, useEffect } from "react";
 
-import { loginPath } from "@/lib/api";
+import { CHANGE_PASSWORD_PATH, loginPath } from "@/lib/api";
 import type { Session } from "@/lib/server";
 
-// Duplicated from lib/server (a server-only module) rather than imported.
-const CHANGE_PASSWORD_PATH = "/account/password";
 
 const SessionContext = createContext<Session | null>(null);
 

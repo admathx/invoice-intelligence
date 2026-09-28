@@ -12,11 +12,12 @@ from app.auth import (
     SESSION_COOKIE,
     accessible_tenant_ids,
     create_session,
-    current_user,
     normalize_email,
     prune_sessions,
     revoke_session,
+    rotate_session,
     session_for_token,
+    signed_in_user,
     user_for_token,
     verify_password,
 )
@@ -30,6 +31,11 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 LOGIN_FAILED = "auth.login_failed"
 LOGIN_SUCCEEDED = "auth.login"
+# A signed-in user entering the wrong current password to change it. Counted
+# with failed sign-ins toward the lockout (both are guesses at the password),
+# but recorded as what it was, and by whom.
+PASSWORD_CHANGE_FAILED = "auth.password_change_failed"
+_PASSWORD_GUESSES = (LOGIN_FAILED, PASSWORD_CHANGE_FAILED)
 
 
 def _me(db: Session, user: User) -> MeOut:
@@ -60,10 +66,27 @@ def _recent_failures(db: Session, email: str, user: User | None) -> int:
             since = last_success
     return db.scalar(
         select(func.count(AuditEvent.id)).where(
-            AuditEvent.action == LOGIN_FAILED,
+            AuditEvent.action.in_(_PASSWORD_GUESSES),
             AuditEvent.details["email"].astext == email,
             AuditEvent.occurred_at > since,
         )
+    )
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        # The cookie lives as long as the session could (the absolute cap);
+        # whether it's still valid, idle expiry included, is the server's call
+        # on every request. Refreshing the cookie itself wouldn't work anyway:
+        # most pages render on the server, whose responses to its own API
+        # calls never reach the browser.
+        max_age=settings.session_max_age_days * 24 * 3600,
+        httponly=True,
+        secure=settings.session_cookie_secure,
+        samesite="lax",
+        path="/",
     )
 
 
@@ -97,20 +120,7 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
     token = create_session(db, user)
     audit.record(db, user, LOGIN_SUCCEEDED, "user", user.id)
     db.commit()
-    response.set_cookie(
-        SESSION_COOKIE,
-        token,
-        # The cookie lives as long as the session could (the absolute cap);
-        # whether it's still valid, idle expiry included, is the server's call
-        # on every request. Refreshing the cookie itself wouldn't work anyway:
-        # most pages render on the server, whose responses to its own API
-        # calls never reach the browser.
-        max_age=settings.session_max_age_days * 24 * 3600,
-        httponly=True,
-        secure=settings.session_cookie_secure,
-        samesite="lax",
-        path="/",
-    )
+    _set_session_cookie(response, token)
     return _me(db, user)
 
 
@@ -129,7 +139,7 @@ def logout(request: Request, db: Session = Depends(get_db)) -> Response:
 
 
 @router.get("/me", response_model=MeOut)
-def me(user: User = Depends(current_user), db: Session = Depends(get_db)) -> MeOut:
+def me(user: User = Depends(signed_in_user), db: Session = Depends(get_db)) -> MeOut:
     return _me(db, user)
 
 
@@ -147,7 +157,7 @@ def change_password(body: PasswordChange, request: Request, db: Session = Depend
     # 422, not 401: the session is fine, only the typed password is wrong,
     # and a 401 would send the screen to sign-in.
     if not verify_password(user, body.current_password):
-        audit.record(db, None, LOGIN_FAILED, "user", user.id, email=user.email, during="password change")
+        audit.record(db, user, PASSWORD_CHANGE_FAILED, "user", user.id, email=user.email)
         db.commit()
         raise HTTPException(status_code=422, detail="current password is incorrect")
     if body.new_password == body.current_password:
@@ -156,5 +166,11 @@ def change_password(body: PasswordChange, request: Request, db: Session = Depend
         user_service.change_own_password(db, user, session.id, body.new_password)
     except user_service.UserError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # This browser stays signed in, on a new token: a copy of the old cookie
+    # (the shared-PC case the current-password check is for) stops working
+    # along with every other session.
+    token = rotate_session(db, session)
     db.commit()
-    return Response(status_code=204)
+    response = Response(status_code=204)
+    _set_session_cookie(response, token)
+    return response

@@ -1876,3 +1876,34 @@ that fresh database; the production build compiles. Setup takes about a
 minute (corpus 25 s, analytics 30 s). `e2e_fixture.py pick-tenant` chooses
 the location CI tests in; `E2E_PORT` lets a second Playwright run sit beside
 a dev server.
+
+## Review of sessions, passwords and CI (9 findings, all fixed)
+
+1. **A password change didn't lock out a copied cookie.** Other sessions
+   ended, but this browser kept its token, so someone holding a copy of it
+   (the shared-PC case the current-password check exists for) stayed in. The
+   current session now gets a new token on the change.
+2. **The must-change exemption matched URL text.** Served under a prefix,
+   the ASGI path carries it (`/api/auth/me`), so a flagged user would have
+   been refused even the change endpoint, permanently. Exemption is now by
+   dependency: `signed_in_user` for who-am-I and the change, `current_user`
+   (enforcing) for everything else. The test fails on the old code (403).
+3. **Command-line passwords weren't must-change,** though the person at the
+   terminal knows them just as an operator on the Users screen does. Now
+   they are; `--permanent` for your own (the first operator, per the guide).
+4. A wrong current password during a change was logged as an anonymous
+   failed sign-in. Now `auth.password_change_failed`, attributed to the
+   user, and still counted toward the lockout.
+5. CI no longer cancels a run on `main` when a newer commit lands (a
+   cancelled run could hide a failure); only superseded PR runs.
+6. CI's Playwright suite now runs against the production build served as the
+   Docker image serves it, not `next dev` (cold per-page compiles, and not
+   what users get). Rehearsed locally: 11/11.
+7. The change-password path and the API's "password change required" detail
+   are defined once (`lib/api.ts`), not in four files.
+8. Password events read as sentences in Activity and the Audit log.
+9. CI now runs `smoke.py` against the running API and worker: an upload
+   queued, extracted by the worker (fake extractor), the one path nothing
+   else in CI exercised.
+
+Backend **279 passed**, frontend 29 unit, Playwright 11.

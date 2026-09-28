@@ -75,6 +75,13 @@ describe("activity", () => {
     ).toBe("added this location (Austin, TX); invoices forward to x@invoices.example.com");
   });
 
+  it("tells a password change from a sign-in", () => {
+    expect(describeEvent(event({ action: "user.password_changed", actor_name: "Ana" }))).toBe("changed their password");
+    expect(describeEvent(event({ action: "auth.password_change_failed", actor_name: "Ana" }))).toBe(
+      "entered the wrong current password while changing it",
+    );
+  });
+
   it("says why an email didn't become invoices", () => {
     expect(
       describeEvent(event({ action: "email.rejected", details: { reason: "no PDF attachment (attachments: none)" } })),

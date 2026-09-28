@@ -1,5 +1,6 @@
 "use client";
 
+import { CHANGE_PASSWORD_PATH } from "@/lib/api";
 import type { Location } from "@/lib/server";
 
 const LOCATION_COOKIE = "ii_location";
@@ -42,7 +43,7 @@ export default function AccountMenu({
       ) : (
         <span className="text-gray-600">{locations[0]?.name ?? "No locations"}</span>
       )}
-      <a href="/account/password" title="Change your password" className="text-gray-400 hover:text-gray-900">
+      <a href={CHANGE_PASSWORD_PATH} title="Change your password" className="text-gray-400 hover:text-gray-900">
         {name}
       </a>
       {/* A form, not a click handler: works before hydration (app/logout/route.ts). */}

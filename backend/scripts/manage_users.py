@@ -1,10 +1,10 @@
 """Create users and manage their access from the command line. Operators can
 do the same from the Users screen; both go through app/users.py.
 
-    python scripts/manage_users.py create EMAIL "Full Name" [--operator] [--location TENANT_ID ...]
+    python scripts/manage_users.py create EMAIL "Full Name" [--operator] [--location TENANT_ID ...] [--permanent]
     python scripts/manage_users.py grant EMAIL TENANT_ID
     python scripts/manage_users.py revoke EMAIL TENANT_ID
-    python scripts/manage_users.py set-password EMAIL
+    python scripts/manage_users.py set-password EMAIL [--permanent]
     python scripts/manage_users.py deactivate EMAIL
     python scripts/manage_users.py prune-sessions
     python scripts/manage_users.py list
@@ -12,6 +12,11 @@ do the same from the Users screen; both go through app/users.py.
 Passwords are prompted for (never taken as an argument, which would land in
 shell history). Pipe one in on stdin to script it. This is how the first
 operator gets created, since the screen needs an operator to sign in.
+
+A password set here is one the person at the terminal knows, so by default
+its owner must replace it at their first sign-in, exactly as with one issued
+on the Users screen. --permanent skips that when it IS the owner's own
+password, as when you create your own login.
 
 Every change is recorded in the audit trail as a system action, since the
 person at this terminal isn't a signed-in user.
@@ -54,6 +59,7 @@ def cmd_create(db, args) -> str:
         password=_read_password(),
         is_operator=args.operator,
         tenant_ids=[uuid.UUID(t) for t in args.location],
+        must_change=not args.permanent,
     )
     return f"created {user.email}{' (operator)' if user.is_operator else ''} with access to {len(args.location)} location(s)"
 
@@ -72,8 +78,9 @@ def cmd_revoke(db, args) -> str:
 
 def cmd_set_password(db, args) -> str:
     user = _user(db, args.email)
-    user_service.set_password(db, None, user, _read_password())
-    return f"password changed for {user.email}; existing sessions signed out"
+    user_service.set_password(db, None, user, _read_password(), must_change=not args.permanent)
+    note = "" if args.permanent else "; they'll be asked to replace it when they next sign in"
+    return f"password changed for {user.email}; existing sessions signed out{note}"
 
 
 def cmd_deactivate(db, args) -> str:
@@ -116,12 +123,15 @@ def main() -> None:
     create.add_argument("name")
     create.add_argument("--operator", action="store_true")
     create.add_argument("--location", action="append", default=[], metavar="TENANT_ID")
+    create.add_argument("--permanent", action="store_true", help="it's the owner's own password; don't ask them to replace it")
     for name in ("grant", "revoke"):
         p = sub.add_parser(name)
         p.add_argument("email")
         p.add_argument("tenant_id")
-    for name in ("set-password", "deactivate"):
-        sub.add_parser(name).add_argument("email")
+    set_password = sub.add_parser("set-password")
+    set_password.add_argument("email")
+    set_password.add_argument("--permanent", action="store_true", help="it's the owner's own password; don't ask them to replace it")
+    sub.add_parser("deactivate").add_argument("email")
     sub.add_parser("prune-sessions")
     sub.add_parser("list")
 
