@@ -104,6 +104,16 @@ class Settings(BaseSettings):
     # 12:00 UTC, which is morning across the US.
     digest_weekday: int = 0
     digest_hour_utc: int = 12
+    # Price-increase emails (app/alert_emails.py): sent within minutes of a
+    # price alert opening, for increases of at least this much. Smaller ones
+    # wait for the weekly digest.
+    alert_emails_enabled: bool = True
+    alert_email_min_pct_change: float = 0.10
+    # "Forgot your password?" (app/api/auth.py): how long an emailed link
+    # works, and how many one address can be sent per hour.
+    password_reset_enabled: bool = True
+    password_reset_ttl_minutes: int = 60
+    password_reset_max_per_hour: int = 3
 
     @property
     def signing_key(self) -> bytes:
@@ -121,8 +131,22 @@ class Settings(BaseSettings):
                 problems.append("SECRET_KEY must be set (32+ characters): it signs unsubscribe links")
             if not self.public_base_url.startswith("https://"):
                 problems.append("PUBLIC_BASE_URL must be https (links in emails point there)")
-            if self.digests_enabled and self.mail_backend != "smtp":
-                problems.append("digests need MAIL_BACKEND=smtp (or set DIGESTS_ENABLED=false)")
+            if self.mail_backend != "smtp":
+                # Outbox mail in production is mail written to the server's
+                # disk and never delivered, with nothing to say so.
+                needing = [
+                    name
+                    for name, on in (
+                        ("DIGESTS_ENABLED", self.digests_enabled),
+                        ("ALERT_EMAILS_ENABLED", self.alert_emails_enabled),
+                        ("PASSWORD_RESET_ENABLED", self.password_reset_enabled),
+                    )
+                    if on
+                ]
+                if needing:
+                    problems.append(
+                        "sending email needs MAIL_BACKEND=smtp (or set " + ", ".join(f"{n}=false" for n in needing) + ")"
+                    )
             if problems:
                 raise ValueError("refusing to start with APP_ENV=production: " + "; ".join(problems))
         return self

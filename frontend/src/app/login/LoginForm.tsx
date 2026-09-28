@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import AuthShell from "@/components/AuthShell";
 import { CSRF_HEADERS } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
 import { useHydrated } from "@/lib/useHydrated";
@@ -40,16 +41,7 @@ export default function LoginForm({ next }: { next: string }) {
 
   const input = "input w-full";
   return (
-    <div className="mx-auto mt-24 max-w-sm">
-      <div className="mb-6 flex items-center gap-3">
-        <span aria-hidden className="grid h-10 w-10 place-items-center rounded-lg bg-brand-400 font-bold text-brand-950">
-          II
-        </span>
-        <div>
-          <h1 className="text-xl font-semibold">Invoice Intelligence</h1>
-          <p className="text-sm text-gray-500">Sign in to your account</p>
-        </div>
-      </div>
+    <AuthShell subtitle="Sign in to your account">
       <form onSubmit={submit} className="card overflow-hidden border-t-4 border-t-brand-400 p-6">
         {/* Disabled until interactive: see useHydrated. */}
         <fieldset disabled={!hydrated} className="space-y-4">
@@ -90,6 +82,12 @@ export default function LoginForm({ next }: { next: string }) {
           </button>
         </fieldset>
       </form>
-    </div>
+      {/* Outside the form's labels, so the field is still named "Password". */}
+      <p className="mt-4 text-center text-sm">
+        <a href="/forgot-password" className="link">
+          Forgot your password?
+        </a>
+      </p>
+    </AuthShell>
   );
 }

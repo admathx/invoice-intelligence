@@ -47,8 +47,9 @@ export function describeChanges(changes: Record<string, Change> | undefined): st
 
 export function actorLabel(event: AuditEvent): string {
   if (event.actor_name || event.actor_email) return (event.actor_name || event.actor_email)!;
-  // No actor on a failed sign-in means nobody got in, not that the system acted.
-  return event.action === "auth.login_failed" ? "Someone" : "System";
+  // No actor on a failed sign-in (or a reset request) means nobody got in,
+  // not that the system acted.
+  return event.action === "auth.login_failed" || event.action === "auth.password_reset_requested" ? "Someone" : "System";
 }
 
 const LINE = (d: Record<string, unknown>) => (d.line_number ? `line ${d.line_number}` : "a line");
@@ -59,7 +60,11 @@ export function describeEvent(event: AuditEvent): string {
   const d = event.details;
   switch (event.action) {
     case "invoice.uploaded":
-      return `uploaded ${show(d.filename)}`;
+      return typeof d.photo_count === "number"
+        ? `uploaded ${d.photo_count} photo${d.photo_count === 1 ? "" : "s"} of a paper invoice`
+        : `uploaded ${show(d.filename)}`;
+    case "invoice.exported":
+      return `exported ${d.kind === "line-items" ? "line items" : "invoices"} to a spreadsheet (${exportPeriod(d)}, ${show(d.rows)} rows)`;
     case "invoice.received_by_email":
       return `received ${show(d.filename)} by email`;
     case "invoice.extracted":
@@ -104,6 +109,18 @@ export function describeEvent(event: AuditEvent): string {
       return "entered the wrong current password while changing it";
     case "user.password_reset":
       return `reset ${show(d.email)}'s password`;
+    case "auth.password_reset_requested":
+      return d.sent ? `asked for a password reset link for ${show(d.email)}` : `asked for a password reset link for ${show(d.email)} (none sent)`;
+    case "user.password_reset_by_email":
+      return "chose a new password from an emailed link";
+    case "user.digest_subscribed":
+      return "turned the weekly summary on";
+    case "user.digest_unsubscribed":
+      return "turned the weekly summary off";
+    case "user.alert_emails_subscribed":
+      return "turned price-increase emails on";
+    case "user.alert_emails_unsubscribed":
+      return "turned price-increase emails off";
     case "account.created":
       return `created the business ${show(d.name)}`;
     case "tenant.created":
@@ -115,6 +132,12 @@ export function describeEvent(event: AuditEvent): string {
     default:
       return event.action.replaceAll("_", " ").replaceAll(".", ": ");
   }
+}
+
+function exportPeriod(d: Record<string, unknown>): string {
+  if (!d.start && !d.end) return "all dates";
+  if (d.start && d.end) return `${d.start} to ${d.end}`;
+  return d.start ? `from ${d.start}` : `up to ${d.end}`;
 }
 
 function describeUserUpdate(d: Record<string, unknown>): string {

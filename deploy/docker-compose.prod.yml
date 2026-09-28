@@ -83,8 +83,9 @@ services:
       redis:
         condition: service_healthy
 
-  # Sends the weekly digest when it's due (scripts/digest_scheduler.py).
-  # Idempotent per person per week, so restarts and redeploys are safe.
+  # Sends price-increase emails as alerts open, and the weekly digest when
+  # it's due (scripts/digest_scheduler.py).
+  # Both are idempotent, so restarts and redeploys are safe.
   scheduler:
     <<: *backend
     command: ["python", "scripts/digest_scheduler.py"]

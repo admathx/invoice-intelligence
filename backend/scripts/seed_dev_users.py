@@ -61,6 +61,7 @@ def upsert_login(
         # Back to defaults, like the password: a run that stopped halfway
         # (a failed test that had just unsubscribed) mustn't shape the next.
         user.digest_enabled = True
+        user.alert_emails_enabled = True
     for tenant_id in tenant_ids:
         grant_access(db, None, user, tenant_id)
     db.commit()

@@ -102,3 +102,36 @@ describe("activity", () => {
     expect(describeEvent(event({ action: "vendor.renamed_thing" }))).toBe("vendor: renamed thing");
   });
 });
+
+describe("describing the newer events", () => {
+  const event = (action: string, details: Record<string, unknown>): AuditEvent => ({
+    id: "1",
+    occurred_at: "2026-09-28T12:00:00Z",
+    actor_name: null,
+    actor_email: null,
+    action,
+    entity_type: "invoice",
+    entity_id: null,
+    details,
+  });
+
+  it("says a photo upload was photos", () => {
+    expect(describeEvent(event("invoice.uploaded", { filename: "IMG_1.jpg", photo_count: 2 }))).toBe(
+      "uploaded 2 photos of a paper invoice",
+    );
+    expect(describeEvent(event("invoice.uploaded", { filename: "inv.pdf" }))).toBe("uploaded inv.pdf");
+  });
+
+  it("names what was exported and for when", () => {
+    expect(describeEvent(event("invoice.exported", { kind: "line-items", start: "2026-05-01", end: "2026-05-31", rows: 40 }))).toBe(
+      "exported line items to a spreadsheet (2026-05-01 to 2026-05-31, 40 rows)",
+    );
+    expect(describeEvent(event("invoice.exported", { kind: "invoices", rows: 3 }))).toBe(
+      "exported invoices to a spreadsheet (all dates, 3 rows)",
+    );
+  });
+
+  it("credits an anonymous reset request to someone, not the system", () => {
+    expect(actorLabel(event("auth.password_reset_requested", { email: "a@b.c", sent: false }))).toBe("Someone");
+  });
+});

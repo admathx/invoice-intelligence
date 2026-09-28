@@ -12,10 +12,24 @@ class LoginRequest(BaseModel):
 
 class AccountUpdate(BaseModel):
     digest_enabled: bool | None = None
+    alert_emails_enabled: bool | None = None
 
 
 class PasswordChange(BaseModel):
     current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=1, max_length=1024)
+
+
+class PasswordResetRequest(BaseModel):
+    email: str = Field(min_length=1, max_length=320)
+
+
+class PasswordResetCheck(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
+
+
+class PasswordResetComplete(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
     new_password: str = Field(min_length=1, max_length=1024)
 
 
@@ -34,6 +48,10 @@ class MeOut(BaseModel):
     password_change_required: bool = False
     # Wants the weekly email (app/digest.py).
     digest_enabled: bool = True
+    # Wants an email the day a big price increase shows up (app/alert_emails.py).
+    alert_emails_enabled: bool = True
+    # How big an increase that is (0.10 = 10%), for the account page to say.
+    alert_email_min_pct_change: float = 0.10
     # Every location this person may open, for the location switcher.
     # Operators get all of them.
     locations: list[LocationOut]

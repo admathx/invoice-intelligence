@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app import audit
 from app.auth import hash_password, normalize_email
-from app.models import Tenant, TenantMembership, User, UserSession
+from app.models import PasswordResetToken, Tenant, TenantMembership, User, UserSession
 
 MIN_PASSWORD_LENGTH = 12
 
@@ -35,7 +35,7 @@ def generate_password() -> str:
     return secrets.token_urlsafe(12)
 
 
-def _check_password(password: str) -> None:
+def check_new_password(password: str) -> None:
     if len(password) < MIN_PASSWORD_LENGTH:
         raise UserError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
 
@@ -45,6 +45,17 @@ def revoke_sessions(db: Session, user: User) -> None:
         update(UserSession)
         .where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None))
         .values(revoked_at=datetime.now(timezone.utc))
+    )
+
+
+def end_reset_links(db: Session, user: User) -> None:
+    """A password set any other way ends the emailed "forgot your password"
+    links still outstanding (app/password_reset.py): they were for replacing
+    the password that just went."""
+    db.execute(
+        update(PasswordResetToken)
+        .where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None))
+        .values(used_at=datetime.now(timezone.utc))
     )
 
 
@@ -75,7 +86,7 @@ def create_user(
         raise UserError("enter an email address")
     if not name:
         raise UserError("enter a name")
-    _check_password(password)
+    check_new_password(password)
     if db.scalar(select(User.id).where(User.email == email)):
         raise UserError(f"{email} already has a login", conflict=True)
     tenants = _tenants(db, list(tenant_ids))
@@ -158,10 +169,11 @@ def update_user(
 def set_password(db: Session, actor: User | None, user: User, password: str, *, must_change: bool = False) -> None:
     """Also signs the user out everywhere: whoever knew the old password, or
     holds a session opened with it, is out. must_change as in create_user."""
-    _check_password(password)
+    check_new_password(password)
     user.password_hash = hash_password(password)
     user.password_change_required = must_change
     revoke_sessions(db, user)
+    end_reset_links(db, user)
     audit.record(db, actor, "user.password_reset", "user", user.id, email=user.email)
 
 
@@ -170,7 +182,7 @@ def change_own_password(db: Session, user: User, current_session_id: uuid.UUID, 
     verified by the caller). Their other sessions end; the one they're using
     stays, so changing a password doesn't sign you out of the page you did
     it on."""
-    _check_password(new_password)
+    check_new_password(new_password)
     user.password_hash = hash_password(new_password)
     user.password_change_required = False
     db.execute(
@@ -178,4 +190,5 @@ def change_own_password(db: Session, user: User, current_session_id: uuid.UUID, 
         .where(UserSession.user_id == user.id, UserSession.id != current_session_id, UserSession.revoked_at.is_(None))
         .values(revoked_at=datetime.now(timezone.utc))
     )
+    end_reset_links(db, user)
     audit.record(db, user, "user.password_changed", "user", user.id, email=user.email)

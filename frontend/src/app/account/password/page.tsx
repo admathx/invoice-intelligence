@@ -17,7 +17,12 @@ export default async function ChangePasswordPage() {
     <div className="space-y-8">
       <ChangePasswordForm required={user.password_change_required} email={user.email} />
       {/* After the password is theirs: nothing else is reachable before that. */}
-      {!user.password_change_required && <EmailPreferences initiallyEnabled={user.digest_enabled} />}
+      {!user.password_change_required && (
+        <EmailPreferences
+          initial={{ digest_enabled: user.digest_enabled, alert_emails_enabled: user.alert_emails_enabled }}
+          alertThreshold={user.alert_email_min_pct_change}
+        />
+      )}
     </div>
   );
 }

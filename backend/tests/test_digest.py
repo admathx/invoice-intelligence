@@ -404,4 +404,9 @@ def test_production_needs_a_signing_key_and_a_real_mail_relay():
         Settings(**{**good, "secret_key": ""})
     with pytest.raises(ValidationError, match="MAIL_BACKEND"):
         Settings(**{**good, "mail_backend": "outbox"})
-    assert Settings(**{**good, "mail_backend": "outbox", "digests_enabled": False})
+    # Every kind of email needs the relay; with each switched off, none does.
+    no_mail = {"digests_enabled": False, "alert_emails_enabled": False, "password_reset_enabled": False}
+    for kind in no_mail:
+        with pytest.raises(ValidationError, match=kind.upper()):
+            Settings(**{**good, **no_mail, kind: True, "mail_backend": "outbox"})
+    assert Settings(**{**good, **no_mail, "mail_backend": "outbox"})

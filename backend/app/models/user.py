@@ -46,6 +46,11 @@ class User(Base):
     # The weekly email (app/digest.py). Off from the account page or the
     # unsubscribe link in any digest.
     digest_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    # An email the day a big price increase shows up (app/alert_emails.py).
+    # Off from the account page or the unsubscribe link in any of them.
+    alert_emails_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 
 
@@ -146,3 +151,37 @@ class DigestSend(Base):
     week_of: Mapped[date] = mapped_column(Date, nullable=False)
     sent_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     location_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class AlertEmailSend(Base):
+    """One price alert emailed to one person. Unique per (alert, user), which
+    is what makes the alert emails idempotent (app.alert_emails)."""
+
+    __tablename__ = "alert_email_sends"
+    __table_args__ = (UniqueConstraint("alert_id", "user_id", name="uq_alert_email_sends_alert_user"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    alert_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("price_alerts.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sent_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+
+class PasswordResetToken(Base):
+    """A "forgot your password" link (app/api/auth.py). Like sessions, only a
+    SHA-256 of the token is stored, so the table can't be read for working
+    links. Single use, and short-lived."""
+
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(nullable=True)

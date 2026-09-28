@@ -26,6 +26,10 @@ export type Me = {
   password_change_required: boolean;
   /** Gets the weekly email. */
   digest_enabled: boolean;
+  /** Gets an email when a big price increase shows up. */
+  alert_emails_enabled: boolean;
+  /** How big an increase gets one (0.1 = 10%): a server setting. */
+  alert_email_min_pct_change: number;
   locations: Location[];
 };
 

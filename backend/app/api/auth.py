@@ -1,11 +1,11 @@
 """Signing in and out, and who is signed in."""
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import audit
+from app import audit, password_reset
 from app.auth import (
     CSRF_HEADER,
     CSRF_HEADER_VALUE,
@@ -26,7 +26,16 @@ from app.config import settings
 from app.db import get_db
 from app.models import AuditEvent, Tenant, User
 from app import users as user_service
-from app.schemas.auth import AccountUpdate, LocationOut, LoginRequest, MeOut, PasswordChange
+from app.schemas.auth import (
+    AccountUpdate,
+    LocationOut,
+    LoginRequest,
+    MeOut,
+    PasswordChange,
+    PasswordResetCheck,
+    PasswordResetComplete,
+    PasswordResetRequest,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -49,6 +58,8 @@ def _me(db: Session, user: User) -> MeOut:
         is_operator=user.is_operator,
         password_change_required=user.password_change_required,
         digest_enabled=user.digest_enabled,
+        alert_emails_enabled=user.alert_emails_enabled,
+        alert_email_min_pct_change=settings.alert_email_min_pct_change,
         locations=[LocationOut(id=t.id, name=t.name, metro=t.metro) for t in tenants],
     )
 
@@ -92,14 +103,19 @@ def _set_session_cookie(response: Response, token: str) -> None:
     )
 
 
-@router.post("/login", response_model=MeOut)
-def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> MeOut:
-    # The CSRF header is required here even though there's no session cookie
-    # yet: otherwise another site could sign a visitor in as the attacker, and
-    # whatever they then uploaded or corrected would land in the attacker's
-    # account (login CSRF).
+def _require_csrf_header(request: Request) -> None:
+    """For the signed-out forms (sign in, password reset), which can't rely on
+    csrf_ok's cookie test: there's no session cookie yet. Without it another
+    site could sign a visitor in as the attacker, so whatever they then
+    uploaded or corrected would land in the attacker's account (login CSRF),
+    or make visitors' browsers request reset emails for whomever it liked."""
     if request.headers.get(CSRF_HEADER) != CSRF_HEADER_VALUE:
         raise HTTPException(status_code=403, detail="missing request header")
+
+
+@router.post("/login", response_model=MeOut)
+def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> MeOut:
+    _require_csrf_header(request)
 
     email = normalize_email(body.email)
     user = db.scalar(select(User).where(User.email == email))
@@ -180,10 +196,86 @@ def change_password(body: PasswordChange, request: Request, db: Session = Depend
 
 @router.patch("/me", response_model=MeOut)
 def update_me(body: AccountUpdate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> MeOut:
-    """Your own preferences. Only the weekly email, for now."""
-    if body.digest_enabled is not None and body.digest_enabled != user.digest_enabled:
-        user.digest_enabled = body.digest_enabled
-        action = "user.digest_subscribed" if body.digest_enabled else "user.digest_unsubscribed"
-        audit.record(db, user, action, "user", user.id, email=user.email)
+    """Your own preferences: which emails you get."""
+    changed = False
+    for setting, (on, off) in _EMAIL_SETTINGS.items():
+        wanted = getattr(body, setting)
+        if wanted is not None and wanted != getattr(user, setting):
+            setattr(user, setting, wanted)
+            audit.record(db, user, on if wanted else off, "user", user.id, email=user.email)
+            changed = True
+    if changed:
         db.commit()
+    return _me(db, user)
+
+
+# Each email preference, and the audit actions for turning it on and off.
+_EMAIL_SETTINGS = {
+    "digest_enabled": ("user.digest_subscribed", "user.digest_unsubscribed"),
+    "alert_emails_enabled": ("user.alert_emails_subscribed", "user.alert_emails_unsubscribed"),
+}
+
+
+# --- Forgot your password? (app/password_reset.py) ----------------------------
+
+_RESET_OFF = "password reset by email isn't set up here; ask your operator to reset your password"
+_LINK_INVALID = "this link has expired or has already been used; ask for a new one"
+
+
+def _reset_enabled() -> None:
+    if not settings.password_reset_enabled:
+        raise HTTPException(status_code=503, detail=_RESET_OFF)
+
+
+@router.post("/password-reset/request", status_code=202)
+def request_password_reset(
+    body: PasswordResetRequest, request: Request, background: BackgroundTasks, db: Session = Depends(get_db)
+) -> Response:
+    """Always the same answer, whether or not the address has an account; the
+    email, if there is one, goes out after the response."""
+    _require_csrf_header(request)
+    _reset_enabled()
+    issued = password_reset.request_reset(db, normalize_email(body.email))
+    if issued is not None:
+        user, token = issued
+        background.add_task(password_reset.send_reset_email, user.name, user.email, token)
+    return Response(status_code=202)
+
+
+@router.post("/password-reset/check", status_code=204)
+def check_password_reset(body: PasswordResetCheck, request: Request, db: Session = Depends(get_db)) -> Response:
+    """Whether a link still works, so the page can say so before anyone types
+    a new password into it."""
+    _require_csrf_header(request)
+    _reset_enabled()
+    if password_reset.valid_token(db, body.token) is None:
+        raise HTTPException(status_code=410, detail=_LINK_INVALID)
+    return Response(status_code=204)
+
+
+@router.post("/password-reset", response_model=MeOut)
+def complete_password_reset(
+    body: PasswordResetComplete, request: Request, response: Response, db: Session = Depends(get_db)
+) -> MeOut:
+    """Set a new password from an emailed link, and sign this browser in: the
+    link has just proved the email is theirs. Every other session ends."""
+    _require_csrf_header(request)
+    _reset_enabled()
+    found = password_reset.valid_token(db, body.token)
+    if found is None:
+        raise HTTPException(status_code=410, detail=_LINK_INVALID)
+    link, user = found
+    try:
+        password_reset.complete_reset(db, link, user, body.new_password)
+    except user_service.UserError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except password_reset.LinkUsedError as exc:
+        db.rollback()
+        raise HTTPException(status_code=410, detail=_LINK_INVALID) from exc
+    token = create_session(db, user)
+    # A sign-in like any other: it also clears the failed-attempt count, so
+    # someone who locked themselves out can get straight back in.
+    audit.record(db, user, LOGIN_SUCCEEDED, "user", user.id, via="password reset")
+    db.commit()
+    _set_session_cookie(response, token)
     return _me(db, user)

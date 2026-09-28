@@ -2046,3 +2046,89 @@ once, so a reload right after could beat the save; the save is sent with
 ### Gates
 Audit 0 findings across all pages and widths; backend 294, frontend 36
 unit, `tsc` clean, Playwright 13 (twice in a row).
+
+## Photo upload, CSV export, price-increase emails, forgot password
+
+### Phone photos of paper invoices
+Upload took PDFs only, and most restaurant invoices are paper. "Upload
+invoice" now takes a PDF (several at once, one invoice each) or photos; on
+a phone, "Take photo" opens the camera. Photos are gathered as pages in a
+tray (thumbnails, remove, add another page, up to 10) and sent together as
+one invoice. The server turns them into a PDF (`app/ingest/photos.py`),
+so storage, rendering, the review screen and extraction are unchanged, and
+the invoice's source is `photo`.
+- JPEG, PNG, WebP and HEIC (iPhone's default; `pillow-heif`), recognized
+  from the bytes, never the name.
+- Turned upright from the EXIF flag, flattened onto white, scaled to 3,000px,
+  placed on a letter-sized page (a phone photo's missing DPI otherwise makes
+  a 56-inch page). Each page keeps its own size; Pillow's multi-page save
+  gave every page the first one's.
+- Refused before anything is stored, with a reason: a PDF mixed with photos,
+  more than 10 photos, an unreadable photo, over 50 MP decoded (a small PNG
+  can decode to hundreds of MB in the API process; big JPEGs decode at
+  reduced size instead), over the upload limit counting every file.
+
+### CSV export
+"Export CSV" on Invoices: invoices or line items, a period (this/last month
+or quarter, year to date, last year, all, or dates), and a distributor
+(`GET /exports/{invoices|line-items}`). Built for Excel: byte-order mark
+(accented descriptions), CRLF, amounts to the cent, unit prices at their
+billed precision ($0.5432/lb). Every invoice is included with its status,
+since unreviewed invoices are still money spent. Supplier text that would
+run as a formula ("=HYPERLINK(...)") is defused; numbers aren't, so a
+credit stays -12.50 rather than text. Each export is in the audit trail.
+
+### Price-increase emails
+The digest reported increases on Monday. Now an alert of 10% or more
+(`ALERT_EMAIL_MIN_PCT_CHANGE`) is emailed within five minutes (the
+scheduler service) to members of that location who want it: one email per
+person per run, covering every new alert across their locations.
+- Idempotent per (alert, person) under a unique constraint; a failed send
+  is released and retried.
+- Only alerts opened in the last 48 hours, so deploying this (or an outage)
+  doesn't email every alert ever raised.
+- A product already emailed to someone at a location isn't emailed again
+  for a week, even if its alert closed and reopened.
+- Turned off separately from the digest, on the account page or by the
+  email's own unsubscribe link (the same signed link as the digest's, per
+  kind; old digest links still work).
+- The digest's look moved to `app/email_design.py`, shared by all three
+  emails, and it gained a viewport tag: phone mail apps were laying the
+  emails out at desktop width and shrinking them.
+
+### Forgot your password
+"Forgot your password?" on sign-in emails a single-use link, valid for an
+hour, at most three an hour per address. The answer and the page are the
+same whether or not the address has an account, and the email goes out
+after the response, so timing doesn't tell either. The link signs you in
+and ends every other session; it clears an operator-issued temporary
+password and a sign-in lockout. Only a hash of each token is stored. The
+token leaves the address bar as soon as the page has it (kept for the tab
+only, so a reload still works) and the page sends no referrer. Changing or
+resetting a password any other way ends outstanding links.
+
+### Production settings
+Production refuses to start with any of the three emails on and no SMTP
+relay, since outbox mail there is never delivered; each has its own switch
+(`DIGESTS_ENABLED`, `ALERT_EMAILS_ENABLED`, `PASSWORD_RESET_ENABLED`).
+Migrations 0015 (alert email sends, per-user switch) and 0016 (reset links).
+
+### Review, before commit
+- A credit's "-5.00" in the export would have been quoted as text by the
+  formula guard; the guard now applies to text fields only.
+- A price wobbling around the threshold would have emailed the same product
+  each time its alert reopened; now once a week at most.
+- Photos: huge PNGs decoded in full (memory); oversized images raised
+  Pillow's own error as a 500. Both now refused with a reason.
+- The client-side session check sent the new signed-out pages to sign-in
+  (only /login was exempt); one list of public pages now serves both it and
+  the middleware.
+- The alert tests picked up the dev database's own recent alerts and
+  recorded sends for a dev user; the tests now run at a date no real data
+  reaches, and the rows were removed.
+- Reset links are pruned like sessions; a dead one is cleared from the tab.
+
+### Gates
+Backend 325 (31 new), frontend 48 unit, `tsc` and `next build` (with lint)
+clean, Playwright 19 (6 new). The new screens were checked at desktop and
+375px, and the two new emails at 375px.

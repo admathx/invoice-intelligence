@@ -9,6 +9,8 @@ redis==5.0.8
 rq==1.16.2
 pypdfium2==4.30.0
 pillow==10.4.0
+# HEIC, what iPhones save photos as (app/ingest/photos.py).
+pillow-heif==0.18.0
 anthropic==1.7.0
 sentence-transformers==3.1.1
 # Pinned to what development runs: sentence-transformers leaves them open, and

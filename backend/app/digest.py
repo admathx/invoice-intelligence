@@ -27,6 +27,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app import email_design as design
 from app import mail
 from app.analytics.negotiation import NegotiationBasis, build_negotiation_sheet
 from app.config import settings
@@ -120,7 +121,7 @@ def location_week(db: Session, tenant: Tenant, now: datetime) -> LocationWeek:
         .limit(LISTED)
     ).all()
     week.new_increases = [
-        PriceIncrease(name, a.baseline_price, a.current_price, a.pct_change, _UNIT.get(uom.value, uom.value))
+        PriceIncrease(name, a.baseline_price, a.current_price, a.pct_change, design.UNIT_LABEL.get(uom.value, uom.value))
         for a, name, uom in rows
     ]
     week.open_alert_count = db.scalar(
@@ -193,39 +194,28 @@ def recipients(db: Session) -> list[tuple[User, list[Tenant]]]:
 # --- Unsubscribing -----------------------------------------------------------
 
 
-def unsubscribe_token(user_id: uuid.UUID) -> str:
-    return hmac.new(settings.signing_key, f"digest-unsubscribe:{user_id}".encode(), hashlib.sha256).hexdigest()
+# One signed link per kind of email, so stopping the price alerts doesn't stop
+# the digest. The digest's message is what it always was, so links in digests
+# already sent keep working.
+UNSUBSCRIBE_KINDS = ("digest", "alerts")
 
 
-def valid_unsubscribe_token(user_id: uuid.UUID, token: str) -> bool:
-    return hmac.compare_digest(unsubscribe_token(user_id), token)
+def unsubscribe_token(user_id: uuid.UUID, kind: str = "digest") -> str:
+    return hmac.new(settings.signing_key, f"{kind}-unsubscribe:{user_id}".encode(), hashlib.sha256).hexdigest()
 
 
-def unsubscribe_url(user_id: uuid.UUID) -> str:
-    query = urlencode({"u": str(user_id), "t": unsubscribe_token(user_id)})
-    return f"{settings.public_base_url}/api/digest/unsubscribe?{query}"
+def valid_unsubscribe_token(user_id: uuid.UUID, token: str, kind: str = "digest") -> bool:
+    return kind in UNSUBSCRIBE_KINDS and hmac.compare_digest(unsubscribe_token(user_id, kind), token)
+
+
+def unsubscribe_url(user_id: uuid.UUID, kind: str = "digest") -> str:
+    params = {"u": str(user_id), "t": unsubscribe_token(user_id, kind)}
+    if kind != "digest":
+        params["kind"] = kind
+    return f"{settings.public_base_url}/api/digest/unsubscribe?{urlencode(params)}"
 
 
 # --- The email ---------------------------------------------------------------
-
-
-def _money(value: Decimal) -> str:
-    return f"${value:,.2f}"
-
-
-_UNIT = {"lb": "lb", "oz": "oz", "gal": "gal", "fl_oz": "fl oz", "each": "each", "dozen": "dozen"}
-
-
-def _per(value: Decimal, unit: str) -> str:
-    return f"{_money(value)}/{unit}" if unit else _money(value)
-
-
-def _link(path: str, location: uuid.UUID) -> str:
-    # ?location= makes the dashboard switch to that location on arrival
-    # (frontend middleware), so a link from one location's section never
-    # opens in another's.
-    joiner = "&" if "?" in path else "?"
-    return f"{settings.public_base_url}{path}{joiner}location={location}"
 
 
 def _headline(weeks: list[LocationWeek]) -> str:
@@ -245,55 +235,25 @@ def _sections_text(week: LocationWeek) -> list[str]:
     if week.new_increase_count:
         out.append(f"New price increases ({week.new_increase_count}):")
         for p in week.new_increases:
-            out.append(f"  - {p.sku}: {_per(p.before, p.unit)} -> {_per(p.now, p.unit)} (+{p.pct_change:.1%})")
+            out.append(f"  - {p.sku}: {design.price_per(p.before, p.unit)} -> {design.price_per(p.now, p.unit)} (+{p.pct_change:.1%})")
         if week.new_increase_count > len(week.new_increases):
             out.append(f"  ...and {week.new_increase_count - len(week.new_increases)} more")
-        out.append(f"  {_link('/insights', week.tenant_id)}")
+        out.append(f"  {design.dashboard_link('/insights', week.tenant_id)}")
     if week.held_count:
         out.append(f"Invoices to check ({week.held_count}): held out of your numbers until someone does")
         for h in week.held:
-            out.append(f"  - {h.label}: {_link(f'/invoices/{h.invoice_id}', week.tenant_id)}")
+            out.append(f"  - {h.label}: {design.dashboard_link(f'/invoices/{h.invoice_id}', week.tenant_id)}")
     if week.pending_lines:
         out.append(f"Review queue: {week.pending_lines} line{'s' if week.pending_lines != 1 else ''} to match")
-        out.append(f"  {_link('/review', week.tenant_id)}")
+        out.append(f"  {design.dashboard_link('/review', week.tenant_id)}")
     if week.received_count:
-        out.append(f"Received this week: {week.received_count} invoice{'s' if week.received_count != 1 else ''}, {_money(week.received_total)}")
+        out.append(f"Received this week: {week.received_count} invoice{'s' if week.received_count != 1 else ''}, {design.money(week.received_total)}")
     if week.savings:
         out.append("Biggest savings on your negotiation sheet:")
         for s in week.savings:
-            out.append(f"  - {s.sku}: about {_money(s.annualized)} a year")
-        out.append(f"  {_link('/negotiation', week.tenant_id)}")
+            out.append(f"  - {s.sku}: about {design.money(s.annualized)} a year")
+        out.append(f"  {design.dashboard_link('/negotiation', week.tenant_id)}")
     return out
-
-
-# The app's palette (frontend tailwind.config.ts `brand`), inlined: email
-# clients ignore stylesheets. Increases red, savings green, like the dashboard.
-_GREEN_FILL = "#4ade80"  # brand-400: buttons, header band
-_GREEN_INK = "#052e16"  # brand-950: text on the fill
-_GREEN_TEXT = "#15803d"  # brand-700: savings, good news
-_GREEN_TINT = "#f1fdf4"  # brand-50
-_RED_TEXT = "#dc2626"
-_RED_TINT = "#fee2e2"
-_AMBER_TEXT = "#92400e"
-_AMBER_TINT = "#fef3c7"
-_MUTED = "#6b7280"
-
-
-def _button(href: str, label: str) -> str:
-    """A button that survives email clients: a padded, filled link (clients
-    that drop padding still show a green link)."""
-    return (
-        f"<a href='{html.escape(href)}' style='display:inline-block;background:{_GREEN_FILL};color:{_GREEN_INK};"
-        "font-weight:700;font-size:13px;text-decoration:none;padding:8px 14px;border-radius:6px;"
-        f"border:1px solid #22c55e'>{html.escape(label)}</a>"
-    )
-
-
-def _pill(text: str, fg: str, bg: str) -> str:
-    return (
-        f"<span style='display:inline-block;white-space:nowrap;background:{bg};color:{fg};font-weight:700;font-size:12px;"
-        f"padding:2px 8px;border-radius:999px'>{html.escape(text)}</span>"
-    )
 
 
 def _sections_html(week: LocationWeek) -> str:
@@ -307,7 +267,7 @@ def _sections_html(week: LocationWeek) -> str:
     ]
 
     def link(path: str) -> str:
-        return _link(path, week.tenant_id)
+        return design.dashboard_link(path, week.tenant_id)
 
     if week.new_increase_count:
         rows = "".join(
@@ -315,28 +275,28 @@ def _sections_html(week: LocationWeek) -> str:
             f"<td style='padding:4px 12px 4px 0'>{e(p.sku)}</td>"
             # Each price stays whole; the pair may wrap at the arrow, so a
             # narrow screen doesn't crush the product name instead.
-            f"<td style='padding:4px 12px 4px 0;color:{_MUTED}'><span style='white-space:nowrap'>{e(_per(p.before, p.unit))} &rarr;</span> "
-            f"<strong style='color:#111827;white-space:nowrap'>{e(_per(p.now, p.unit))}</strong></td>"
-            f"<td style='padding:4px 0;text-align:right'>{_pill(f'▲ +{p.pct_change:.1%}', _RED_TEXT, _RED_TINT)}</td>"
+            f"<td style='padding:4px 12px 4px 0;color:{design.MUTED}'><span style='white-space:nowrap'>{e(design.price_per(p.before, p.unit))} &rarr;</span> "
+            f"<strong style='color:#111827;white-space:nowrap'>{e(design.price_per(p.now, p.unit))}</strong></td>"
+            f"<td style='padding:4px 0;text-align:right'>{design.pill(f'▲ +{p.pct_change:.1%}', design.RED_TEXT, design.RED_TINT)}</td>"
             "</tr>"
             for p in week.new_increases
         )
         more = week.new_increase_count - len(week.new_increases)
-        more_html = f"<p style='margin:4px 0 0;color:{_MUTED}'>&hellip;and {more} more</p>" if more > 0 else ""
+        more_html = f"<p style='margin:4px 0 0;color:{design.MUTED}'>&hellip;and {more} more</p>" if more > 0 else ""
         parts.append(
-            f"<p style='margin:0 0 6px'><strong style='color:{_RED_TEXT}'>{week.new_increase_count} new price "
+            f"<p style='margin:0 0 6px'><strong style='color:{design.RED_TEXT}'>{week.new_increase_count} new price "
             f"increase{'s' if week.new_increase_count != 1 else ''}</strong></p>"
             f"<table role='presentation' cellpadding='0' cellspacing='0' style='font-size:14px;border-collapse:collapse'>{rows}</table>"
-            f"{more_html}<p style='margin:10px 0 0'>{_button(link('/insights'), 'See them on Insights')}</p>"
+            f"{more_html}<p style='margin:10px 0 0'>{design.button(link('/insights'), 'See them on Insights')}</p>"
         )
     if week.held_count:
         items = "".join(
-            f"<li style='margin:2px 0;overflow-wrap:anywhere'><a href='{e(link(f'/invoices/{h.invoice_id}'))}' style='color:{_GREEN_TEXT};font-weight:600'>"
+            f"<li style='margin:2px 0;overflow-wrap:anywhere'><a href='{e(link(f'/invoices/{h.invoice_id}'))}' style='color:{design.GREEN_TEXT};font-weight:600'>"
             f"{e(h.label)}</a></li>"
             for h in week.held
         )
         parts.append(
-            f"<div style='margin:16px 0 0;padding:10px 12px;background:{_AMBER_TINT};border-radius:6px;color:{_AMBER_TEXT}'>"
+            f"<div style='margin:16px 0 0;padding:10px 12px;background:{design.AMBER_TINT};border-radius:6px;color:{design.AMBER_TEXT}'>"
             f"<strong>{week.held_count} invoice{'s' if week.held_count != 1 else ''} to check</strong> "
             "&middot; held out of your numbers until someone does"
             f"<ul style='margin:6px 0 0;padding-left:20px'>{items}</ul></div>"
@@ -344,28 +304,28 @@ def _sections_html(week: LocationWeek) -> str:
     if week.pending_lines:
         lines = f"{week.pending_lines} line{'s' if week.pending_lines != 1 else ''}"
         parts.append(
-            f"<p style='margin:16px 0 0'><strong>Review queue:</strong> {_pill(lines + ' to match', _AMBER_TEXT, _AMBER_TINT)} "
-            f"&nbsp;{_button(link('/review'), 'Open the queue')}</p>"
+            f"<p style='margin:16px 0 0'><strong>Review queue:</strong> {design.pill(lines + ' to match', design.AMBER_TEXT, design.AMBER_TINT)} "
+            f"&nbsp;{design.button(link('/review'), 'Open the queue')}</p>"
         )
     if week.received_count:
         invoices = f"{week.received_count} invoice{'s' if week.received_count != 1 else ''}"
         parts.append(
             f"<p style='margin:16px 0 0'><strong>Received this week:</strong> {invoices}, "
-            f"<strong>{_money(week.received_total)}</strong></p>"
+            f"<strong>{design.money(week.received_total)}</strong></p>"
         )
     if week.savings:
         rows = "".join(
             f"<tr><td style='padding:3px 12px 3px 0'>{e(s.sku)}</td>"
-            f"<td style='padding:3px 0;text-align:right;color:{_GREEN_TEXT};font-weight:700'>{_money(s.annualized)}/yr</td></tr>"
+            f"<td style='padding:3px 0;text-align:right;color:{design.GREEN_TEXT};font-weight:700'>{design.money(s.annualized)}/yr</td></tr>"
             for s in week.savings
         )
         total = sum((s.annualized for s in week.savings), Decimal("0"))
         parts.append(
-            f"<div style='margin:16px 0 0;padding:12px 14px;background:{_GREEN_TINT};border:1px solid #bbf7d0;border-radius:6px'>"
-            f"<p style='margin:0 0 6px;color:{_GREEN_TEXT}'><strong>Biggest savings on your negotiation sheet</strong> "
-            f"&middot; about <strong>{_money(total)}</strong> a year</p>"
+            f"<div style='margin:16px 0 0;padding:12px 14px;background:{design.GREEN_TINT};border:1px solid #bbf7d0;border-radius:6px'>"
+            f"<p style='margin:0 0 6px;color:{design.GREEN_TEXT}'><strong>Biggest savings on your negotiation sheet</strong> "
+            f"&middot; about <strong>{design.money(total)}</strong> a year</p>"
             f"<table role='presentation' cellpadding='0' cellspacing='0' style='font-size:14px;border-collapse:collapse'>{rows}</table>"
-            f"<p style='margin:10px 0 0'>{_button(link('/negotiation'), 'Open the sheet')}</p></div>"
+            f"<p style='margin:10px 0 0'>{design.button(link('/negotiation'), 'Open the sheet')}</p></div>"
         )
     parts.append("</div>")
     return "".join(parts)
@@ -391,25 +351,18 @@ def compose(user: User, weeks: list[LocationWeek]) -> EmailMessage | None:
     ]
 
     body = "".join(_sections_html(w) for w in weeks)
-    html_doc = (
-        "<!doctype html><html><body style='margin:0;padding:24px 12px;background:#f3f4f6'>"
-        "<div style='max-width:600px;margin:0 auto;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;"
-        "font-size:14px;color:#111827;background:#ffffff;border-radius:10px;overflow:hidden;border:1px solid #e5e7eb'>"
-        # The app's header, in miniature: the green band and the mark.
-        f"<div style='background:{_GREEN_FILL};padding:14px 24px;color:{_GREEN_INK}'>"
-        "<span style='display:inline-block;background:#ffffff;color:#15803d;font-weight:800;font-size:12px;"
-        "padding:3px 7px;border-radius:5px;margin-right:8px'>II</span>"
-        "<strong style='font-size:15px'>Invoice Intelligence</strong>"
-        "<span style='float:right;font-size:13px;font-weight:600;padding-top:3px'>Your week</span></div>"
-        "<div style='padding:20px 24px 24px'>"
-        f"<p style='margin:0 0 4px'>Hi {html.escape(user.name)},</p>"
-        f"<p style='margin:0;color:{_MUTED}'>Here&rsquo;s what happened this week, and what&rsquo;s waiting for you.</p>"
-        f"{body}"
-        "<hr style='border:none;border-top:1px solid #e5e7eb;margin:24px 0 12px'>"
-        f"<p style='font-size:12px;color:{_MUTED};margin:0'>You get this weekly because you have access to these locations. "
-        f"<a href='{html.escape(unsubscribe)}' style='color:{_MUTED}'>Stop these emails</a> "
-        f"or turn them back on from <a href='{html.escape(account)}' style='color:{_MUTED}'>your account</a>.</p>"
-        "</div></div></body></html>"
+    html_doc = design.document(
+        tag="Your week",
+        body=(
+            f"<p style='margin:0 0 4px'>Hi {html.escape(user.name)},</p>"
+            f"<p style='margin:0;color:{design.MUTED}'>Here&rsquo;s what happened this week, and what&rsquo;s waiting for you.</p>"
+            f"{body}"
+        ),
+        footer=(
+            "You get this weekly because you have access to these locations. "
+            f"<a href='{html.escape(unsubscribe)}' style='color:{design.MUTED}'>Stop these emails</a> "
+            f"or turn them back on from <a href='{html.escape(account)}' style='color:{design.MUTED}'>your account</a>."
+        ),
     )
     return mail.build_message(
         to=user.email,

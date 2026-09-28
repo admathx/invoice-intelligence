@@ -456,3 +456,123 @@ test.describe("weekly email", () => {
     await expect(page.getByLabel(/Weekly summary/)).toBeChecked();
   });
 });
+
+test.describe("getting invoices in and out", () => {
+  test.skip(!TENANT_ID, "E2E_TENANT_ID not set in frontend/.env.local");
+
+  test.beforeEach(async ({ page }) => {
+    expect((await page.request.post("/api/auth/login", { data: e2eLogin(), headers: CSRF })).ok()).toBeTruthy();
+  });
+
+  // A 1x1 PNG: the browser only needs something to preview; the server,
+  // which does read photos, never sees these (the upload is intercepted, so
+  // nothing reaches real extraction).
+  const PIXEL = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  const photo = (name: string) => ({ name, mimeType: "image/png", buffer: PIXEL });
+
+  test("photos of a paper invoice are gathered as pages and sent as one invoice", async ({ page }) => {
+    let sentFiles: string[] = [];
+    await page.route("**/api/invoices?tenant_id=*", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      const body = route.request().postDataBuffer()?.toString("latin1") ?? "";
+      sentFiles = [...body.matchAll(/name="file"; filename="([^"]+)"/g)].map((m) => m[1]);
+      await route.fulfill({ status: 201, contentType: "application/json", body: '{"id":"x","status":"received"}' });
+    });
+
+    await page.goto("/invoices");
+    await page.getByTestId("upload-input").setInputFiles([photo("page-1.png"), photo("page-2.png")]);
+    const tray = page.getByTestId("photo-tray");
+    await expect(tray.getByText("2 pages", { exact: true })).toBeVisible();
+
+    await tray.getByRole("button", { name: "Remove page 2" }).click();
+    await expect(tray.getByText("1 page", { exact: true })).toBeVisible();
+    await page.getByTestId("add-page-input").setInputFiles([photo("page-2-retake.png")]);
+    await expect(tray.getByText("2 pages", { exact: true })).toBeVisible();
+
+    await tray.getByRole("button", { name: "Upload invoice (2 pages)" }).click();
+    await expect(page.getByText("Uploaded. Reading the invoice now.")).toBeVisible();
+    await expect(tray).toHaveCount(0);
+    expect(sentFiles).toEqual(["page-1.png", "page-2-retake.png"]);
+  });
+
+  test("a PDF and photos together are refused before anything is sent", async ({ page }) => {
+    await page.goto("/invoices");
+    await page
+      .getByTestId("upload-input")
+      .setInputFiles([{ name: "invoice.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4") }, photo("p.png")]);
+    await expect(page.getByText("Choose PDFs or photos, not both.")).toBeVisible();
+    await expect(page.getByTestId("photo-tray")).toHaveCount(0);
+  });
+
+  test("line items export as a spreadsheet Excel can read", async ({ page }) => {
+    await page.goto("/invoices");
+    await page.getByRole("button", { name: "Export CSV" }).click();
+    const panel = page.getByTestId("export-panel");
+    await panel.getByText("Line items").click();
+    await panel.getByLabel("Invoice dates").selectOption("all");
+    await expect(panel.getByTestId("export-range")).toHaveText("Every invoice");
+
+    const downloading = page.waitForEvent("download");
+    await panel.getByRole("link", { name: "Download CSV" }).click();
+    const download = await downloading;
+    expect(download.suggestedFilename()).toMatch(/^line-items-.+-all\.csv$/);
+    const text = (await download.createReadStream().then(async (stream) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) chunks.push(chunk as Buffer);
+      return Buffer.concat(chunks);
+    })).toString("utf-8");
+    expect(text.startsWith("﻿Location,Invoice #,Invoice date,Distributor,Line,")).toBeTruthy();
+    expect(text.split("\r\n").length).toBeGreaterThan(2); // the seeded location has lines
+  });
+});
+
+test.describe("forgot your password", () => {
+  test.skip(!TENANT_ID, "E2E_TENANT_ID not set in frontend/.env.local");
+
+  test("asking for a link says the same thing for any address", async ({ page }) => {
+    await page.goto("/login");
+    await page.getByRole("link", { name: "Forgot your password?" }).click();
+    await expect(page).toHaveURL(/\/forgot-password$/);
+    await page.getByLabel("Email").fill("nobody-e2e@test.invalid");
+    await page.getByRole("button", { name: "Send reset link" }).click();
+    await expect(page.getByRole("status")).toContainText("If nobody-e2e@test.invalid has an account");
+  });
+
+  test("the emailed link sets a new password and signs you in", async ({ page }) => {
+    const { token } = runFixture("reset-link", TENANT_ID) as { email: string; token: string };
+    await page.goto(`/reset-password?token=${encodeURIComponent(token)}`);
+    // The token leaves the address bar as soon as the page has it.
+    await expect(page).toHaveURL(/\/reset-password$/);
+    const newPassword = `e2e ${Date.now()} new passphrase`;
+    await page.getByLabel("New password", { exact: true }).fill(newPassword);
+    await page.getByLabel("New password again").fill(newPassword);
+    await page.getByRole("button", { name: "Set password and sign in" }).click();
+    await expect(page).toHaveURL(/\/invoices$/);
+    await expect(page.getByText("E2E Reset")).toBeVisible();
+
+    // Used: the same link now says so.
+    await page.context().clearCookies();
+    await page.goto(`/reset-password?token=${encodeURIComponent(token)}`);
+    await expect(page.getByRole("heading", { name: "This link doesn’t work any more" })).toBeVisible();
+  });
+});
+
+test.describe("price-increase emails", () => {
+  test.skip(!TENANT_ID, "E2E_TENANT_ID not set in frontend/.env.local");
+
+  test("can be turned off without turning off the weekly summary", async ({ page }) => {
+    expect((await page.request.post("/api/auth/login", { data: e2eLogin(), headers: CSRF })).ok()).toBeTruthy();
+    await page.goto("/account/password");
+    const alerts = page.getByLabel(/Price increases, as they happen/);
+    await expect(alerts).toBeChecked();
+    const saved = page.waitForResponse((r) => r.url().includes("/api/auth/me") && r.request().method() === "PATCH");
+    await alerts.uncheck();
+    expect((await saved).ok()).toBeTruthy();
+    await page.reload();
+    await expect(page.getByLabel(/Price increases, as they happen/)).not.toBeChecked();
+    await expect(page.getByLabel(/Weekly summary/)).toBeChecked();
+  });
+});

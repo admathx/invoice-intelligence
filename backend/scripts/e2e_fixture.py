@@ -20,6 +20,9 @@ Subcommands (see backend/scripts/e2e_fixture.py --help via argparse):
                              invoices (CI has no .env.local to name one).
   cleanup-locations          deletes the locations the Businesses test created
                              ("E2E Location *") and their history.
+  reset-link <tenant_id>     creates/resets a separate e2e login (its password
+                             is about to be changed) and prints {email, token}
+                             for a "forgot your password" link, as if emailed.
   verify-alias <distributor_id> <raw_sku> <raw_description>
                              calls the real matcher again for that
                              (distributor, raw_sku) pair and prints the
@@ -373,6 +376,8 @@ def cmd_cleanup(tenant_id: str) -> None:
 
 E2E_LOGIN = ("e2e@dev.test", "E2E Reviewer")
 E2E_OPERATOR = ("e2e-operator@dev.test", "E2E Operator")
+# The password-reset test changes this login's password, so it isn't E2E_LOGIN.
+E2E_RESET_LOGIN = ("e2e-reset@dev.test", "E2E Reset")
 # Logins the Users-screen test creates through the UI.
 E2E_CREATED_PATTERN = "e2e-new-%@dev.test"
 # Locations the Businesses-screen test creates through the UI.
@@ -411,6 +416,23 @@ def cmd_login_operator() -> None:
     try:
         user, password = upsert_login(db, *E2E_OPERATOR, operator=True)
         print(json.dumps({"email": user.email, "password": password}))
+    finally:
+        db.close()
+
+
+def cmd_reset_link(tenant_id: str) -> None:
+    from scripts.seed_dev_users import upsert_login
+
+    from app.password_reset import issue_token
+
+    db = SessionLocal()
+    try:
+        user, _ = upsert_login(db, *E2E_RESET_LOGIN, tenant_ids=(uuid.UUID(tenant_id),))
+        # Straight to a token: the hourly limit on asking would otherwise
+        # stop a fourth run in an hour.
+        token = issue_token(db, user)
+        db.commit()
+        print(json.dumps({"email": user.email, "token": token}))
     finally:
         db.close()
 
@@ -519,6 +541,8 @@ def main() -> None:
     sub.add_parser("cleanup-users")
     sub.add_parser("cleanup-locations")
     sub.add_parser("pick-tenant")
+    reset_p = sub.add_parser("reset-link")
+    reset_p.add_argument("tenant_id")
 
     cleanup_p = sub.add_parser("cleanup")
     cleanup_p.add_argument("tenant_id")
@@ -548,6 +572,8 @@ def main() -> None:
         cmd_cleanup_locations()
     elif args.command == "pick-tenant":
         cmd_pick_tenant()
+    elif args.command == "reset-link":
+        cmd_reset_link(args.tenant_id)
     elif args.command == "cleanup":
         cmd_cleanup(args.tenant_id)
     elif args.command == "verify-alias":

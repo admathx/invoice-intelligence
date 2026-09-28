@@ -1,6 +1,7 @@
 import uuid
 
 from app.config import settings
+from app.ingest.photos import MAX_PHOTOS, UnreadablePhotoError, image_kind, photos_to_pdf
 from app.storage import get_storage, original_key
 
 # The PDF header. Checking for it is what makes "this is a PDF" a fact about
@@ -40,6 +41,43 @@ def validate_invoice_bytes(data: bytes) -> None:
         )
     if not is_pdf_bytes(data):
         raise InvalidInvoiceFileError("file is not a PDF")
+
+
+def invoice_pdf_from_upload(files: list[bytes]) -> tuple[bytes, bool]:
+    """The PDF an upload becomes, and whether it came from photos.
+
+    An upload is either one PDF, or up to MAX_PHOTOS photos that are the
+    pages of one paper invoice (app/ingest/photos.py). Anything else is
+    refused before an invoice row exists. The size limit applies to what was
+    sent, all files together, and again to the PDF the photos became.
+    """
+    if not files:
+        raise InvalidInvoiceFileError("no file was uploaded")
+    sent = sum(len(data) for data in files)
+    if sent > settings.max_upload_bytes:
+        raise InvalidInvoiceFileError(f"upload is {sent} bytes; the limit is {settings.max_upload_bytes}", too_large=True)
+
+    kinds = [("pdf" if is_pdf_bytes(data) else image_kind(data)) for data in files]
+    if kinds == ["pdf"]:
+        validate_invoice_bytes(files[0])
+        return files[0], False
+    if "pdf" in kinds:
+        raise InvalidInvoiceFileError("upload one PDF at a time, without photos alongside it")
+    if None in kinds:
+        which = kinds.index(None) + 1
+        raise InvalidInvoiceFileError(
+            "file is not a PDF or a photo (JPEG, PNG, HEIC or WebP)"
+            if len(files) == 1
+            else f"file {which} is not a PDF or a photo (JPEG, PNG, HEIC or WebP)"
+        )
+    if len(files) > MAX_PHOTOS:
+        raise InvalidInvoiceFileError(f"at most {MAX_PHOTOS} photos make one invoice; this was {len(files)}")
+    try:
+        pdf = photos_to_pdf(files)
+    except UnreadablePhotoError as exc:
+        raise InvalidInvoiceFileError(str(exc)) from exc
+    validate_invoice_bytes(pdf)
+    return pdf, True
 
 
 def save_invoice_bytes(invoice_id: uuid.UUID, filename: str | None, data: bytes) -> str:

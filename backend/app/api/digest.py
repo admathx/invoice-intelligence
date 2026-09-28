@@ -1,4 +1,5 @@
-"""Unsubscribing from the weekly digest, from the link in the email.
+"""Unsubscribing from the weekly digest or the price-increase alerts, from
+the link in the email (`kind`: "digest", the default, or "alerts").
 
 No sign-in: the link carries the user id and an HMAC of it
 (app.digest.unsubscribe_token), which is the authorization. GET shows a page
@@ -35,46 +36,54 @@ def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
     )
 
 
-def _user(db: Session, u: str, t: str) -> User | None:
+def _user(db: Session, u: str, t: str, kind: str) -> User | None:
     try:
         user_id = uuid.UUID(u)
     except ValueError:
         return None
-    if not valid_unsubscribe_token(user_id, t):
+    if not valid_unsubscribe_token(user_id, t, kind):
         return None
     return db.get(User, user_id)
 
 
-_INVALID = ("This link isn't valid", "<p>It may have been copied incompletely. You can turn the weekly email off from your account page instead.</p>")
+# What each kind of email is called on these pages, and the user setting it is.
+_LISTS = {
+    "digest": ("the weekly email", "digest_enabled", "user.digest_unsubscribed"),
+    "alerts": ("price-increase emails", "alert_emails_enabled", "user.alert_emails_unsubscribed"),
+}
+
+_INVALID = ("This link isn't valid", "<p>It may have been copied incompletely. You can turn these emails off from your account page instead.</p>")
 
 
 @router.get("/unsubscribe", response_class=HTMLResponse)
-def confirm_unsubscribe(u: str = "", t: str = "", db: Session = Depends(get_db)) -> HTMLResponse:
-    user = _user(db, u, t)
+def confirm_unsubscribe(u: str = "", t: str = "", kind: str = "digest", db: Session = Depends(get_db)) -> HTMLResponse:
+    user = _user(db, u, t, kind)
     if user is None:
         return _page(*_INVALID, status=404)
-    if not user.digest_enabled:
-        return _page("You're already unsubscribed", "<p>You won't get the weekly email.</p>")
+    name, setting, _ = _LISTS[kind]
+    if not getattr(user, setting):
+        return _page("You're already unsubscribed", f"<p>You won't get {name}.</p>")
     return _page(
-        "Stop the weekly email?",
-        f"<p>For {html.escape(user.email)}. You can turn it back on from your account page any time.</p>"
-        # The form posts back to this same URL, token included.
+        f"Stop {name}?",
+        f"<p>For {html.escape(user.email)}. You can turn them back on from your account page any time.</p>"
+        # The form posts back to this same URL, token and kind included.
         "<form method='post'><button type='submit' style='padding:8px 16px;font-size:14px'>Unsubscribe</button></form>",
     )
 
 
 @router.post("/unsubscribe", response_class=HTMLResponse)
-def unsubscribe(u: str = "", t: str = "", db: Session = Depends(get_db)) -> HTMLResponse:
-    user = _user(db, u, t)
+def unsubscribe(u: str = "", t: str = "", kind: str = "digest", db: Session = Depends(get_db)) -> HTMLResponse:
+    user = _user(db, u, t, kind)
     if user is None:
         return _page(*_INVALID, status=404)
-    if user.digest_enabled:
-        user.digest_enabled = False
-        audit.record(db, user, "user.digest_unsubscribed", "user", user.id, email=user.email)
+    name, setting, action = _LISTS[kind]
+    if getattr(user, setting):
+        setattr(user, setting, False)
+        audit.record(db, user, action, "user", user.id, email=user.email)
         db.commit()
     account = f"{settings.public_base_url}/account/password"
     return _page(
         "Unsubscribed",
-        "<p>You won't get the weekly email any more. "
-        f"Changed your mind? Turn it back on from <a href='{html.escape(account)}'>your account</a>.</p>",
+        f"<p>You won't get {name} any more. "
+        f"Changed your mind? Turn them back on from <a href='{html.escape(account)}'>your account</a>.</p>",
     )

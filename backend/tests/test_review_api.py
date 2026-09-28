@@ -473,6 +473,110 @@ def test_upload_accepts_a_pdf_whose_header_isnt_at_byte_zero(tenant, monkeypatch
     assert resp.status_code == 201, resp.text
 
 
+def _photo(size=(1200, 1600), fmt="JPEG", orientation=None, mode="RGB") -> bytes:
+    from PIL import Image
+
+    image = Image.new(mode, size, {"RGB": "white", "L": 255}.get(mode, (255, 255, 255, 0)))
+    buf = io.BytesIO()
+    kwargs = {}
+    if orientation:
+        exif = Image.Exif()
+        exif[0x0112] = orientation
+        kwargs["exif"] = exif
+    if fmt == "HEIF":
+        import pillow_heif
+
+        pillow_heif.from_pillow(image).save(buf, quality=60)
+    else:
+        image.save(buf, fmt, **kwargs)
+    return buf.getvalue()
+
+
+def _post_files(tenant, files):
+    return TestClient(app).post(f"/invoices?tenant_id={tenant.id}", files=[("file", f) for f in files])
+
+
+def test_photos_of_a_paper_invoice_become_one_invoice_a_page_each(db_session, tenant, monkeypatch):
+    """Phones store most photos sideways with an EXIF flag; the page must come
+    out upright, letter-sized, and marked as a photo upload."""
+    import pypdfium2 as pdfium
+
+    from app.models import AuditEvent
+    from app.storage import read_uri
+
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
+    resp = _post_files(
+        tenant,
+        [
+            ("IMG_0001.jpg", _photo((4032, 3024), orientation=6), "image/jpeg"),  # landscape pixels, portrait photo
+            ("IMG_0002.png", _photo((1500, 2000), fmt="PNG", mode="RGBA"), "image/png"),
+        ],
+    )
+    assert resp.status_code == 201, resp.text
+    invoice = db_session.get(Invoice, uuid.UUID(resp.json()["id"]))
+    assert invoice.source == InvoiceSource.photo
+
+    pdf = pdfium.PdfDocument(read_uri(invoice.original_file_uri))
+    sizes = [page.get_size() for page in pdf]
+    assert len(sizes) == 2
+    for width, height in sizes:
+        assert height > width, "the rotated photo must come out upright"
+        assert abs(height - 11 * 72) < 1, "a letter-sized page, not one inch per 72 pixels"
+
+    event = db_session.scalar(select(AuditEvent).where(AuditEvent.entity_id == invoice.id))
+    assert event.details["photo_count"] == 2
+    assert event.details["filenames"] == ["IMG_0001.jpg", "IMG_0002.png"]
+
+
+def test_a_photo_invoice_goes_through_extraction_like_a_pdf(db_session, tenant, monkeypatch):
+    from app.storage import page_names
+
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.workers.tasks.extractor", FakeExtractorClient())
+    resp = _post_files(tenant, [("a.jpg", _photo(), "image/jpeg"), ("b.jpg", _photo(), "image/jpeg")])
+    assert resp.status_code == 201, resp.text
+    invoice_id = uuid.UUID(resp.json()["id"])
+    process_invoice(str(invoice_id))
+    db_session.expire_all()
+    assert db_session.get(Invoice, invoice_id).status in (InvoiceStatus.extracted, InvoiceStatus.needs_review)
+    assert page_names(invoice_id) == ["page_001.png", "page_002.png"]
+
+
+def test_an_iphone_heic_photo_is_accepted(db_session, tenant, monkeypatch):
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
+    resp = _post_files(tenant, [("IMG_0003.HEIC", _photo(fmt="HEIF"), "image/heic")])
+    assert resp.status_code == 201, resp.text
+    assert db_session.get(Invoice, uuid.UUID(resp.json()["id"])).source == InvoiceSource.photo
+
+
+@pytest.mark.parametrize(
+    "files, message",
+    [
+        ([("a.pdf", _make_test_pdf(), "application/pdf"), ("b.jpg", _photo(), "image/jpeg")], "one PDF at a time"),
+        ([("a.pdf", _make_test_pdf(), "application/pdf")] * 2, "one PDF at a time"),
+        ([("p.jpg", _photo((200, 200)), "image/jpeg")] * 11, "at most 10 photos"),
+        ([("a.jpg", _photo(), "image/jpeg"), ("notes.txt", b"hello", "text/plain")], "file 2 is not a PDF or a photo"),
+        # The right signature, and nothing readable after it.
+        ([("broken.jpg", b"\xff\xd8\xff\xe0" + b"\x00" * 64, "image/jpeg")], "photo 1 couldn't be read"),
+        # 64 MP: a small file that would decode to ~200 MB in the API process.
+        ([("huge.png", _photo((8000, 8000), fmt="PNG", mode="L"), "image/png")], "photo 1 is too large"),
+    ],
+)
+def test_uploads_that_arent_one_invoice_are_refused_before_anything_is_stored(db_session, tenant, monkeypatch, files, message):
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
+    resp = _post_files(tenant, files)
+    assert resp.status_code == 415, resp.text
+    assert message in resp.json()["detail"]
+    assert db_session.scalar(select(Invoice.id).where(Invoice.tenant_id == tenant.id)) is None
+
+
+def test_the_size_limit_covers_all_the_photos_together(db_session, tenant, monkeypatch):
+    photo = _photo()
+    monkeypatch.setattr("app.api.invoices.settings.max_upload_bytes", len(photo) * 2)
+    resp = _post_files(tenant, [("p.jpg", photo, "image/jpeg")] * 3)
+    assert resp.status_code == 413, resp.text
+
+
 def test_the_worker_does_not_match_lines_against_the_other_pseudo_distributor(db_session, tenant, monkeypatch):
     """'other' is extraction's "couldn't tell", not a catalog. Matching against
     it pooled item codes from every distributor that ever landed there."""

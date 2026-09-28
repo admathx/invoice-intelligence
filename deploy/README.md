@@ -89,7 +89,24 @@ Emails that can't become invoices (unknown address, no PDF) are not dropped:
 they're stored under `inbound/rejected/` and appear in the Audit log
 ("Rejected emails") with the reason.
 
-## 7. The weekly email
+## 7. Outgoing email
+
+Three kinds, all through your provider's SMTP relay (`SMTP_*` and `MAIL_FROM`
+in `.env.production`):
+
+- **The weekly summary**, described below.
+- **Price-increase emails**: within minutes of a price alert opening for an
+  increase of 10% or more (`ALERT_EMAIL_MIN_PCT_CHANGE`, default `0.10`), to
+  everyone at that location who wants them. Smaller increases wait for the
+  weekly summary. The `scheduler` service sends them, checking every five
+  minutes; each alert is emailed to each person once.
+- **Password reset links** ("Forgot your password?" on the sign-in page):
+  single use, valid for an hour, at most three per address per hour.
+
+People turn the first two off separately, from their account page or the
+unsubscribe link in each email.
+
+### The weekly summary
 
 Every Monday at 12:00 UTC the `scheduler` service emails each person a
 summary of their locations' week: new price increases, invoices to check,
@@ -108,8 +125,10 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.producti
 ```
 
 (It's written to the `outbox` folder inside the container.) No provider yet:
-set `DIGESTS_ENABLED=false`; the API refuses to start in production with the
-digest on and no SMTP configured, rather than silently sending nothing.
+set `DIGESTS_ENABLED=false`, `ALERT_EMAILS_ENABLED=false` and
+`PASSWORD_RESET_ENABLED=false` (operators then reset passwords from the Users
+screen); the API refuses to start in production with any of them on and no
+SMTP configured, rather than silently sending nothing.
 
 ## 8. Storage
 

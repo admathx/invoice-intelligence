@@ -3,6 +3,7 @@ import { money } from "@/lib/format";
 import { requireSession, serverGet } from "@/lib/server";
 
 import { StatusBadge } from "./[id]/InvoiceReview";
+import ExportPanel from "./ExportPanel";
 import UploadForm from "./UploadForm";
 
 type Invoice = {
@@ -37,8 +38,11 @@ export default async function InvoicesPage() {
 
   return (
     <div className="max-w-6xl">
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="page-title">Invoices</h1>
+      {/* The export and photo panels open full width below the buttons
+          (order-last), inside this same row. */}
+      <div className="mb-5 flex flex-wrap items-center gap-2">
+        <h1 className="page-title mr-auto pr-2">Invoices</h1>
+        <ExportPanel />
         <UploadForm />
       </div>
 

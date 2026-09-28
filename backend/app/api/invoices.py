@@ -11,7 +11,7 @@ from app.api.deps import get_tenant_or_404
 from app.api.invoice_review import build_invoice_detail
 from app.auth import current_user, get_db_for_tenant
 from app.config import settings
-from app.ingest.upload import InvalidInvoiceFileError, save_invoice_bytes, validate_invoice_bytes
+from app.ingest.upload import InvalidInvoiceFileError, invoice_pdf_from_upload, save_invoice_bytes
 from app.models import Invoice, User
 from app.models.enums import InvoiceSource, InvoiceStatus
 from app.queue import enqueue_extraction
@@ -24,25 +24,34 @@ router = APIRouter(prefix="/invoices", tags=["invoices"])
 @router.post("", response_model=InvoiceUploadResponse, status_code=201)
 def upload_invoice(
     tenant_id: uuid.UUID,
-    file: UploadFile,
+    file: list[UploadFile],
     db: Session = Depends(get_db_for_tenant),
     user: User = Depends(current_user),
 ) -> InvoiceUploadResponse:
+    """One invoice: a PDF, or photos of a paper invoice, a page each, sent as
+    several `file` parts in page order (app/ingest/upload.py)."""
     # Before anything is written to disk: an unknown tenant_id would otherwise
     # fail on the FK at flush time, after the bytes landed.
     get_tenant_or_404(db, tenant_id)
 
-    # Read one byte past the limit rather than the whole stream, so an
-    # oversized upload is refused without first being pulled into memory.
-    data = file.file.read(settings.max_upload_bytes + 1)
+    # Read one byte past what's left of the limit rather than whole streams,
+    # so an oversized upload is refused without first being pulled into memory.
+    parts: list[bytes] = []
+    budget = settings.max_upload_bytes + 1
+    for upload in file:
+        data = upload.file.read(budget)
+        parts.append(data)
+        budget -= len(data)
+        if budget <= 0:
+            break
     try:
-        validate_invoice_bytes(data)
+        pdf, from_photos = invoice_pdf_from_upload(parts)
     except InvalidInvoiceFileError as exc:
         raise HTTPException(status_code=413 if exc.too_large else 415, detail=str(exc)) from exc
 
     invoice = Invoice(
         tenant_id=tenant_id,
-        source=InvoiceSource.upload,
+        source=InvoiceSource.photo if from_photos else InvoiceSource.upload,
         status=InvoiceStatus.received,
         original_file_uri="",
     )
@@ -51,10 +60,12 @@ def upload_invoice(
 
     invoice_id = invoice.id  # still needed after a rollback discards the row
     try:
-        invoice.original_file_uri = save_invoice_bytes(invoice_id, file.filename, data)
-        audit.record(
-            db, user, "invoice.uploaded", "invoice", invoice.id, tenant_id, filename=file.filename, size_bytes=len(data)
-        )
+        filenames = [upload.filename for upload in file]
+        invoice.original_file_uri = save_invoice_bytes(invoice_id, filenames[0], pdf)
+        details = {"filename": filenames[0], "size_bytes": len(pdf)}
+        if from_photos:
+            details.update(filenames=filenames, photo_count=len(parts))
+        audit.record(db, user, "invoice.uploaded", "invoice", invoice.id, tenant_id, **details)
         db.commit()
     except Exception:
         # The file is stored before the row commits; if the row doesn't make

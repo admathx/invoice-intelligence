@@ -43,5 +43,7 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!login|logout|api/|_next/|favicon\\.ico).*)"],
+  // The signed-out pages: signing in, and getting back in without a password
+  // (lib/api.ts isPublicPath, which the client-side session check uses).
+  matcher: ["/((?!login|logout|forgot-password|reset-password|api/|_next/|favicon\\.ico).*)"],
 };
