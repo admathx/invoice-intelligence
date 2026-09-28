@@ -1954,3 +1954,43 @@ link from one location's section never opens in another's.
 ### Gates
 Backend **294 passed** (15 new), frontend 29 unit, `tsc` clean, Playwright
 **13** (2 new: a digest link opening on its location; the account toggle).
+
+## A green theme, color-coded numbers, and actions that stand out
+
+- **Palette:** a light green accent (`brand` in `tailwind.config.ts`): a
+  green band across the top of every page, the current section highlighted
+  in the nav, green focus rings, links and card accents. Fills use the light
+  end with dark green text on them (about 9:1 contrast), so it stays readable.
+- **One set of controls** (`globals.css`): `btn-primary` (bold light green)
+  for the thing to do next on each screen (Upload invoice PDF, Confirm
+  invoice, Confirm match, Print, Add user, Create login, Add location, Sign
+  in), `btn-secondary` for the rest, `btn-danger` for Deactivate. Cards,
+  inputs, badges and table headers share one look.
+- **Numbers mean something by color** (`lib/format.ts`, tested): price
+  increases red, decreases and savings green; statuses as badges (done
+  green, needs a person amber, broken red, in progress blue); match
+  confidence green / amber / red against the review band. Numbers are also
+  *formatted* now: they were printed raw from the database ("4240.1143",
+  "1250.0000"); totals are dollars and cents with separators, unit prices
+  keep sub-cent precision only below a dollar, quantities drop padding zeros.
+  Tabular figures, so columns line up.
+- **Per screen:** stat cards on Invoices; red-accented alert cards with a
+  red ▲ percentage and red sparkline on Insights; a green "savings on the
+  table" banner and red-you-pay / green-target columns on the negotiation
+  sheet; a progress bar and a Confirm-match button on the review queue;
+  each price on a SKU's page colored against the delivery before it;
+  activity events marked by kind (problems red, invoices blue, matching
+  green, access amber, sign-ins gray).
+- **The weekly digest** matches: green header band and mark, red increase
+  pills, a green savings panel with its total, and real buttons.
+- **Layout:** the header is one row at 1280px and up, every section link
+  visible down to 1024px (the account menu takes a second row), and a
+  sideways-scrolling link row on phones; it's sticky only on large
+  screens, because on a phone it covered a third of the page. Tables scroll
+  on narrow screens instead of wrapping dates onto three lines. Measured with
+  Playwright at 1280 / 1024 / 390px.
+- The review-queue e2e test found its item by CSS classes; it now uses
+  test ids, so styling can change without breaking it.
+
+### Gates
+Backend 294, frontend 35 unit (6 new), `tsc` clean, Playwright 13.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { actorLabel, describeEvent, eventDetailLines, eventInvoiceId, type AuditEvent } from "./activity";
+import { actorLabel, describeEvent, eventDetailLines, eventInvoiceId, eventKind, type AuditEvent } from "./activity";
 
 function event(partial: Partial<AuditEvent>): AuditEvent {
   return {
@@ -86,6 +86,16 @@ describe("activity", () => {
     expect(
       describeEvent(event({ action: "email.rejected", details: { reason: "no PDF attachment (attachments: none)" } })),
     ).toBe("couldn't take an email: no PDF attachment (attachments: none)");
+  });
+
+  it("colors events by what kind of thing happened", () => {
+    expect(eventKind(event({ action: "invoice.extraction_failed" }))).toBe("problem");
+    expect(eventKind(event({ action: "auth.login_failed" }))).toBe("problem");
+    expect(eventKind(event({ action: "email.rejected" }))).toBe("problem");
+    expect(eventKind(event({ action: "invoice_line.match_corrected" }))).toBe("review");
+    expect(eventKind(event({ action: "invoice.confirmed" }))).toBe("invoice");
+    expect(eventKind(event({ action: "auth.login" }))).toBe("auth");
+    expect(eventKind(event({ action: "user.access_granted" }))).toBe("access");
   });
 
   it("falls back to something readable for an action it doesn't know", () => {

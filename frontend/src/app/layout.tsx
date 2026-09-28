@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import AccountMenu from "@/components/AccountMenu";
+import NavLinks from "@/components/NavLinks";
 import { SessionProvider } from "@/components/SessionContext";
 import { getSession } from "@/lib/server";
 
@@ -11,58 +12,39 @@ export const metadata: Metadata = {
   description: "Price creep, benchmarking, and negotiation sheets for restaurant invoices.",
 };
 
-const LINK = "whitespace-nowrap text-sm text-gray-600 hover:text-gray-900";
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const session = await getSession();
 
   return (
     <html lang="en">
-      <body className="min-h-screen bg-gray-50 text-gray-900">
+      <body className="min-h-screen">
         {session && (
-          <nav className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-white px-6 py-3">
-            <a href="/invoices" className="whitespace-nowrap font-semibold">
-              Invoice Intelligence
-            </a>
-            <a href="/invoices" className={LINK}>
-              Invoices
-            </a>
-            <a href="/skus" className={LINK}>
-              SKUs
-            </a>
-            <a href="/review" className={LINK}>
-              Review queue
-            </a>
-            <a href="/insights" className={LINK}>
-              Insights
-            </a>
-            <a href="/negotiation" className={LINK}>
-              Negotiation
-            </a>
-            <a href="/activity" className={LINK}>
-              Activity
-            </a>
-            {/* Operators only: the pages that work across every location
-                rather than inside the selected one. */}
-            {session.user.is_operator && (
-              <>
-                <a href="/accounts" className="whitespace-nowrap text-sm text-gray-400 hover:text-gray-900">
-                  Businesses
-                </a>
-                <a href="/users" className="whitespace-nowrap text-sm text-gray-400 hover:text-gray-900">
-                  Users
-                </a>
-                <a href="/audit" className="whitespace-nowrap text-sm text-gray-400 hover:text-gray-900">
-                  Audit log
-                </a>
-              </>
-            )}
-            <AccountMenu
-              name={session.user.name}
-              locations={session.user.locations}
-              locationId={session.locationId}
-            />
-          </nav>
+          // Sticky only where there's room: on a phone the header is most of
+          // the screen, and pinning it hid the content under it.
+          <header className="z-20 border-b border-gray-200 bg-white/95 backdrop-blur lg:sticky lg:top-0">
+            {/* The accent, as a thin band across the top of every page. */}
+            <div aria-hidden className="h-1 bg-gradient-to-r from-brand-300 via-brand-400 to-brand-300" />
+            <nav className="flex flex-wrap items-center gap-x-4 gap-y-2 px-6 py-2.5 xl:flex-nowrap">
+              <a
+                href="/invoices"
+                title="Invoice Intelligence"
+                className="flex flex-none items-center gap-2 whitespace-nowrap font-semibold text-gray-900"
+              >
+                <span aria-hidden className="grid h-7 w-7 place-items-center rounded-md bg-brand-400 text-xs font-bold text-brand-950">
+                  II
+                </span>
+                {/* The name where there's room for it and every link; the mark alone otherwise. */}
+                <span className="md:hidden 2xl:inline">Invoice Intelligence</span>
+              </a>
+              <NavLinks operator={session.user.is_operator} />
+              <AccountMenu
+                name={session.user.name}
+                locations={session.user.locations}
+                locationId={session.locationId}
+              />
+            </nav>
+          </header>
         )}
         <SessionProvider session={session}>
           <main className="p-6">{children}</main>

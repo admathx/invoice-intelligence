@@ -103,10 +103,10 @@ function Businesses() {
   const post = (path: string, body: unknown) => api(path, jsonInit("POST", body));
 
   return (
-    <div className="max-w-3xl">
-      <h1 className="text-xl font-semibold">Locations and businesses</h1>
+    <div className="max-w-4xl">
+      <h1 className="page-title">Locations and businesses</h1>
 
-      {error && <p className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+      {error && <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
       <AddLocation
         busy={busy}
@@ -114,13 +114,14 @@ function Businesses() {
         onSubmit={(body) => act(() => post("/tenants", body), (t) => setCreated(t as TenantSummary))}
       />
       {created && (
-        <p role="status" className="mt-3 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+        <p role="status" className="mt-3 rounded-lg border border-brand-200 border-l-4 border-l-brand-400 bg-brand-50 px-4 py-2.5 text-sm text-brand-950">
           Added <strong>{created.name}</strong>. They forward invoices to{" "}
-          <code className="rounded bg-white px-1">{created.inbox_address}</code>. Give someone access on the Users page.
+          <code className="rounded bg-white px-1.5 py-0.5 font-semibold ring-1 ring-brand-200">{created.inbox_address}</code>. Give
+          someone access on the Users page.
         </p>
       )}
 
-      <h2 className="mt-8 text-base font-semibold">Businesses</h2>
+      <h2 className="section-title mt-8">Businesses</h2>
       <p className="mt-1 max-w-2xl text-sm text-gray-600">
         Group a multi-unit operator&rsquo;s locations into one business. A business counts{" "}
         <strong>once</strong> in a peer benchmark no matter how many locations it has, and its locations
@@ -140,14 +141,14 @@ function Businesses() {
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           placeholder="New business name"
-          className="flex-1 rounded border border-gray-300 px-3 py-1.5 text-sm"
+          className="input flex-1"
         />
         <button
           type="submit"
           disabled={busy || !newName.trim()}
-          className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50"
+          className="btn-primary"
         >
-          Create
+          Create business
         </button>
       </form>
 
@@ -161,10 +162,10 @@ function Businesses() {
 
       <div className="mt-4 space-y-3">
         {accounts?.map((account) => (
-          <div key={account.id} className="rounded border border-gray-200 bg-white p-4">
+          <div key={account.id} className="card border-l-4 border-l-brand-300 p-4">
             <div className="flex items-baseline justify-between">
-              <h2 className="font-medium">{account.name}</h2>
-              <span className="text-xs text-gray-500">
+              <h2 className="font-semibold">{account.name}</h2>
+              <span className="badge bg-brand-100 text-brand-800">
                 {account.location_count} location{account.location_count === 1 ? "" : "s"} &middot; 1 vote in any
                 benchmark
               </span>
@@ -183,7 +184,7 @@ function Businesses() {
                         api(`/accounts/${account.id}/locations/${location.id}`, { method: "DELETE" })
                       )
                     }
-                    className="text-xs text-gray-500 hover:text-red-700 disabled:opacity-50"
+                    className="text-xs font-medium text-red-600 hover:text-red-800 hover:underline disabled:opacity-50"
                   >
                     Remove
                   </button>
@@ -197,7 +198,7 @@ function Businesses() {
               onChange={(e) =>
                 e.target.value && void act(() => post(`/accounts/${account.id}/locations`, { tenant_id: e.target.value }))
               }
-              className="mt-2 w-full rounded border border-gray-300 px-2 py-1.5 text-sm disabled:opacity-50"
+              className="input mt-2 w-full disabled:opacity-50"
             >
               <option value="">
                 {unassigned.length === 0 ? "No unassigned locations" : "Add a location..."}
@@ -212,25 +213,29 @@ function Businesses() {
         ))}
       </div>
 
-      <h2 className="mt-8 text-base font-semibold">All locations</h2>
-      <table className="mt-2 w-full border-collapse text-sm">
-        <thead>
-          <tr className="border-b text-left text-gray-500">
-            <th className="py-2 pr-4">Location</th>
-            <th className="py-2 pr-4">Metro</th>
-            <th className="py-2">Forwards invoices to</th>
+      <h2 className="section-title mt-8">All locations</h2>
+      <div className="card mt-2 overflow-x-auto">
+      <table className="w-full border-collapse text-sm">
+        <thead className="bg-gray-50">
+          <tr className="border-b border-gray-200">
+            <th className="th pl-4">Location</th>
+            <th className="th">Metro</th>
+            <th className="th">Forwards invoices to</th>
           </tr>
         </thead>
         <tbody>
           {tenants.map((t) => (
-            <tr key={t.id} className="border-b">
-              <td className="py-2 pr-4">{t.name}</td>
-              <td className="py-2 pr-4 text-gray-600">{t.metro}</td>
-              <td className="py-2 font-mono text-xs text-gray-600">{t.inbox_address ?? "—"}</td>
+            <tr key={t.id} className="border-b border-gray-100 last:border-0">
+              <td className="py-2.5 pl-4 pr-4 font-medium">{t.name}</td>
+              <td className="py-2.5 pr-4">
+                <span className="badge bg-sky-100 text-sky-800">{t.metro}</span>
+              </td>
+              <td className="py-2.5 pr-4 font-mono text-xs text-brand-800">{t.inbox_address ?? "—"}</td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -247,17 +252,17 @@ function AddLocation({
   const [name, setName] = useState("");
   const [metro, setMetro] = useState("");
   const [tier, setTier] = useState("under_500k");
-  const input = "rounded border border-gray-300 px-3 py-1.5 text-sm";
+  const input = "input";
   return (
     <form
-      className="mt-4 rounded border border-gray-200 bg-white p-4"
+      className="card mt-4 border-t-4 border-t-brand-300 p-4"
       onSubmit={(e) => {
         e.preventDefault();
         // Cleared only once the location exists: a refused one keeps what was typed.
         void onSubmit({ name: name.trim(), metro: metro.trim(), volume_tier: tier }).then((ok) => ok && setName(""));
       }}
     >
-      <h2 className="text-sm font-semibold">Add a location</h2>
+      <h2 className="section-title">Add a location</h2>
       <p className="mt-0.5 text-xs text-gray-500">
         A new restaurant, or a new site of an existing one. Pick an existing metro where one fits: benchmarks compare
         within a metro, so a second spelling splits it.
@@ -277,7 +282,7 @@ function AddLocation({
             </option>
           ))}
         </select>
-        <button type="submit" disabled={busy || !name.trim() || !metro.trim()} className="rounded bg-gray-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+        <button type="submit" disabled={busy || !name.trim() || !metro.trim()} className="btn-primary">
           Add location
         </button>
       </div>

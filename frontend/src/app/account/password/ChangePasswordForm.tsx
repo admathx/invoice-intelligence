@@ -48,21 +48,21 @@ export default function ChangePasswordForm({ required, email }: { required: bool
     }
   }
 
-  const input = "w-full rounded border border-gray-300 px-3 py-2 text-sm";
+  const input = "input w-full";
   return (
     <div className="max-w-sm">
-      <h1 className="text-xl font-semibold">{required ? "Choose your password" : "Change your password"}</h1>
+      <h1 className="page-title">{required ? "Choose your password" : "Change your password"}</h1>
       <p className="mt-1 text-sm text-gray-600">
         {required
           ? "You signed in with a temporary password someone gave you. Choose one only you know to continue."
           : `For ${email}. Your other signed-in browsers will be signed out.`}
       </p>
       {done && (
-        <p role="status" className="mt-4 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+        <p role="status" className="mt-4 rounded-lg border border-brand-200 border-l-4 border-l-brand-400 bg-brand-50 px-3 py-2 text-sm font-medium text-brand-900">
           Password changed.
         </p>
       )}
-      <form onSubmit={submit} className="mt-4 rounded border border-gray-200 bg-white p-5">
+      <form onSubmit={submit} className="card mt-4 border-t-4 border-t-brand-300 p-5">
         {/* Disabled until interactive: see useHydrated. */}
         <fieldset disabled={!hydrated} className="space-y-3">
           {/* For password managers: which account this is. */}
@@ -109,14 +109,14 @@ export default function ChangePasswordForm({ required, email }: { required: bool
             />
           </label>
           {error && (
-            <p className="text-sm text-red-600" data-testid="password-error">
+            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" data-testid="password-error">
               {error}
             </p>
           )}
           <button
             type="submit"
             disabled={busy}
-            className="w-full rounded bg-gray-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+            className="btn-primary w-full"
           >
             {busy ? "Saving…" : required ? "Set password and continue" : "Change password"}
           </button>

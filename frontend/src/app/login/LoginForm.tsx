@@ -38,11 +38,19 @@ export default function LoginForm({ next }: { next: string }) {
     }
   }
 
-  const input = "w-full rounded border border-gray-300 px-3 py-2 text-sm";
+  const input = "input w-full";
   return (
     <div className="mx-auto mt-24 max-w-sm">
-      <h1 className="mb-6 text-xl font-semibold">Invoice Intelligence</h1>
-      <form onSubmit={submit} className="rounded border border-gray-200 bg-white p-6">
+      <div className="mb-6 flex items-center gap-3">
+        <span aria-hidden className="grid h-10 w-10 place-items-center rounded-lg bg-brand-400 font-bold text-brand-950">
+          II
+        </span>
+        <div>
+          <h1 className="text-xl font-semibold">Invoice Intelligence</h1>
+          <p className="text-sm text-gray-500">Sign in to your account</p>
+        </div>
+      </div>
+      <form onSubmit={submit} className="card overflow-hidden border-t-4 border-t-brand-400 p-6">
         {/* Disabled until interactive: see useHydrated. */}
         <fieldset disabled={!hydrated} className="space-y-4">
           <label className="block text-sm">
@@ -69,14 +77,14 @@ export default function LoginForm({ next }: { next: string }) {
             />
           </label>
           {error && (
-            <p role="alert" className="text-sm text-red-600">
+            <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {error}
             </p>
           )}
           <button
             type="submit"
             disabled={busy}
-            className="w-full rounded bg-gray-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+            className="btn-primary w-full"
           >
             {busy ? "Signing in…" : "Sign in"}
           </button>

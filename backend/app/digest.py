@@ -266,47 +266,105 @@ def _sections_text(week: LocationWeek) -> list[str]:
     return out
 
 
+# The app's palette (frontend tailwind.config.ts `brand`), inlined: email
+# clients ignore stylesheets. Increases red, savings green, like the dashboard.
+_GREEN_FILL = "#4ade80"  # brand-400: buttons, header band
+_GREEN_INK = "#052e16"  # brand-950: text on the fill
+_GREEN_TEXT = "#15803d"  # brand-700: savings, good news
+_GREEN_TINT = "#f1fdf4"  # brand-50
+_RED_TEXT = "#dc2626"
+_RED_TINT = "#fee2e2"
+_AMBER_TEXT = "#92400e"
+_AMBER_TINT = "#fef3c7"
+_MUTED = "#6b7280"
+
+
+def _button(href: str, label: str) -> str:
+    """A button that survives email clients: a padded, filled link (clients
+    that drop padding still show a green link)."""
+    return (
+        f"<a href='{html.escape(href)}' style='display:inline-block;background:{_GREEN_FILL};color:{_GREEN_INK};"
+        "font-weight:700;font-size:13px;text-decoration:none;padding:8px 14px;border-radius:6px;"
+        f"border:1px solid #22c55e'>{html.escape(label)}</a>"
+    )
+
+
+def _pill(text: str, fg: str, bg: str) -> str:
+    return (
+        f"<span style='display:inline-block;background:{bg};color:{fg};font-weight:700;font-size:12px;"
+        f"padding:2px 8px;border-radius:999px'>{html.escape(text)}</span>"
+    )
+
+
 def _sections_html(week: LocationWeek) -> str:
     e = html.escape
-    parts = [f'<h2 style="font-size:17px;margin:24px 0 8px">{e(week.name)}</h2>']
+    parts = [
+        "<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+        "style='margin:20px 0 0;border:1px solid #e5e7eb;border-left:4px solid #86efac;border-radius:8px'>"
+        "<tr><td style='padding:16px 18px'>",
+        f"<h2 style='font-size:17px;margin:0 0 10px'>{e(week.name)}</h2>",
+    ]
 
-    def link(path: str, label: str) -> str:
-        return f'<a href="{e(_link(path, week.tenant_id))}" style="color:#2563eb">{e(label)}</a>'
+    def link(path: str) -> str:
+        return _link(path, week.tenant_id)
 
     if week.new_increase_count:
         rows = "".join(
-            f"<tr><td style='padding:2px 12px 2px 0'>{e(p.sku)}</td>"
-            f"<td style='padding:2px 12px 2px 0;color:#6b7280'>{e(_per(p.before, p.unit))} &rarr; {e(_per(p.now, p.unit))}</td>"
-            f"<td style='color:#b91c1c'>+{p.pct_change:.1%}</td></tr>"
+            "<tr>"
+            f"<td style='padding:4px 12px 4px 0'>{e(p.sku)}</td>"
+            f"<td style='padding:4px 12px 4px 0;color:{_MUTED};white-space:nowrap'>{e(_per(p.before, p.unit))} &rarr; "
+            f"<strong style='color:#111827'>{e(_per(p.now, p.unit))}</strong></td>"
+            f"<td style='padding:4px 0;text-align:right'>{_pill(f'▲ +{p.pct_change:.1%}', _RED_TEXT, _RED_TINT)}</td>"
+            "</tr>"
             for p in week.new_increases
         )
         more = week.new_increase_count - len(week.new_increases)
-        more_html = f"<p style='margin:4px 0;color:#6b7280'>&hellip;and {more} more</p>" if more > 0 else ""
+        more_html = f"<p style='margin:4px 0 0;color:{_MUTED}'>&hellip;and {more} more</p>" if more > 0 else ""
         parts.append(
-            f"<p style='margin:8px 0 4px'><strong>New price increases ({week.new_increase_count})</strong></p>"
-            f"<table style='font-size:14px;border-collapse:collapse'>{rows}</table>{more_html}"
-            f"<p style='margin:4px 0'>{link('/insights', 'See them on Insights')}</p>"
+            f"<p style='margin:0 0 6px'><strong style='color:{_RED_TEXT}'>{week.new_increase_count} new price "
+            f"increase{'s' if week.new_increase_count != 1 else ''}</strong></p>"
+            f"<table role='presentation' cellpadding='0' cellspacing='0' style='font-size:14px;border-collapse:collapse'>{rows}</table>"
+            f"{more_html}<p style='margin:10px 0 0'>{_button(link('/insights'), 'See them on Insights')}</p>"
         )
     if week.held_count:
-        items = "".join(f"<li>{link(f'/invoices/{h.invoice_id}', h.label)}</li>" for h in week.held)
+        items = "".join(
+            f"<li style='margin:2px 0'><a href='{e(link(f'/invoices/{h.invoice_id}'))}' style='color:{_GREEN_TEXT};font-weight:600'>"
+            f"{e(h.label)}</a></li>"
+            for h in week.held
+        )
         parts.append(
-            f"<p style='margin:12px 0 4px'><strong>Invoices to check ({week.held_count})</strong> "
-            "<span style='color:#6b7280'>held out of your numbers until someone does</span></p>"
-            f"<ul style='margin:0;padding-left:20px'>{items}</ul>"
+            f"<div style='margin:16px 0 0;padding:10px 12px;background:{_AMBER_TINT};border-radius:6px;color:{_AMBER_TEXT}'>"
+            f"<strong>{week.held_count} invoice{'s' if week.held_count != 1 else ''} to check</strong> "
+            "&middot; held out of your numbers until someone does"
+            f"<ul style='margin:6px 0 0;padding-left:20px'>{items}</ul></div>"
         )
     if week.pending_lines:
         lines = f"{week.pending_lines} line{'s' if week.pending_lines != 1 else ''}"
-        parts.append(f"<p style='margin:12px 0 4px'><strong>Review queue:</strong> {lines} to match &middot; {link('/review', 'Open the queue')}</p>")
+        parts.append(
+            f"<p style='margin:16px 0 0'><strong>Review queue:</strong> {_pill(lines + ' to match', _AMBER_TEXT, _AMBER_TINT)} "
+            f"&nbsp;{_button(link('/review'), 'Open the queue')}</p>"
+        )
     if week.received_count:
         invoices = f"{week.received_count} invoice{'s' if week.received_count != 1 else ''}"
-        parts.append(f"<p style='margin:12px 0 4px'><strong>Received this week:</strong> {invoices}, {_money(week.received_total)}</p>")
-    if week.savings:
-        items = "".join(f"<li>{e(s.sku)}: about {_money(s.annualized)} a year</li>" for s in week.savings)
         parts.append(
-            "<p style='margin:12px 0 4px'><strong>Biggest savings on your negotiation sheet</strong></p>"
-            f"<ul style='margin:0;padding-left:20px'>{items}</ul>"
-            f"<p style='margin:4px 0'>{link('/negotiation', 'Open the sheet')}</p>"
+            f"<p style='margin:16px 0 0'><strong>Received this week:</strong> {invoices}, "
+            f"<strong>{_money(week.received_total)}</strong></p>"
         )
+    if week.savings:
+        rows = "".join(
+            f"<tr><td style='padding:3px 12px 3px 0'>{e(s.sku)}</td>"
+            f"<td style='padding:3px 0;text-align:right;color:{_GREEN_TEXT};font-weight:700'>{_money(s.annualized)}/yr</td></tr>"
+            for s in week.savings
+        )
+        total = sum((s.annualized for s in week.savings), Decimal("0"))
+        parts.append(
+            f"<div style='margin:16px 0 0;padding:12px 14px;background:{_GREEN_TINT};border:1px solid #bbf7d0;border-radius:6px'>"
+            f"<p style='margin:0 0 6px;color:{_GREEN_TEXT}'><strong>Biggest savings on your negotiation sheet</strong> "
+            f"&middot; about <strong>{_money(total)}</strong> a year</p>"
+            f"<table role='presentation' cellpadding='0' cellspacing='0' style='font-size:14px;border-collapse:collapse'>{rows}</table>"
+            f"<p style='margin:10px 0 0'>{_button(link('/negotiation'), 'Open the sheet')}</p></div>"
+        )
+    parts.append("</td></tr></table>")
     return "".join(parts)
 
 
@@ -331,16 +389,24 @@ def compose(user: User, weeks: list[LocationWeek]) -> EmailMessage | None:
 
     body = "".join(_sections_html(w) for w in weeks)
     html_doc = (
-        "<!doctype html><html><body style='margin:0;background:#f9fafb'>"
-        "<div style='max-width:600px;margin:0 auto;padding:24px;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;"
-        "font-size:14px;color:#111827;background:#ffffff'>"
-        f"<p style='margin:0 0 4px'>Hi {html.escape(user.name)},</p><p style='margin:0'>Here&rsquo;s your week.</p>"
+        "<!doctype html><html><body style='margin:0;padding:24px 12px;background:#f3f4f6'>"
+        "<div style='max-width:600px;margin:0 auto;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;"
+        "font-size:14px;color:#111827;background:#ffffff;border-radius:10px;overflow:hidden;border:1px solid #e5e7eb'>"
+        # The app's header, in miniature: the green band and the mark.
+        f"<div style='background:{_GREEN_FILL};padding:14px 24px;color:{_GREEN_INK}'>"
+        "<span style='display:inline-block;background:#ffffff;color:#15803d;font-weight:800;font-size:12px;"
+        "padding:3px 7px;border-radius:5px;margin-right:8px'>II</span>"
+        "<strong style='font-size:15px'>Invoice Intelligence</strong>"
+        "<span style='float:right;font-size:13px;font-weight:600;padding-top:3px'>Your week</span></div>"
+        "<div style='padding:20px 24px 24px'>"
+        f"<p style='margin:0 0 4px'>Hi {html.escape(user.name)},</p>"
+        f"<p style='margin:0;color:{_MUTED}'>Here&rsquo;s what happened this week, and what&rsquo;s waiting for you.</p>"
         f"{body}"
         "<hr style='border:none;border-top:1px solid #e5e7eb;margin:24px 0 12px'>"
-        "<p style='font-size:12px;color:#6b7280;margin:0'>You get this weekly because you have access to these locations. "
-        f"<a href='{html.escape(unsubscribe)}' style='color:#6b7280'>Stop these emails</a> "
-        f"or turn them back on from <a href='{html.escape(account)}' style='color:#6b7280'>your account</a>.</p>"
-        "</div></body></html>"
+        f"<p style='font-size:12px;color:{_MUTED};margin:0'>You get this weekly because you have access to these locations. "
+        f"<a href='{html.escape(unsubscribe)}' style='color:{_MUTED}'>Stop these emails</a> "
+        f"or turn them back on from <a href='{html.escape(account)}' style='color:{_MUTED}'>your account</a>.</p>"
+        "</div></div></body></html>"
     )
     return mail.build_message(
         to=user.email,

@@ -104,7 +104,7 @@ test.describe("ingest -> review -> negotiation sheet", () => {
     // Fixture items sort first in the queue (see e2e_fixture.py) — handle
     // both regardless of which one the queue shows first.
     for (let i = 0; i < 2; i++) {
-      const current = await page.locator(".rounded.border.border-gray-200.bg-white.p-4 .text-lg").textContent();
+      const current = await page.getByTestId("review-description").textContent();
 
       if (current?.includes(fixture.confirm_raw_description)) {
         await expect(page.getByText("Press", { exact: false })).toBeVisible();
@@ -117,7 +117,7 @@ test.describe("ingest -> review -> negotiation sheet", () => {
         throw new Error(`Unexpected review queue item: ${current}`);
       }
 
-      await expect(page.locator(".rounded.border.border-gray-200.bg-white.p-4")).not.toContainText(current ?? "__none__");
+      await expect(page.getByTestId("review-item")).not.toContainText(current ?? "__none__");
     }
 
     // "The next matching line auto-resolves": the correction wrote a
@@ -148,7 +148,7 @@ test.describe("ingest -> review -> negotiation sheet", () => {
     // correctly a no-op.
     await page.goto(`/review?distributor_id=${bulk.distributor_id}`);
     const searchInput = page.getByPlaceholder("Search canonical SKU to correct...");
-    await expect(page.locator(".text-lg.font-medium")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("review-description")).toBeVisible({ timeout: 10_000 });
 
     const start = Date.now();
     for (let i = 1; i <= 20; i++) {

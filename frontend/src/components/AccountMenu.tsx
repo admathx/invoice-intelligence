@@ -26,13 +26,13 @@ export default function AccountMenu({
   }
 
   return (
-    <div className="ml-auto flex items-center gap-3 whitespace-nowrap text-sm">
+    <div className="ml-auto flex flex-none items-center gap-3 whitespace-nowrap text-sm">
       {locations.length > 1 ? (
         <select
           aria-label="Location"
           value={locationId ?? ""}
           onChange={(e) => switchTo(e.target.value)}
-          className="max-w-56 rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+          className="input max-w-48 py-1.5"
         >
           {locations.map((l) => (
             <option key={l.id} value={l.id}>
@@ -41,14 +41,14 @@ export default function AccountMenu({
           ))}
         </select>
       ) : (
-        <span className="text-gray-600">{locations[0]?.name ?? "No locations"}</span>
+        <span className="rounded-md bg-brand-50 px-2.5 py-1 font-medium text-brand-800">{locations[0]?.name ?? "No locations"}</span>
       )}
-      <a href={CHANGE_PASSWORD_PATH} title="Change your password" className="text-gray-400 hover:text-gray-900">
+      <a href={CHANGE_PASSWORD_PATH} title="Your account" className="font-medium text-gray-600 hover:text-brand-700">
         {name}
       </a>
       {/* A form, not a click handler: works before hydration (app/logout/route.ts). */}
       <form action="/logout" method="post">
-        <button type="submit" className="text-gray-600 hover:text-gray-900">
+        <button type="submit" className="btn-secondary btn-sm">
           Sign out
         </button>
       </form>

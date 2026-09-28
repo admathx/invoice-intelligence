@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import { useLocationId } from "@/components/SessionContext";
 import { api } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
+import { money, quantity, REVIEW_BADGE, STATUS_BADGE, STATUS_LABEL, unitPrice } from "@/lib/format";
 
 import AddLineModal from "./AddLineModal";
 
@@ -226,17 +227,14 @@ export default function InvoiceReview({
         ...d,
         [li.id]: { ...d[li.id], [f]: e.target.value },
       }));
-  const textInput = "rounded border border-gray-300 px-1.5 py-0.5";
+  const textInput = "input px-1.5 py-0.5";
   const headerValue = (f: HeaderField) => headerDrafts[f] ?? invoice[f] ?? "";
-  const moneyInput =
-    "w-20 rounded border border-gray-300 px-1.5 py-0.5 text-right tabular-nums";
+  const moneyInput = "input num w-24 px-1.5 py-0.5 text-right";
 
   return (
     <div>
       <div className="mb-1 flex items-baseline gap-3">
-        <h1 className="text-xl font-semibold">
-          {invoice.invoice_number ?? invoice.id}
-        </h1>
+        <h1 className="page-title">{invoice.invoice_number ?? invoice.id}</h1>
         <StatusBadge status={invoice.status} />
       </div>
       <p className="mb-4 text-sm text-gray-500">
@@ -245,8 +243,14 @@ export default function InvoiceReview({
       </p>
 
       {editable && (
-        <div className="mb-4 rounded border border-amber-200 bg-amber-50 px-4 py-3 text-sm">
-          <p className="font-medium text-amber-900">
+        <div
+          className={`mb-4 rounded-lg border border-l-4 px-4 py-3 text-sm ${
+            invoice.check.passes
+              ? "border-brand-200 border-l-brand-400 bg-brand-50"
+              : "border-amber-200 border-l-amber-400 bg-amber-50"
+          }`}
+        >
+          <p className={`font-medium ${invoice.check.passes ? "text-brand-900" : "text-amber-900"}`}>
             {invoice.status === "failed"
               ? "This invoice couldn't be read automatically, so nothing from it is in your analytics. Enter its lines from the invoice image."
               : invoice.check.passes
@@ -270,7 +274,7 @@ export default function InvoiceReview({
         </div>
       )}
       {invoice.status === "confirmed" && (
-        <p className="mb-4 rounded border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-800">
+        <p className="mb-4 rounded-lg border border-brand-200 border-l-4 border-l-brand-400 bg-brand-50 px-4 py-2.5 text-sm font-medium text-brand-900">
           Confirmed after review. Its prices now feed your benchmarks, alerts
           and negotiation sheet.
         </p>
@@ -286,7 +290,7 @@ export default function InvoiceReview({
                   key={url}
                   src={`/api${url}`}
                   alt="Invoice page"
-                  className="w-full rounded border border-gray-200"
+                  className="w-full rounded-lg border border-gray-200 shadow-sm"
                 />
               ))}
             </div>
@@ -313,7 +317,7 @@ export default function InvoiceReview({
                       distributor_id: e.target.value,
                     }))
                   }
-                  className="rounded border border-gray-300 px-2 py-1"
+                  className="input py-1.5"
                 >
                   {!recognized && (
                     <option value="">Unrecognized — choose</option>
@@ -336,24 +340,24 @@ export default function InvoiceReview({
                       invoice_date: e.target.value,
                     }))
                   }
-                  className="rounded border border-gray-300 px-2 py-1"
+                  className="input py-1.5"
                 />
               </label>
             </div>
           )}
 
-          <div className="overflow-x-auto">
+          <div className="card overflow-x-auto">
             <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr className="border-b text-left text-gray-500">
-                  <th className="py-2 pr-3">#</th>
-                  <th className="py-2 pr-3">Description</th>
-                  <th className="py-2 pr-3 text-right">Qty</th>
-                  <th className="py-2 pr-3">UOM</th>
-                  <th className="py-2 pr-3 text-right">Unit price</th>
-                  <th className="py-2 pr-3 text-right">Extended</th>
-                  <th className="py-2 pr-3">Review</th>
-                  {editable && <th className="py-2" />}
+              <thead className="bg-gray-50">
+                <tr className="border-b border-gray-200">
+                  <th className="th pl-3">#</th>
+                  <th className="th">Description</th>
+                  <th className="th text-right">Qty</th>
+                  <th className="th">UOM</th>
+                  <th className="th text-right">Unit price</th>
+                  <th className="th text-right">Extended</th>
+                  <th className="th">Match</th>
+                  {editable && <th className="th" />}
                 </tr>
               </thead>
               <tbody>
@@ -364,9 +368,9 @@ export default function InvoiceReview({
                   return (
                     <tr
                       key={li.id}
-                      className={`border-b ${flagged ? "bg-red-50" : ""}`}
+                      className={`border-b border-gray-100 ${flagged ? "bg-red-50" : ""}`}
                     >
-                      <td className="py-1.5 pr-3">{li.line_number}</td>
+                      <td className="py-2 pl-3 pr-3 text-gray-500">{li.line_number}</td>
                       <td className="py-1.5 pr-3">
                         {editable ? (
                           <>
@@ -403,13 +407,13 @@ export default function InvoiceReview({
                           </>
                         )}
                         {flagged && (
-                          <div className="text-xs text-red-700">
+                          <div className="mt-0.5 text-xs font-semibold text-red-700">
                             qty × unit price ≠ extended
                           </div>
                         )}
                       </td>
                       {(["quantity"] as LineField[]).map((f) => (
-                        <td key={f} className="py-1.5 pr-3 text-right">
+                        <td key={f} className="num py-1.5 pr-3 text-right">
                           {editable ? (
                             <input
                               aria-label={`Line ${li.line_number} ${f}`}
@@ -424,7 +428,7 @@ export default function InvoiceReview({
                               className={moneyInput}
                             />
                           ) : (
-                            li[f]
+                            quantity(li[f])
                           )}
                         </td>
                       ))}
@@ -442,7 +446,7 @@ export default function InvoiceReview({
                       </td>
                       {(["unit_price", "extended_price"] as LineField[]).map(
                         (f) => (
-                          <td key={f} className="py-1.5 pr-3 text-right">
+                          <td key={f} className="num py-1.5 pr-3 text-right">
                             {editable ? (
                               <input
                                 aria-label={`Line ${li.line_number} ${f.replace("_", " ")}`}
@@ -459,14 +463,18 @@ export default function InvoiceReview({
                                 }
                                 className={moneyInput}
                               />
+                            ) : f === "unit_price" ? (
+                              unitPrice(li[f])
                             ) : (
-                              `$${li[f]}`
+                              <span className="font-medium">{money(li[f])}</span>
                             )}
                           </td>
                         ),
                       )}
-                      <td className="py-1.5 pr-3 text-gray-500">
-                        {li.review_status}
+                      <td className="py-1.5 pr-3">
+                        <span className={`badge ${REVIEW_BADGE[li.review_status] ?? "bg-gray-100 text-gray-700"}`}>
+                          {li.review_status}
+                        </span>
                       </td>
                       {editable && (
                         <td className="py-1.5 text-right">
@@ -474,7 +482,7 @@ export default function InvoiceReview({
                             onClick={() => void removeLine(li)}
                             disabled={busy}
                             aria-label={`Remove line ${li.line_number}`}
-                            className="text-xs text-gray-400 hover:text-red-700 disabled:opacity-50"
+                            className="text-xs font-medium text-red-600 hover:text-red-800 hover:underline disabled:opacity-50"
                           >
                             Remove
                           </button>
@@ -496,13 +504,13 @@ export default function InvoiceReview({
             <button
               onClick={() => setAdding(true)}
               disabled={busy}
-              className="mt-2 text-sm font-medium text-blue-700 hover:underline disabled:opacity-50"
+              className="btn-secondary btn-sm mt-3 text-brand-800"
             >
               + Add line item
             </button>
           )}
 
-          <div className="mt-4 flex flex-wrap items-center gap-4 text-sm text-gray-700">
+          <div className="mt-4 flex flex-wrap items-center gap-5 text-sm text-gray-700">
             {(["subtotal", "tax", "total"] as HeaderField[]).map((f) => (
               <label key={f} className="flex items-center gap-2 capitalize">
                 {f}
@@ -517,7 +525,9 @@ export default function InvoiceReview({
                     className={moneyInput}
                   />
                 ) : (
-                  <span className="tabular-nums">${invoice[f] ?? "—"}</span>
+                  <span className={`num ${f === "total" ? "text-base font-semibold text-gray-900" : "font-medium"}`}>
+                    {money(invoice[f])}
+                  </span>
                 )}
               </label>
             ))}
@@ -528,7 +538,7 @@ export default function InvoiceReview({
               <button
                 onClick={save}
                 disabled={busy || !dirty}
-                className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50"
+                className="btn-secondary"
               >
                 Save &amp; re-check
               </button>
@@ -542,16 +552,18 @@ export default function InvoiceReview({
                       ? "The numbers still don't add up"
                       : ""
                 }
-                className="rounded bg-gray-900 px-3 py-1.5 text-sm text-white hover:bg-gray-800 disabled:opacity-40"
+                className="btn-primary"
               >
-                Confirm invoice
+                <span aria-hidden>✓</span> Confirm invoice
               </button>
               {dirty && (
-                <span className="text-xs text-gray-500">Unsaved changes</span>
+                <span className="badge bg-amber-100 text-amber-800">Unsaved changes</span>
               )}
             </div>
           )}
-          {error && <p className="mt-3 text-sm text-red-700">{error}</p>}
+          {error && (
+            <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+          )}
         </div>
       </div>
 
@@ -573,17 +585,9 @@ export default function InvoiceReview({
 }
 
 export function StatusBadge({ status }: { status: string }) {
-  const style =
-    status === "needs_review"
-      ? "bg-amber-100 text-amber-800"
-      : status === "confirmed" || status === "extracted"
-        ? "bg-emerald-100 text-emerald-800"
-        : status === "failed"
-          ? "bg-red-100 text-red-800"
-          : "bg-gray-100 text-gray-700";
   return (
-    <span className={`rounded px-2 py-0.5 text-xs font-medium ${style}`}>
-      {status.replace("_", " ")}
+    <span className={`badge ${STATUS_BADGE[status] ?? "bg-gray-100 text-gray-700"}`}>
+      {STATUS_LABEL[status] ?? status.replace("_", " ")}
     </span>
   );
 }

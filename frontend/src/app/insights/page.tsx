@@ -2,6 +2,7 @@ import { computeSparklineCoords, type PriceHistoryPoint } from "@/lib/sparkline"
 import { labelAnchor, ordinal, priceVerdict, trackPosition } from "@/lib/spectrum";
 
 import NoLocation from "@/components/NoLocation";
+import { percent, priceChangeTone, TONE_TEXT, unitPrice } from "@/lib/format";
 import { requireSession, serverGet } from "@/lib/server";
 
 type BenchmarkPosition = {
@@ -43,13 +44,14 @@ function Sparkline({ points }: { points: PriceHistoryPoint[] }) {
 
   return (
     <svg width={width} height={height} className="overflow-visible">
-      <polyline points={coords.join(" ")} fill="none" stroke="#2563eb" strokeWidth={1.5} />
+      {/* Red: every card here is a price that went up. */}
+      <polyline points={coords.join(" ")} fill="none" stroke="#dc2626" strokeWidth={2} strokeLinejoin="round" />
     </svg>
   );
 }
 
 const TONE = {
-  good: { text: "text-emerald-700", pin: "#047857" },
+  good: { text: "text-brand-700", pin: "#15803d" },
   fair: { text: "text-amber-700", pin: "#b45309" },
   bad: { text: "text-red-700", pin: "#b91c1c" },
 } as const;
@@ -114,7 +116,7 @@ function BenchmarkSpectrum({ benchmark }: { benchmark: BenchmarkPosition }) {
           className={`absolute top-0 whitespace-nowrap text-xs font-semibold ${tone.text}`}
           style={{ left: `${pinPosition}%`, transform: LABEL_TRANSFORM[labelAnchor(percentile)] }}
         >
-          you ${benchmark.tenant_price}
+          you {unitPrice(benchmark.tenant_price)}
         </span>
         <svg
           width="11"
@@ -137,7 +139,7 @@ function BenchmarkSpectrum({ benchmark }: { benchmark: BenchmarkPosition }) {
             className="absolute -translate-x-1/2 whitespace-nowrap text-[11px] text-gray-500"
             style={{ left: `${trackPosition(q)}%` }}
           >
-            ${quartilePrices[i]}
+            {unitPrice(quartilePrices[i])}
           </span>
         ))}
       </div>
@@ -159,21 +161,41 @@ export default async function InsightsPage() {
 
   return (
     <div className="max-w-3xl">
-      <h1 className="mb-4 text-xl font-semibold">Insights</h1>
-      {cards.length === 0 && <p className="text-sm text-gray-500">No open alerts right now.</p>}
+      <div className="mb-4 flex items-baseline gap-3">
+        <h1 className="page-title">Insights</h1>
+        {cards.length > 0 && (
+          <span className="badge bg-red-100 text-red-700">
+            {cards.length} price increase{cards.length === 1 ? "" : "s"}
+          </span>
+        )}
+      </div>
+      {cards.length === 0 && (
+        <div className="card flex items-center gap-3 border-l-4 border-l-brand-400 px-4 py-4 text-sm text-gray-700">
+          <span aria-hidden className="grid h-8 w-8 place-items-center rounded-full bg-brand-100 text-brand-800">
+            ✓
+          </span>
+          No open alerts right now. Prices are holding steady.
+        </div>
+      )}
       <div className="space-y-4">
         {cards.map((card) => (
-          <div key={card.alert_id} className="rounded border border-gray-200 bg-white p-4">
+          <div key={card.alert_id} className="card border-l-4 border-l-red-400 p-5">
             {/* Stacked on a phone: the sparkline is a fixed 220px, so sitting
                 it beside the text crushed that column to ~140px and wrapped
                 the SKU name and the price line onto six lines apiece. */}
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <div className="text-sm uppercase tracking-wide text-amber-600">{card.alert_type}</div>
-                <div className="text-lg font-medium">{card.canonical_sku_name}</div>
-                <div className="text-sm text-gray-600">
-                  ${card.baseline_price} &rarr; ${card.current_price} (
-                  {(Number(card.pct_change) * 100).toFixed(1)}%) since {card.window_start}
+                <span className="badge bg-amber-100 uppercase tracking-wide text-amber-800">{card.alert_type}</span>
+                <div className="mt-1 text-lg font-semibold">{card.canonical_sku_name}</div>
+                <div className="num mt-0.5 flex flex-wrap items-center gap-2 text-sm text-gray-600">
+                  <span>
+                    {unitPrice(card.baseline_price)} &rarr;{" "}
+                    <strong className="text-gray-900">{unitPrice(card.current_price)}</strong>
+                  </span>
+                  <span className={`badge bg-red-100 ${TONE_TEXT[priceChangeTone(card.pct_change)]}`}>
+                    ▲ {percent(card.pct_change, { signed: true })}
+                  </span>
+                  <span className="text-gray-500">since {card.window_start}</span>
                 </div>
               </div>
               <Sparkline points={card.price_history} />

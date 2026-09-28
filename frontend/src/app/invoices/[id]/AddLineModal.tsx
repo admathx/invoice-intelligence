@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { useLocationId } from "@/components/SessionContext";
 import { api, jsonInit } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
+import { unitPrice } from "@/lib/format";
 
 import type { InvoiceDetail } from "./InvoiceReview";
 
@@ -136,7 +137,7 @@ export default function AddLineModal({
     }
   }
 
-  const input = "w-full rounded border border-gray-300 px-2 py-1.5 text-sm";
+  const input = "input mt-1 w-full";
   const complete =
     fields.raw_description.trim() && fields.uom.trim() && fields.quantity.trim() && fields.unit_price.trim() && fields.extended_price.trim();
 
@@ -146,10 +147,11 @@ export default function AddLineModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="add-line-title"
-        className="w-full max-w-lg rounded-lg border border-gray-200 bg-white p-5 shadow-lg"
+        className="w-full max-w-lg overflow-hidden rounded-xl border border-gray-200 bg-white p-5 shadow-xl ring-1 ring-black/5"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <h2 id="add-line-title" className="text-base font-semibold">
+        <h2 id="add-line-title" className="flex items-center gap-2 text-lg font-semibold">
+          <span aria-hidden className="grid h-6 w-6 place-items-center rounded-md bg-brand-100 text-sm text-brand-800">+</span>
           Add line item
         </h2>
         <p className="mt-1 text-xs text-gray-500">Enter the line as it&rsquo;s printed on the invoice.</p>
@@ -164,13 +166,13 @@ export default function AddLineModal({
             className={input}
           />
           {suggestions.length > 0 && (
-            <ul className="absolute z-10 mt-1 max-h-64 w-full overflow-auto rounded border border-gray-200 bg-white shadow">
+            <ul className="absolute z-10 mt-1 max-h-64 w-full overflow-auto rounded-lg border border-gray-200 bg-white shadow-lg">
               {suggestions.map((s) => (
                 <li key={`${s.raw_sku}|${s.raw_description}|${s.raw_pack_size}|${s.uom}`}>
                   <button
                     type="button"
                     onClick={() => pick(s)}
-                    className="block w-full px-3 py-2 text-left text-sm hover:bg-blue-50"
+                    className="block w-full px-3 py-2 text-left text-sm hover:bg-brand-50"
                   >
                     <span className="font-medium">{s.raw_description}</span>
                     <span className="block text-xs text-gray-500">
@@ -215,21 +217,23 @@ export default function AddLineModal({
           </label>
 
           {picked && (
-            <p className="col-span-2 rounded bg-gray-50 px-3 py-2 text-xs text-gray-600">
-              Last paid <strong>${picked.last_unit_price}</strong> per {picked.uom} on {picked.last_seen}. Type the
+            <p className="col-span-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+              Last paid <strong className="num">{unitPrice(picked.last_unit_price)}</strong> per {picked.uom} on {picked.last_seen}. Type the
               price this invoice shows, even if it&rsquo;s the same.
             </p>
           )}
-          {error && <p className="col-span-2 text-sm text-red-700">{error}</p>}
+          {error && (
+            <p className="col-span-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+          )}
 
           <div className="col-span-2 mt-1 flex justify-end gap-2">
-            <button type="button" onClick={onClose} className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm hover:bg-gray-50">
+            <button type="button" onClick={onClose} className="btn-secondary">
               Cancel
             </button>
             <button
               type="submit"
               disabled={busy || !complete}
-              className="rounded bg-gray-900 px-3 py-1.5 text-sm text-white hover:bg-gray-800 disabled:opacity-40"
+              className="btn-primary"
             >
               Add line
             </button>

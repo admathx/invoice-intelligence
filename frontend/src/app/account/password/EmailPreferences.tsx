@@ -35,12 +35,12 @@ export default function EmailPreferences({ initiallyEnabled }: { initiallyEnable
   }
 
   return (
-    <section className="max-w-sm">
-      <h2 className="text-base font-semibold">Email</h2>
+    <section className="card max-w-sm p-5">
+      <h2 className="section-title">Email</h2>
       <label className="mt-2 flex items-start gap-2 text-sm">
         <input
           type="checkbox"
-          className="mt-0.5"
+          className="mt-0.5 h-4 w-4 accent-brand-600"
           checked={enabled}
           disabled={!hydrated || busy}
           onChange={(e) => void toggle(e.target.checked)}

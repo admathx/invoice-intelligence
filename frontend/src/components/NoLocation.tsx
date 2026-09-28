@@ -10,11 +10,11 @@ export default function NoLocation() {
     return (
       <p className="text-sm text-gray-600">
         There are no locations yet. Add the first one on the{" "}
-        <a href="/accounts" className="text-blue-600 hover:underline">
+        <a href="/accounts" className="link">
           Businesses
         </a>{" "}
         page, then give people access to it on{" "}
-        <a href="/users" className="text-blue-600 hover:underline">
+        <a href="/users" className="link">
           Users
         </a>
         .

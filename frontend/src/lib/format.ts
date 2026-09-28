@@ -1,0 +1,88 @@
+/** How numbers look and what color they are, in one place.
+ *
+ * The API sends money as exact decimal strings with four places ("4240.1143")
+ * because that's what's stored; screens used to print them as is. These turn
+ * them into what a person reads, and say which way a change is good: for
+ * someone buying food, a price going up is bad (red) and down is good (green).
+ */
+
+type Num = string | number | null | undefined;
+
+function toNumber(value: Num): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+const DASH = "—";
+
+/** Totals and savings: always cents, with thousands separators. "$4,240.11" */
+export function money(value: Num): string {
+  const n = toNumber(value);
+  if (n === null) return DASH;
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** Unit prices, where fractions of a cent matter on small items: cents from
+ *  $1 up, up to four places below it, trailing zeros dropped past the cent.
+ *  "$18.06", "$0.6656", "$0.50" */
+export function unitPrice(value: Num): string {
+  const n = toNumber(value);
+  if (n === null) return DASH;
+  const places = Math.abs(n) >= 1 ? 2 : 4;
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: places });
+}
+
+/** Quantities: no padding zeros. "1,250", "2.5" */
+export function quantity(value: Num): string {
+  const n = toNumber(value);
+  if (n === null) return DASH;
+  return n.toLocaleString("en-US", { maximumFractionDigits: 4 });
+}
+
+/** A fraction as a percentage. signed: a leading + on increases. "+24.2%" */
+export function percent(fraction: Num, { signed = false, places = 1 } = {}): string {
+  const n = toNumber(fraction);
+  if (n === null) return DASH;
+  const text = `${(n * 100).toFixed(places)}%`;
+  return signed && n > 0 ? `+${text}` : text;
+}
+
+export type Tone = "bad" | "good" | "neutral";
+
+/** Which way a price change reads for a buyer. */
+export function priceChangeTone(change: Num): Tone {
+  const n = toNumber(change);
+  if (n === null || n === 0) return "neutral";
+  return n > 0 ? "bad" : "good";
+}
+
+export const TONE_TEXT: Record<Tone, string> = {
+  bad: "text-red-600",
+  good: "text-brand-700",
+  neutral: "text-gray-600",
+};
+
+/** Invoice statuses, as badge colors: done is green, needing a person amber,
+ *  broken red, in progress blue. */
+export const STATUS_BADGE: Record<string, string> = {
+  extracted: "bg-brand-100 text-brand-800",
+  confirmed: "bg-brand-100 text-brand-800",
+  needs_review: "bg-amber-100 text-amber-800",
+  failed: "bg-red-100 text-red-700",
+  received: "bg-sky-100 text-sky-800",
+  rendering: "bg-sky-100 text-sky-800",
+  extracting: "bg-sky-100 text-sky-800",
+};
+
+/** A line's match: settled lines green, lines waiting on a person amber. */
+export const REVIEW_BADGE: Record<string, string> = {
+  auto: "bg-brand-100 text-brand-800",
+  confirmed: "bg-brand-100 text-brand-800",
+  corrected: "bg-sky-100 text-sky-800",
+  pending: "bg-amber-100 text-amber-800",
+};
+
+export const STATUS_LABEL: Record<string, string> = {
+  needs_review: "needs review",
+};

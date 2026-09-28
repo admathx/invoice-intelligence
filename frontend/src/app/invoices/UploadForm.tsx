@@ -45,13 +45,12 @@ export default function UploadForm() {
   }
 
   return (
-    <div className="mb-4 flex items-center gap-3">
-      <label className="cursor-pointer rounded border border-gray-300 bg-white px-3 py-1.5 text-sm hover:bg-gray-50">
-        Upload invoice PDF
+    <div className="flex items-center gap-3">
+      {status === "error" && <span className="text-sm text-red-600">{message}</span>}
+      <label className={`btn-primary cursor-pointer ${status === "uploading" ? "pointer-events-none opacity-60" : ""}`}>
+        <span aria-hidden>↑</span> {status === "uploading" ? "Uploading…" : "Upload invoice PDF"}
         <input type="file" accept="application/pdf" className="hidden" onChange={handleChange} />
       </label>
-      {status === "uploading" && <span className="text-sm text-gray-500">Uploading…</span>}
-      {status === "error" && <span className="text-sm text-red-600">{message}</span>}
     </div>
   );
 }

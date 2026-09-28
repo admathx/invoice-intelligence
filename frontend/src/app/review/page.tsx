@@ -6,6 +6,14 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import NoLocation from "@/components/NoLocation";
 import { useLocationId } from "@/components/SessionContext";
 import { api, jsonInit } from "@/lib/api";
+import { quantity, unitPrice } from "@/lib/format";
+
+/** How sure the matcher was: the review band starts at 80%. */
+function confidenceBadge(confidence: number): string {
+  if (confidence >= 0.9) return "bg-brand-100 text-brand-800";
+  if (confidence >= 0.85) return "bg-amber-100 text-amber-800";
+  return "bg-red-100 text-red-700";
+}
 
 type QueueItem = {
   id: string;
@@ -196,47 +204,70 @@ function ReviewQueueInner() {
   if (!current) {
     const seconds = Math.round((Date.now() - startedAt) / 1000);
     return (
-      <div>
-        <h1 className="mb-2 text-xl font-semibold">Review queue</h1>
-        <p className="text-sm text-gray-600">
+      <div className="max-w-2xl">
+        <h1 className="page-title mb-3">Review queue</h1>
+        <div className="card flex items-center gap-3 border-l-4 border-l-brand-400 px-4 py-4 text-sm text-gray-700">
+          <span aria-hidden className="grid h-8 w-8 place-items-center rounded-full bg-brand-100 text-brand-800">
+            ✓
+          </span>
           {clearedCount > 0
             ? `Cleared ${clearedCount} item${clearedCount === 1 ? "" : "s"} in ${seconds}s. Queue is empty.`
             : "Queue is empty — nothing needs review."}
-        </p>
+        </div>
       </div>
     );
   }
 
+  const confidence = current.match_confidence === null ? null : Number(current.match_confidence);
+  const progress = queue.length ? (index / queue.length) * 100 : 0;
+
   return (
     <div className="max-w-2xl">
-      <div className="mb-4 flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold">Review queue</h1>
-        <span className="text-sm text-gray-500">
-          {index + 1} of {queue.length} &middot; {clearedCount} cleared
+      <div className="mb-2 flex items-baseline justify-between">
+        <h1 className="page-title">Review queue</h1>
+        <span className="num text-sm text-gray-500">
+          <strong className="text-gray-900">{index + 1}</strong> of {queue.length} &middot;{" "}
+          <span className="font-semibold text-brand-700">{clearedCount} cleared</span>
         </span>
       </div>
+      <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-gray-200" aria-hidden>
+        <div className="h-full rounded-full bg-brand-400 transition-all" style={{ width: `${progress}%` }} />
+      </div>
 
-      <div className="rounded border border-gray-200 bg-white p-4">
+      <div className="card p-5" data-testid="review-item">
         <div className="mb-1 text-sm text-gray-500">
           {current.distributor_name ?? "Unknown distributor"} &middot; {current.invoice_date ?? "—"}
         </div>
-        <div className="mb-2 text-lg font-medium">{current.raw_description}</div>
-        <div className="mb-3 text-sm text-gray-600">
-          SKU {current.raw_sku ?? "—"} &middot; pack {current.raw_pack_size ?? "—"} &middot; qty{" "}
-          {current.quantity} {current.uom} &middot; ${current.unit_price}
+        <div className="mb-2 text-lg font-semibold" data-testid="review-description">
+          {current.raw_description}
+        </div>
+        <div className="num mb-4 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
+          <span>SKU {current.raw_sku ?? "—"}</span>
+          <span>pack {current.raw_pack_size ?? "—"}</span>
+          <span>
+            qty {quantity(current.quantity)} {current.uom}
+          </span>
+          <span className="font-semibold text-gray-900">{unitPrice(current.unit_price)}</span>
         </div>
 
         {current.canonical_sku_id ? (
-          <div className="mb-3 rounded bg-blue-50 px-3 py-2 text-sm">
-            Suggested match: <strong>{current.canonical_sku_name}</strong>{" "}
-            {current.match_confidence && (
-              <span className="text-gray-500">({Number(current.match_confidence).toFixed(2)})</span>
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-sm text-sky-950">
+            <span>
+              Suggested match: <strong>{current.canonical_sku_name}</strong>
+            </span>
+            {confidence !== null && (
+              <span className={`badge num ${confidenceBadge(confidence)}`}>{Math.round(confidence * 100)}% sure</span>
             )}
-            . Press <kbd className="rounded border bg-white px-1">Enter</kbd> to confirm, or search below to
-            correct.
+            <span className="basis-full text-xs text-sky-800">
+              Press <kbd className="rounded border border-sky-300 bg-white px-1">Enter</kbd> to confirm, or search below to
+              correct.
+            </span>
+            <button type="button" onClick={() => void confirm()} disabled={busy} className="btn-primary btn-sm">
+              ✓ Confirm match
+            </button>
           </div>
         ) : (
-          <div className="mb-3 rounded bg-amber-50 px-3 py-2 text-sm">
+          <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
             No confident match — search below to assign the correct canonical SKU.
           </div>
         )}
@@ -249,19 +280,19 @@ function ReviewQueueInner() {
           onKeyDown={onKeyDown}
           disabled={busy}
           placeholder="Search canonical SKU to correct..."
-          className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+          className="input w-full"
           autoFocus
         />
         {results.length > 0 && (
-          <ul className="mt-2 divide-y divide-gray-100 rounded border border-gray-200">
+          <ul className="mt-2 divide-y divide-gray-100 overflow-hidden rounded-lg border border-gray-200">
             {results.map((r, i) => (
               <li
                 key={r.id}
-                className={`cursor-pointer px-3 py-2 text-sm ${i === selected ? "bg-blue-100" : ""}`}
+                className={`cursor-pointer px-3 py-2 text-sm ${i === selected ? "bg-brand-100" : "hover:bg-gray-50"}`}
                 onMouseEnter={() => setSelected(i)}
                 onClick={() => correct(r.id)}
               >
-                {r.name}{" "}
+                <span className="font-medium">{r.name}</span>{" "}
                 <span className="text-gray-500">
                   {r.category}
                   {r.subcategory ? ` / ${r.subcategory}` : ""} · {r.base_uom}
@@ -270,7 +301,9 @@ function ReviewQueueInner() {
             ))}
           </ul>
         )}
-        {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+        {error && (
+          <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+        )}
       </div>
     </div>
   );

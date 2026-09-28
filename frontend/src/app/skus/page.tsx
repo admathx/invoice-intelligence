@@ -33,32 +33,33 @@ export default function SkusPage() {
   }
 
   return (
-    <div>
-      <h1 className="mb-4 text-xl font-semibold">Canonical SKUs</h1>
+    <div className="max-w-2xl">
+      <h1 className="page-title mb-4">Canonical SKUs</h1>
       <input
         type="text"
         value={query}
         onChange={(e) => search(e.target.value)}
         placeholder="Search canonical SKUs (e.g. mozzarella)"
-        className="mb-4 w-full max-w-md rounded border border-gray-300 px-3 py-2 text-sm"
+        className="input mb-4 w-full max-w-md"
       />
       {loading && <p className="text-sm text-gray-500">Searching...</p>}
-      <ul className="divide-y divide-gray-200 max-w-2xl">
-        {results.map((r) => (
-          <li key={r.id} className="py-2">
-            <a href={`/skus/${r.id}`} className="text-blue-600 hover:underline">
-              {r.name}
-            </a>
-            <span className="ml-2 text-sm text-gray-500">
-              {r.category}
-              {r.subcategory ? ` / ${r.subcategory}` : ""} · {r.base_uom}
-            </span>
-          </li>
-        ))}
-        {query && !loading && results.length === 0 && (
-          <li className="py-2 text-sm text-gray-500">No matches.</li>
-        )}
-      </ul>
+      {(results.length > 0 || (query && !loading)) && (
+        <ul className="card divide-y divide-gray-100">
+          {results.map((r) => (
+            <li key={r.id} className="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-brand-50/40">
+              <a href={`/skus/${r.id}`} className="link">
+                {r.name}
+              </a>
+              <span className="flex items-center gap-2 text-sm text-gray-500">
+                {r.category}
+                {r.subcategory ? ` / ${r.subcategory}` : ""}
+                <span className="badge bg-gray-100 text-gray-600">per {r.base_uom}</span>
+              </span>
+            </li>
+          ))}
+          {query && !loading && results.length === 0 && <li className="px-4 py-3 text-sm text-gray-500">No matches.</li>}
+        </ul>
+      )}
     </div>
   );
 }

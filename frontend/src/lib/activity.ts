@@ -147,3 +147,25 @@ export function eventInvoiceId(event: AuditEvent): string | null {
   if (event.entity_type === "invoice") return event.entity_id;
   return typeof event.details.invoice_id === "string" ? event.details.invoice_id : null;
 }
+
+
+/** What kind of thing happened, for the color it's shown in: problems red,
+ *  invoices blue, matching and pricing green, access amber, sign-ins gray. */
+export type EventKind = "problem" | "invoice" | "review" | "access" | "auth";
+
+export function eventKind(event: AuditEvent): EventKind {
+  const a = event.action;
+  if (a === "email.rejected" || a.endsWith("_failed") || a === "invoice.extraction_failed") return "problem";
+  if (a.startsWith("invoice_line.")) return "review";
+  if (a.startsWith("invoice.")) return "invoice";
+  if (a.startsWith("auth.")) return "auth";
+  return "access";
+}
+
+export const EVENT_DOT: Record<EventKind, string> = {
+  problem: "bg-red-500",
+  invoice: "bg-sky-500",
+  review: "bg-brand-500",
+  access: "bg-amber-400",
+  auth: "bg-gray-300",
+};

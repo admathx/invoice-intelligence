@@ -95,10 +95,10 @@ function AuditLog() {
     setCursor(page.next_cursor);
   }
 
-  const select = "rounded border border-gray-300 bg-white px-2 py-1 text-sm";
+  const select = "input py-1.5";
   return (
     <div className="max-w-4xl">
-      <h1 className="text-xl font-semibold">Audit log</h1>
+      <h1 className="page-title">Audit log</h1>
       <p className="mt-1 text-sm text-gray-600">
         Everything, everywhere: including what isn&rsquo;t tied to one location, like sign-ins, logins and businesses.
       </p>
@@ -130,7 +130,11 @@ function AuditLog() {
       </div>
 
       <div className="mt-4">
-        {failed && <p className="mb-2 text-sm text-red-700">Couldn&rsquo;t load the log.</p>}
+        {failed && (
+          <p className="mb-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            Couldn&rsquo;t load the log.
+          </p>
+        )}
         {events === null ? (
           <p className="text-sm text-gray-500">Loading…</p>
         ) : (
@@ -141,7 +145,7 @@ function AuditLog() {
             type="button"
             onClick={() => void loadMore()}
             disabled={loadingMore}
-            className="mt-3 rounded border border-gray-300 bg-white px-3 py-1.5 text-sm disabled:opacity-50"
+            className="btn-secondary mt-3"
           >
             {loadingMore ? "Loading…" : "Older"}
           </button>

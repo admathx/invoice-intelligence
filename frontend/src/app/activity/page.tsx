@@ -12,7 +12,7 @@ export default async function ActivityPage() {
 
   return (
     <div className="max-w-4xl">
-      <h1 className="mb-1 text-xl font-semibold">Activity</h1>
+      <h1 className="page-title mb-1">Activity</h1>
       <p className="mb-4 text-sm text-gray-500">
         Everything changed at {location?.name ?? "this location"}, and by whom. Most recent 200.
       </p>

@@ -42,7 +42,7 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
     <>
       <InvoiceReview initial={invoice} distributors={distributors} />
       <section className="mt-8 max-w-4xl">
-        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-gray-500">History</h2>
+        <h2 className="section-title mb-2">History</h2>
         <ActivityList events={history} />
       </section>
     </>

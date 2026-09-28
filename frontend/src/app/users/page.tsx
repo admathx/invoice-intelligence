@@ -103,14 +103,10 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
   return (
     <div className="max-w-5xl">
       <div className="flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold">Users</h1>
+        <h1 className="page-title">Users</h1>
         {!adding && (
-          <button
-            type="button"
-            onClick={() => setAdding(true)}
-            className="rounded bg-gray-900 px-3 py-1.5 text-sm font-medium text-white"
-          >
-            Add user
+          <button type="button" onClick={() => setAdding(true)} className="btn-primary">
+            + Add user
           </button>
         )}
       </div>
@@ -120,7 +116,7 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
 
       {handover && <PasswordHandover handover={handover} onDone={() => setHandover(null)} />}
       {error && (
-        <p role="status" className="mt-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <p role="status" className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           {error}
         </p>
       )}
@@ -145,29 +141,30 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
       {users === null ? (
         <p className="mt-6 text-sm text-gray-500">Loading…</p>
       ) : (
-        <table className="mt-6 w-full border-collapse text-sm">
-          <thead>
-            <tr className="border-b text-left text-gray-500">
-              <th className="py-2 pr-4">Person</th>
-              <th className="py-2 pr-4">Access</th>
-              <th className="py-2 pr-4">Last sign-in</th>
-              <th className="py-2" />
+        <div className="card mt-6 overflow-x-auto">
+        <table className="w-full border-collapse text-sm">
+          <thead className="bg-gray-50">
+            <tr className="border-b border-gray-200">
+              <th className="th pl-4">Person</th>
+              <th className="th">Access</th>
+              <th className="th">Last sign-in</th>
+              <th className="th" />
             </tr>
           </thead>
           <tbody>
             {users.map((user) => (
-              <tr key={user.id} className={`border-b align-top ${user.is_active ? "" : "text-gray-400"}`}>
-                <td className="py-3 pr-4">
+              <tr key={user.id} className={`border-b border-gray-100 align-top last:border-0 ${user.is_active ? "" : "bg-gray-50 text-gray-400"}`}>
+                <td className="py-3 pl-4 pr-4">
                   <div className="font-medium">
                     {user.name}
                     {user.id === selfId && <span className="ml-1 text-xs font-normal text-gray-400">(you)</span>}
                   </div>
                   <div className="text-gray-500">{user.email}</div>
-                  {!user.is_active && <div className="text-xs font-medium uppercase">Deactivated</div>}
+                  {!user.is_active && <span className="badge mt-1 bg-red-100 uppercase text-red-700">Deactivated</span>}
                 </td>
                 <td className="py-3 pr-4">
                   {user.is_operator ? (
-                    <span className="text-gray-700">Operator · every location</span>
+                    <span className="badge bg-violet-100 text-violet-800">Operator · every location</span>
                   ) : (
                     <LocationAccess
                       user={user}
@@ -181,9 +178,9 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
                 <td className="py-3 pr-4 whitespace-nowrap">{when(user.last_sign_in)}</td>
                 <td className="py-3 text-right whitespace-nowrap">
                   {user.id !== selfId && (
-                    <div className="flex justify-end gap-3 text-xs">
+                    <div className="flex justify-end gap-2 pr-4">
                       {user.is_active && (
-                        <button type="button" disabled={busy} onClick={() => resetPassword(user)} className="text-blue-600 hover:underline disabled:opacity-50">
+                        <button type="button" disabled={busy} onClick={() => resetPassword(user)} className="btn-secondary btn-sm">
                           Reset password
                         </button>
                       )}
@@ -191,7 +188,7 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
                         type="button"
                         disabled={busy}
                         onClick={() => setOperator(user, !user.is_operator)}
-                        className="text-gray-600 hover:underline disabled:opacity-50"
+                        className="btn-secondary btn-sm"
                       >
                         {user.is_operator ? "Remove operator" : "Make operator"}
                       </button>
@@ -199,7 +196,7 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
                         type="button"
                         disabled={busy}
                         onClick={() => setActive(user, !user.is_active)}
-                        className={`hover:underline disabled:opacity-50 ${user.is_active ? "text-red-700" : "text-gray-600"}`}
+                        className={user.is_active ? "btn-danger btn-sm" : "btn-primary btn-sm"}
                       >
                         {user.is_active ? "Deactivate" : "Reactivate"}
                       </button>
@@ -210,6 +207,7 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );
@@ -232,9 +230,11 @@ function LocationAccess({
   const grantable = allLocations.filter((l) => !granted.has(l.id));
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      {user.locations.length === 0 && <span className="text-amber-700">No locations: can sign in but sees nothing</span>}
+      {user.locations.length === 0 && (
+        <span className="badge bg-amber-100 text-amber-800">No locations: can sign in but sees nothing</span>
+      )}
       {user.locations.map((location) => (
-        <span key={location.id} className="inline-flex items-center gap-1 rounded bg-gray-100 px-2 py-0.5 text-gray-700">
+        <span key={location.id} className="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-0.5 text-brand-900 ring-1 ring-inset ring-brand-200">
           {location.name}
           <button
             type="button"
@@ -253,7 +253,7 @@ function LocationAccess({
           disabled={busy}
           value=""
           onChange={(e) => e.target.value && onGrant(e.target.value)}
-          className="rounded border border-gray-300 bg-white px-1.5 py-0.5 text-xs text-gray-600"
+          className="input px-1.5 py-0.5 text-xs text-gray-600"
         >
           <option value="">+ location</option>
           {grantable.map((l) => (
@@ -283,14 +283,14 @@ function AddUser({
   const [operator, setOperator] = useState(false);
   const [locationIds, setLocationIds] = useState<string[]>([]);
 
-  const input = "w-full rounded border border-gray-300 px-2 py-1.5 text-sm";
+  const input = "input w-full";
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
         onSubmit({ name, email, is_operator: operator, location_ids: operator ? [] : locationIds });
       }}
-      className="mt-4 space-y-3 rounded border border-gray-200 bg-white p-4"
+      className="card mt-4 space-y-3 border-t-4 border-t-brand-300 p-5"
     >
       <div className="grid grid-cols-2 gap-3">
         <label className="text-sm">
@@ -309,7 +309,7 @@ function AddUser({
       {!operator && (
         <fieldset className="text-sm">
           <legend className="mb-1 text-gray-600">Locations</legend>
-          <div className="grid max-h-48 grid-cols-2 gap-1 overflow-y-auto rounded border border-gray-200 p-2 sm:grid-cols-3">
+          <div className="grid max-h-48 grid-cols-2 gap-1 overflow-y-auto rounded-md border border-gray-200 p-2 sm:grid-cols-3">
             {allLocations.map((l) => (
               <label key={l.id} className="flex items-center gap-2">
                 <input
@@ -329,10 +329,10 @@ function AddUser({
         A temporary password is generated and shown to you once, to give to them directly.
       </p>
       <div className="flex gap-2">
-        <button type="submit" disabled={busy} className="rounded bg-gray-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+        <button type="submit" disabled={busy} className="btn-primary">
           Create login
         </button>
-        <button type="button" onClick={onCancel} className="rounded px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100">
+        <button type="button" onClick={onCancel} className="btn-secondary">
           Cancel
         </button>
       </div>
@@ -343,13 +343,13 @@ function AddUser({
 function PasswordHandover({ handover, onDone }: { handover: Handover; onDone: () => void }) {
   const [copied, setCopied] = useState(false);
   return (
-    <div role="status" className="mt-4 rounded border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+    <div role="status" className="mt-4 rounded-lg border border-brand-200 border-l-4 border-l-brand-400 bg-brand-50 px-4 py-3 text-sm text-brand-950">
       <p>
         {handover.reason === "created" ? "Login created for" : "Password reset for"} <strong>{handover.email}</strong>.
         Their temporary password, shown only this once:
       </p>
       <div className="mt-2 flex items-center gap-2">
-        <code className="rounded bg-white px-2 py-1 font-mono text-base" data-testid="generated-password">
+        <code className="rounded-md bg-white px-2.5 py-1 font-mono text-base font-semibold ring-1 ring-brand-200" data-testid="generated-password">
           {handover.password}
         </code>
         <button
@@ -360,11 +360,11 @@ function PasswordHandover({ handover, onDone }: { handover: Handover; onDone: ()
               () => setCopied(false),
             )
           }
-          className="rounded border border-emerald-300 bg-white px-2 py-1 text-xs"
+          className="btn-primary btn-sm"
         >
           {copied ? "Copied" : "Copy"}
         </button>
-        <button type="button" onClick={onDone} className="ml-auto text-xs underline">
+        <button type="button" onClick={onDone} className="btn-secondary btn-sm ml-auto">
           Done
         </button>
       </div>
