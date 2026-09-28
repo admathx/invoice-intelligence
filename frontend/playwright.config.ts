@@ -25,6 +25,10 @@ export default defineConfig({
   testDir: "./e2e",
   timeout: 30_000,
   fullyParallel: false,
+  // One worker, always: the tests share the e2e logins (signing one in
+  // resets its password) and the database, so parallel workers invalidate
+  // each other's sessions. --repeat-each would otherwise spread repeats out.
+  workers: 1,
   reporter: "list",
   use: {
     baseURL: `http://localhost:${PORT}`,

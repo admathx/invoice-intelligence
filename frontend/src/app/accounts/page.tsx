@@ -60,7 +60,10 @@ function Businesses() {
       );
       setAccounts(detailed);
       setTenants(await (await api("/tenants")).json());
-      setError(null);
+      // No setError(null) here: every action reloads, including a refused
+      // one, and clearing here wiped the refusal (a 409 "detach it first",
+      // a failed Add location) a moment after it appeared. A successful
+      // action clears the error itself (act).
     } catch {
       setAccounts([]);
       setError("Couldn't reach the API.");
