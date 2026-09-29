@@ -1,8 +1,10 @@
+import ActionButton from "@/components/ActionButton";
 import NoLocation from "@/components/NoLocation";
 import { MATCH_LABEL, percent, priceChangeTone, REVIEW_BADGE, TONE_TEXT, unitPrice } from "@/lib/format";
 import { requireSession, serverGet } from "@/lib/server";
 
 type MatchedLine = {
+  line_id: string;
   invoice_id: string;
   invoice_date: string | null;
   distributor_name: string;
@@ -109,6 +111,15 @@ export default async function SkuDetailPage({ params }: { params: { id: string }
                     <span className={`badge ${REVIEW_BADGE[l.review_status] ?? "bg-gray-100 text-gray-700"}`}>
                       {MATCH_LABEL[l.review_status] ?? l.review_status}
                     </span>
+                    {l.review_status !== "pending" && (
+                      <div className="mt-1">
+                        <ActionButton
+                          label="Not this product?"
+                          question={`Is “${l.raw_description}” not ${sku.name}? It goes back to Match items to be matched again, and its price stops counting here until it is.`}
+                          path={`/review/${l.line_id}/reopen?tenant_id=${locationId}`}
+                        />
+                      </div>
+                    )}
                   </td>
                 </tr>
               );

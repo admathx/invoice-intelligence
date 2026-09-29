@@ -1,7 +1,8 @@
 """Sends the scheduled emails: price-increase alerts within minutes of an
 alert opening (app/alert_emails.py), and the weekly digest when it's due.
-Also, about hourly, checks the database backups are still being made and
-copies new ones off the server (app/backups.py).
+Also queues again any invoice whose extraction job was lost (app/requeue.py),
+and about hourly checks the database backups are still being made and copies
+new ones off the server (app/backups.py).
 Runs for as long as the deployment does (the `scheduler` service in
 deploy/docker-compose.prod.yml).
 
@@ -20,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app import alert_emails, backups, digest, ops  # noqa: E402
+from app import alert_emails, backups, digest, ops, requeue  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db import SessionLocal  # noqa: E402
 
@@ -81,10 +82,18 @@ def look_after_backups(now: datetime) -> None:
     backups.copy_offsite()
 
 
+def pick_up_stalled_invoices(now: datetime) -> None:
+    db = SessionLocal()
+    try:
+        requeue.requeue_stalled(db, now)
+    finally:
+        db.close()
+
+
 def tick() -> None:
     now = datetime.now(timezone.utc)
     # Each on its own: a failure in one mustn't hold up the other.
-    for job in (send_alert_emails, send_digests, look_after_backups):
+    for job in (pick_up_stalled_invoices, send_alert_emails, send_digests, look_after_backups):
         try:
             job(now)
         except Exception as exc:  # a database blip mustn't end the scheduler

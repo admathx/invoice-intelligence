@@ -211,8 +211,11 @@ def test_extraction_is_queued_with_a_time_limit_that_fits_a_large_invoice(monkey
     calls = []
     monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: calls.append(k))
     assert _post(_email(tenant.inbox_address)).json()["status"] == "ingested"
-    # RQ's own default (180 s) killed long extractions mid-stream.
-    assert calls == [{"job_timeout": settings.extraction_job_timeout_seconds}]
+    # RQ's own default (180 s) killed long extractions mid-stream. Named
+    # after the invoice, so a lost job can be noticed (app/requeue.py).
+    assert len(calls) == 1
+    assert calls[0]["job_timeout"] == settings.extraction_job_timeout_seconds
+    assert calls[0]["job_id"].startswith("extract-")
     assert settings.extraction_job_timeout_seconds >= 900
 
 

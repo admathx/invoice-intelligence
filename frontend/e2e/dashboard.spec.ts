@@ -232,6 +232,9 @@ test.describe("ingest -> review -> negotiation sheet", () => {
 
     await page.goto(`/invoices/${fixture.invoice_id}`);
     await expect(page.getByText(/We didn.t find any items/)).toBeVisible();
+    // Typed before adding the first item, and not saved yet: adding an item
+    // refreshes the invoice, and this used to be wiped when it did.
+    await page.getByLabel("Total", { exact: true }).fill("612.00");
     await page.getByRole("button", { name: "+ Add item" }).click();
 
     const dialog = page.getByRole("dialog", { name: "Add an item" });
@@ -250,6 +253,7 @@ test.describe("ingest -> review -> negotiation sheet", () => {
     await dialog.getByLabel("Line total").fill("612.00");
     await dialog.getByRole("button", { name: "Add item" }).click();
     await expect(dialog).toBeHidden();
+    await expect(page.getByLabel("Total", { exact: true })).toHaveValue("612.00");
 
     for (const [label, value] of [["Subtotal", "612.00"], ["Tax", "0.00"], ["Total", "612.00"]]) {
       await page.getByLabel(label, { exact: true }).fill(value);
@@ -643,6 +647,7 @@ test.describe("spending, setup and the phone app", () => {
     await page.goto("/spending");
     await expect(page.getByRole("heading", { name: "Spending", exact: true })).toBeVisible();
     const bars = page.getByRole("button", { name: /^\w+ \d{4}: \$/ });
+    await expect(bars.first()).toBeVisible(); // loaded by the browser, with its own date
     expect(await bars.count()).toBeGreaterThan(1);
     const first = bars.first();
     const month = (await first.getAttribute("aria-label"))!.split(":")[0];
@@ -670,5 +675,61 @@ test.describe("spending, setup and the phone app", () => {
     const manifest = await (await page.request.get("/manifest.webmanifest")).json();
     expect(manifest).toMatchObject({ short_name: "Invoices", start_url: "/invoices", display: "standalone" });
     for (const icon of manifest.icons) expect((await page.request.get(icon.src)).status(), icon.src).toBe(200);
+  });
+});
+
+test.describe("fixing what's wrong", () => {
+  test.skip(!TENANT_ID, "E2E_TENANT_ID not set in frontend/.env.local");
+
+  test.beforeEach(async ({ page }) => {
+    expect((await page.request.post("/api/auth/login", { data: e2eLogin(), headers: CSRF })).ok()).toBeTruthy();
+  });
+
+  test.afterAll(() => {
+    if (TENANT_ID) runFixture("cleanup", TENANT_ID);
+  });
+
+  test("a wrongly matched item can be sent back to be matched again", async ({ page }) => {
+    const fixture = runFixture("setup-needs-review", TENANT_ID) as { invoice_id: string };
+    await page.goto(`/invoices/${fixture.invoice_id}`);
+    await page.getByLabel("Line 1 unit price").fill("47.50");
+    await page.getByRole("button", { name: "Save and check" }).click();
+    await page.getByRole("button", { name: "Confirm invoice" }).click();
+    await expect(page.getByText("Confirmed. Its prices now count")).toBeVisible();
+
+    page.once("dialog", (d) => void d.accept());
+    await page.getByRole("button", { name: "Wrong product?" }).first().click();
+    await expect(page.getByRole("link", { name: "Match it" }).first()).toBeVisible();
+    await expect(page.getByText("To match", { exact: true }).first()).toBeVisible();
+  });
+
+  test("an alert that's been dealt with can be taken off the list", async ({ page }) => {
+    await page.goto("/insights");
+    const buttons = page.getByRole("button", { name: "Dealt with it" });
+    test.skip((await buttons.count()) === 0, "no open price alerts at this location");
+    const before = await buttons.count();
+    // Put back afterwards: the location's real alerts aren't this test's.
+    const card = page.locator(".card", { has: buttons.first() });
+    const product = (await card.locator("a").first().textContent())!.trim();
+    page.once("dialog", (d) => void d.accept());
+    await buttons.first().click();
+    await expect(page.getByRole("button", { name: "Dealt with it" })).toHaveCount(before - 1);
+    await expect(page.getByRole("link", { name: product, exact: true })).toHaveCount(0);
+    runFixture("undismiss-alerts", TENANT_ID);
+  });
+
+  test("Match items says so when it can't load, instead of 'nothing to match'", async ({ page }) => {
+    await page.route("**/api/review/queue*", (route) => route.fulfill({ status: 500, body: "{}" }));
+    await page.goto("/review");
+    await expect(page.getByText("Couldn’t load the items to match")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+    await expect(page.getByText("Nothing to match right now")).toHaveCount(0);
+  });
+
+  test("a printed Savings sheet is just the sheet", async ({ page }) => {
+    await page.goto("/negotiation");
+    await page.emulateMedia({ media: "print" });
+    await expect(page.getByRole("navigation")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Sign out" })).toBeHidden();
   });
 });

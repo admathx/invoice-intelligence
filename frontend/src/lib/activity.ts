@@ -88,6 +88,10 @@ export function describeEvent(event: AuditEvent): string {
       return `confirmed which product ${show(d.raw_description)} is`;
     case "invoice_line.match_corrected":
       return `changed which product ${show(d.raw_description)} is`;
+    case "price_alert.dismissed":
+      return `took ${show(d.product)} off price alerts`;
+    case "invoice.requeued":
+      return "tried reading the invoice again";
     case "invoice_line.reopened":
       return `sent ${show(d.raw_description)} back to be matched again`;
     case "auth.login":

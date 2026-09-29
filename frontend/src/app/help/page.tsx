@@ -160,13 +160,19 @@ export default async function HelpPage() {
             </li>
           </ul>
           <p className="mt-2">Once you&rsquo;ve matched an item, the same item on later invoices is matched for you.</p>
+          <p className="mt-2">
+            Spot an item matched to the wrong product (on an invoice, or in a product&rsquo;s history)? Press{" "}
+            <em>Wrong product?</em> next to it and it goes back to <Go href="/review">Match items</Go>.
+          </p>
         </Section>
 
         <Section topic={topic("alerts")}>
           <p>
             <Go href="/insights">Price alerts</Go> lists products you&rsquo;re now paying noticeably more for than you
             used to. Where we know what similar businesses pay, you&rsquo;ll see how your price compares. Open a
-            product to see every price you&rsquo;ve paid for it.
+            product to see every price you&rsquo;ve paid for it. Once you&rsquo;ve dealt with one (called your rep, or
+            accepted it), press <em>Dealt with it</em> to take it off the list; we&rsquo;ll tell you again if the price
+            goes up more.
           </p>
         </Section>
 

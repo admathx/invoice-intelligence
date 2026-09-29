@@ -6,7 +6,7 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import audit
+from app import audit, ops
 from app.api.deps import get_tenant_or_404
 from app.api.invoice_review import build_invoice_detail
 from app.auth import current_user, get_db_for_tenant
@@ -75,7 +75,14 @@ def upload_invoice(
         raise
     db.refresh(invoice)
 
-    enqueue_extraction(invoice.id)
+    # Not fatal: the invoice is saved. Refusing here would tell the person
+    # the upload failed, and they'd upload it again (a duplicate), while
+    # this one waits. The scheduler queues any invoice whose job never
+    # arrived (app/requeue.py).
+    try:
+        enqueue_extraction(invoice.id)
+    except Exception as exc:
+        ops.alert("queue:upload", "An uploaded invoice couldn't be queued for reading", exc=exc)
 
     return InvoiceUploadResponse(id=invoice.id, status=invoice.status)
 

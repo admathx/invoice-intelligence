@@ -21,6 +21,9 @@ Subcommands (see backend/scripts/e2e_fixture.py --help via argparse):
                              invoices (CI has no .env.local to name one).
   cleanup-locations          deletes the locations the Businesses test created
                              ("E2E Location *") and their history.
+  undismiss-alerts <tenant_id>
+                             reopens the price alerts the dismiss test took
+                             off the list (they're the location's real ones).
   reset-link <tenant_id>     creates/resets a separate e2e login (its password
                              is about to be changed) and prints {email, token}
                              for a "forgot your password" link, as if emailed.
@@ -423,6 +426,35 @@ def cmd_login_operator() -> None:
         db.close()
 
 
+def cmd_undismiss_alerts(tenant_id: str) -> None:
+    from app.models import AuditEvent, PriceAlert
+    from app.models.enums import AlertStatus
+
+    db = SessionLocal()
+    try:
+        tid = uuid.UUID(tenant_id)
+        bind_tenant(db, tid)
+        # Only what the e2e login dismissed.
+        ids = list(
+            db.scalars(
+                sqlalchemy.select(AuditEvent.entity_id)
+                .join(User, User.id == AuditEvent.actor_user_id)
+                .where(AuditEvent.action == "price_alert.dismissed", User.email == E2E_LOGIN[0], AuditEvent.tenant_id == tid)
+            )
+        )
+        if ids:
+            db.execute(
+                sqlalchemy.update(PriceAlert)
+                .where(PriceAlert.id.in_(ids), PriceAlert.status == AlertStatus.dismissed)
+                .values(status=AlertStatus.open)
+            )
+            db.execute(sqlalchemy.delete(AuditEvent).where(AuditEvent.entity_id.in_(ids), AuditEvent.action == "price_alert.dismissed"))
+        db.commit()
+        print(json.dumps({"reopened": len(ids)}))
+    finally:
+        db.close()
+
+
 def cmd_reset_link(tenant_id: str) -> None:
     from scripts.seed_dev_users import upsert_login
 
@@ -558,6 +590,8 @@ def main() -> None:
     sub.add_parser("cleanup-users")
     sub.add_parser("cleanup-locations")
     sub.add_parser("pick-tenant")
+    undismiss_p = sub.add_parser("undismiss-alerts")
+    undismiss_p.add_argument("tenant_id")
     reset_p = sub.add_parser("reset-link")
     reset_p.add_argument("tenant_id")
 
@@ -589,6 +623,8 @@ def main() -> None:
         cmd_cleanup_locations()
     elif args.command == "pick-tenant":
         cmd_pick_tenant()
+    elif args.command == "undismiss-alerts":
+        cmd_undismiss_alerts(args.tenant_id)
     elif args.command == "reset-link":
         cmd_reset_link(args.tenant_id)
     elif args.command == "cleanup":

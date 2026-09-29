@@ -179,3 +179,30 @@ def test_resolving_leaves_alerts_a_person_already_handled_alone(db_session, tena
 
     db_session.refresh(alert)
     assert alert.status == AlertStatus.dismissed
+
+
+def test_a_price_coming_down_is_not_an_alert(db_session, tenant, canonical_sku, distributor):
+    """Every place alerts are shown presents them as increases: a drop used to
+    open one and read as '▲ -33%' under 'price increases'."""
+    for i in range(8):
+        _add_observation(db_session, tenant, canonical_sku, distributor, AS_OF - timedelta(weeks=13 - i), "15.00")
+    for i in range(RECENT_WINDOW_SIZE):
+        _add_observation(db_session, tenant, canonical_sku, distributor, AS_OF - timedelta(weeks=RECENT_WINDOW_SIZE - 1 - i), "10.00")
+    assert upsert_creep_alerts(db_session, tenant.id) == []
+
+
+def test_a_dismissed_alert_stays_away_unless_the_price_climbs_further(db_session, tenant, canonical_sku, distributor):
+    _seed_creep(db_session, tenant, canonical_sku, distributor)
+    (alert,) = upsert_creep_alerts(db_session, tenant.id)
+    alert.status = AlertStatus.dismissed
+    db_session.commit()
+
+    # Another delivery at the same price: still dealt with.
+    _add_observation(db_session, tenant, canonical_sku, distributor, AS_OF + timedelta(days=1), "15.00")
+    assert upsert_creep_alerts(db_session, tenant.id) == []
+
+    # Clearly higher than when it was dismissed: news again.
+    for day in range(2, 2 + RECENT_WINDOW_SIZE):
+        _add_observation(db_session, tenant, canonical_sku, distributor, AS_OF + timedelta(days=day), "18.00")
+    (reopened,) = upsert_creep_alerts(db_session, tenant.id)
+    assert reopened.id != alert.id and reopened.current_price == Decimal("18.0000")

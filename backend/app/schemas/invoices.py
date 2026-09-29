@@ -21,6 +21,8 @@ class LineItemOut(BaseModel):
     extended_price: Decimal
     uom: str
     canonical_sku_id: uuid.UUID | None
+    # Which product it was matched to, so a person can see a wrong match.
+    canonical_sku_name: str | None = None
     normalized_qty_base: Decimal | None
     normalized_unit_price: Decimal | None
     base_uom: BaseUom | None

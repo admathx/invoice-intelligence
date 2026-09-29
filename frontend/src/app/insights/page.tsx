@@ -1,6 +1,7 @@
 import { computeSparklineCoords, type PriceHistoryPoint } from "@/lib/sparkline";
 import { labelAnchor, priceVerdict, trackPosition } from "@/lib/spectrum";
 
+import ActionButton from "@/components/ActionButton";
 import NoLocation from "@/components/NoLocation";
 import { percent, priceChangeTone, TONE_TEXT, unitPrice } from "@/lib/format";
 import { requireSession, serverGet } from "@/lib/server";
@@ -220,6 +221,13 @@ export default async function InsightsPage() {
               <Sparkline points={card.price_history} />
             </div>
             {card.benchmark && <BenchmarkSpectrum benchmark={card.benchmark} />}
+            <div className="mt-3 flex justify-end border-t border-gray-100 pt-2">
+              <ActionButton
+                label="Dealt with it"
+                question={`Take ${card.canonical_sku_name} off your price alerts? We'll tell you again if the price goes up more.`}
+                path={`/insights/${card.alert_id}/dismiss?tenant_id=${locationId}`}
+              />
+            </div>
           </div>
         ))}
       </div>

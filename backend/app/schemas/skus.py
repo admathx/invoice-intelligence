@@ -16,6 +16,8 @@ class CanonicalSkuSearchResult(BaseModel):
 
 
 class SkuMatchedLine(BaseModel):
+    # The item itself, so a wrong match can be sent back to be matched again.
+    line_id: uuid.UUID
     invoice_id: uuid.UUID
     invoice_date: date | None
     distributor_name: str

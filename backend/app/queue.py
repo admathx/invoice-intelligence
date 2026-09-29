@@ -24,4 +24,15 @@ def enqueue_extraction(invoice_id) -> None:
     """
     from app.workers.tasks import process_invoice  # the worker module imports half the app
 
-    invoice_queue.enqueue(process_invoice, str(invoice_id), job_timeout=settings.extraction_job_timeout_seconds)
+    invoice_queue.enqueue(
+        process_invoice,
+        str(invoice_id),
+        job_timeout=settings.extraction_job_timeout_seconds,
+        # Named after the invoice, so app/requeue.py can tell whether its job
+        # is still alive.
+        job_id=job_id_for(invoice_id),
+    )
+
+
+def job_id_for(invoice_id) -> str:
+    return f"extract-{invoice_id}"

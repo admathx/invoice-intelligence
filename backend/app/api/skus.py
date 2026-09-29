@@ -43,6 +43,7 @@ def get_sku(sku_id: uuid.UUID, tenant_id: uuid.UUID, db: Session = Depends(get_d
 
     matched_lines = [
         SkuMatchedLine(
+            line_id=line.id,
             invoice_id=invoice.id,
             invoice_date=invoice.invoice_date,
             distributor_name=distributor.name,

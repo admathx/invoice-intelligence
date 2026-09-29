@@ -80,6 +80,11 @@ MIN_ABS_CHANGE_USD = Decimal(str(_creep_thresholds["min_abs_change_usd"]))
 ABS_FLOOR_CAP_FRACTION = Decimal(str(_creep_thresholds["abs_floor_cap_fraction"]))  # see module docstring
 
 
+# How much further a dismissed alert's price has to climb before it's news
+# again (see upsert_creep_alerts).
+REOPEN_ABOVE_DISMISSED = Decimal("0.05")
+
+
 @dataclass
 class CreepFinding:
     canonical_sku_id: uuid.UUID
@@ -126,7 +131,12 @@ def detect_price_creep(db: Session, tenant_id: uuid.UUID) -> list[CreepFinding]:
 
         floor = min(MIN_ABS_CHANGE_USD, ABS_FLOOR_CAP_FRACTION * baseline_median)
         threshold = max(MIN_PCT_CHANGE * baseline_median, floor)
-        if abs(delta) < threshold:
+        # Increases only. A price coming down is good news, and every place
+        # alerts are shown ("Price alerts", the weekly email, the price-
+        # increase email) presents them as increases: a -15% alert read as
+        # "▲ -15%" under "price increases". Any open alert on a price that
+        # has since fallen back is resolved below, like any other.
+        if delta < threshold:
             continue
 
         findings.append(
@@ -168,6 +178,25 @@ def upsert_creep_alerts(db: Session, tenant_id: uuid.UUID) -> list[PriceAlert]:
     alert that observation caused, that recompute did nothing.
     """
     findings = detect_price_creep(db, tenant_id)
+
+    # A person dismissed an alert for this product ("we've dealt with it"):
+    # it stays dismissed unless the price climbs clearly past what they saw,
+    # rather than reopening on the next delivery at the same price.
+    dismissed_at_price: dict[uuid.UUID, Decimal] = {}
+    for sku_id, price in db.execute(
+        select(PriceAlert.canonical_sku_id, PriceAlert.current_price).where(
+            PriceAlert.tenant_id == tenant_id,
+            PriceAlert.alert_type == AlertType.creep,
+            PriceAlert.status == AlertStatus.dismissed,
+        )
+    ):
+        dismissed_at_price[sku_id] = max(price, dismissed_at_price.get(sku_id, price))
+    findings = [
+        f
+        for f in findings
+        if f.canonical_sku_id not in dismissed_at_price
+        or f.current_price > dismissed_at_price[f.canonical_sku_id] * (1 + REOPEN_ABOVE_DISMISSED)
+    ]
 
     # Resolved rather than deleted: the alert was true when raised, and a
     # dismissed-by-the-data history is worth keeping. Only `open` alerts are

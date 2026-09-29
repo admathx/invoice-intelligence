@@ -1,11 +1,12 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useLocationId } from "@/components/SessionContext";
 import { api } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
+import ActionButton from "@/components/ActionButton";
 import RefreshWhileReading from "@/components/RefreshWhileReading";
 import {
   editableNumber,
@@ -33,6 +34,8 @@ type LineItem = {
   uom: string;
   normalized_unit_price: string | null;
   base_uom: string | null;
+  canonical_sku_id: string | null;
+  canonical_sku_name: string | null;
   review_status: string;
 };
 
@@ -100,6 +103,11 @@ export default function InvoiceReview({
   const router = useRouter();
   const locationId = useLocationId();
   const [invoice, setInvoice] = useState(initial);
+  // Whenever the page refreshes, show the server's latest: it finished being
+  // read, someone else confirmed it, an item was sent back to be matched.
+  // Anything typed and not yet saved stays: drafts are kept separately, by
+  // line and field, and only replace what they were typed over.
+  useEffect(() => setInvoice(initial), [initial]);
   const [lineDrafts, setLineDrafts] = useState<
     Record<string, Partial<Record<LineField, string>>>
   >({});
@@ -503,9 +511,30 @@ export default function InvoiceReview({
                         ),
                       )}
                       <td className="py-1.5 pr-3">
+                        {li.canonical_sku_id && li.canonical_sku_name && (
+                          <a href={`/skus/${li.canonical_sku_id}`} className="link block max-w-[12rem] truncate text-xs" title={li.canonical_sku_name}>
+                            {li.canonical_sku_name}
+                          </a>
+                        )}
                         <span className={`badge ${REVIEW_BADGE[li.review_status] ?? "bg-gray-100 text-gray-700"}`}>
                           {MATCH_LABEL[li.review_status] ?? li.review_status}
                         </span>
+                        {li.review_status === "pending" ? (
+                          <a href="/review" className="link ml-1 whitespace-nowrap text-xs">
+                            Match it
+                          </a>
+                        ) : (
+                          !editable &&
+                          li.canonical_sku_name && (
+                            <div className="mt-0.5">
+                              <ActionButton
+                                label="Wrong product?"
+                                question={`Is “${li.raw_description}” not ${li.canonical_sku_name}? It goes back to Match items to be matched again.`}
+                                path={`/review/${li.id}/reopen?tenant_id=${locationId}`}
+                              />
+                            </div>
+                          )
+                        )}
                       </td>
                       {editable && (
                         <td className="py-1.5 text-right">

@@ -58,6 +58,8 @@ function ReviewQueueInner() {
   const [index, setIndex] = useState(0);
   const [clearedCount, setClearedCount] = useState(0);
   const [skippedCount, setSkippedCount] = useState(0);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   // What the results on screen are for: "no matches" only once a search
@@ -78,8 +80,12 @@ function ReviewQueueInner() {
     let ignore = false;
     const params = new URLSearchParams({ tenant_id: locationId });
     if (distributorId) params.set("distributor_id", distributorId);
+    setLoadFailed(false);
     api(`/review/queue?${params}`)
-      .then((res) => (res.ok ? res.json() : []))
+      .then((res) => {
+        if (!res.ok) throw new Error(`queue: ${res.status}`);
+        return res.json();
+      })
       .then((data) => {
         if (ignore) return;
         setQueue(data);
@@ -93,11 +99,16 @@ function ReviewQueueInner() {
         setResults([]);
         setSelected(0);
         setError(null);
+      })
+      // Not "nothing to match": an error that looked like finished work sent
+      // people away with items still waiting.
+      .catch(() => {
+        if (!ignore) setLoadFailed(true);
       });
     return () => {
       ignore = true;
     };
-  }, [distributorId, locationId]);
+  }, [distributorId, locationId, attempt]);
 
   const current = queue?.[index] ?? null;
 
@@ -210,6 +221,20 @@ function ReviewQueueInner() {
   }
 
   if (!locationId) return <NoLocation />;
+
+  if (loadFailed) {
+    return (
+      <div className="max-w-2xl">
+        <PageHeading />
+        <div role="alert" className="card border-l-4 border-l-red-400 px-4 py-4 text-sm text-gray-700">
+          Couldn&rsquo;t load the items to match.
+          <button type="button" className="btn-secondary btn-sm ml-3" onClick={() => setAttempt((n) => n + 1)}>
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (queue === null) {
     return <p className="text-sm text-gray-500">Loading…</p>;

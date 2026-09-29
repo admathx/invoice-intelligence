@@ -178,10 +178,19 @@ def build_invoice_detail(db: Session, invoice: Invoice) -> InvoiceDetailOut:
     page_image_urls = [
         f"/invoices/{invoice.id}/pages/{name}?tenant_id={invoice.tenant_id}" for name in page_names(invoice.id)
     ]
+    sku_ids = {line.canonical_sku_id for line in lines if line.canonical_sku_id}
+    product = (
+        dict(db.execute(select(CanonicalSku.id, CanonicalSku.name).where(CanonicalSku.id.in_(sku_ids))).all())
+        if sku_ids
+        else {}
+    )
     return InvoiceDetailOut(
         **InvoiceOut.model_validate(invoice).model_dump(),
         distributor_name=distributor.name if distributor else None,
-        line_items=[LineItemOut.model_validate(line) for line in lines],
+        line_items=[
+            LineItemOut.model_validate(line).model_copy(update={"canonical_sku_name": product.get(line.canonical_sku_id)})
+            for line in lines
+        ],
         page_image_urls=page_image_urls,
         check=InvoiceCheckOut(
             passes=check.passes, reasons=check.reasons, failed_line_numbers=check.failed_line_numbers

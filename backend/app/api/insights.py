@@ -1,5 +1,6 @@
 """SPEC.md §9: Insights — open alerts, price history sparkline per SKU,
-benchmark position. Read-only: creep alerts are refreshed by
+benchmark position; and dismissing an alert someone has dealt with.
+Viewing is read-only: creep alerts are refreshed by
 app/api/review.py right after a new price observation actually lands
 (a confirm/correct), not on every page view here — an earlier version
 called upsert_creep_alerts on every GET, turning a nominally safe/cacheable
@@ -8,14 +9,15 @@ load, refresh, or browser prefetch, a code-review finding on Phase 5.
 """
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import audit
 from app.analytics.benchmark import account_key_for, compute_benchmark
 from app.api.deps import get_tenant_or_404
-from app.auth import get_db_for_tenant
-from app.models import CanonicalSku, PriceAlert, PriceObservation
+from app.auth import current_user, get_db_for_tenant
+from app.models import CanonicalSku, PriceAlert, PriceObservation, User
 from app.models.enums import AlertStatus
 from app.schemas.insights import BenchmarkPosition, InsightCard, PriceHistoryPoint
 
@@ -111,3 +113,33 @@ def get_insights(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant))
             )
         )
     return cards
+
+
+@router.post("/{alert_id}/dismiss", status_code=204)
+def dismiss_alert(
+    alert_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
+) -> None:
+    """Take an increase off Price alerts once it's been dealt with (the rep
+    was called, the price accepted). It stays off unless the price climbs
+    clearly further (app/analytics/price_creep.py REOPEN_ABOVE_DISMISSED)."""
+    get_tenant_or_404(db, tenant_id)
+    alert = db.get(PriceAlert, alert_id)  # tenant-scoped: another location's is simply not found
+    if alert is None or alert.status != AlertStatus.open:
+        raise HTTPException(status_code=404, detail="That alert isn't open any more.")
+    alert.status = AlertStatus.dismissed
+    product = db.scalar(select(CanonicalSku.name).where(CanonicalSku.id == alert.canonical_sku_id))
+    audit.record(
+        db,
+        user,
+        "price_alert.dismissed",
+        "price_alert",
+        alert.id,
+        tenant_id,
+        product=product,
+        pct_change=alert.pct_change,
+        current_price=alert.current_price,
+    )
+    db.commit()

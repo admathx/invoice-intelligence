@@ -2317,3 +2317,43 @@ Ten findings, all fixed.
 
 ### Gates
 Backend 355, frontend 54 unit, `tsc` clean, Playwright 25.
+
+## Whole-application bug check
+
+Every endpoint's access checks were reviewed (all location data goes through
+the membership check; admin pages enforce admin at the router), along with
+the invoice, matching, alert, email, spending, export, admin, storage,
+backup and deployment code. Eight findings, all fixed.
+
+- **Price drops were shown as price increases.** Detection flagged moves
+  either way, and a -15% alert read "Price going up ▲ -14.8%" on Price
+  alerts and "▲ +-14.8%" in the weekly email. Only increases open alerts
+  now; any open alert on a price that has fallen back resolves as usual.
+- **Invoices whose job was lost stayed "Reading" forever** (Redis down at
+  upload, the worker killed mid-job). The scheduler now queues again any
+  in-progress invoice with no live job (jobs are named after their invoice
+  to tell), and after three tries marks it "Couldn't read" and tells ops,
+  so a file that crashes the worker isn't retried, and billed, forever. An
+  upload no longer fails when the queue is down (it would be picked up
+  anyway, and the retry made a duplicate). Pages stop auto-refreshing after
+  20 minutes.
+- **The printed Savings sheet carried the app's menu and Sign out.** The
+  header is hidden on paper.
+- **Unsaved invoice edits were lost** when adding an item refreshed the
+  invoice (from the earlier remount-on-status change). The form now takes
+  the server's latest on every refresh and keeps drafts separately.
+- **An error on Match items looked like "Nothing to match right now."** It
+  now says it couldn't load, with Try again.
+- **Spending's "this month" followed the server's UTC date**, turning over
+  hours early across the US. The page now asks with the viewer's date.
+- **Price alerts couldn't be dismissed.** "Dealt with it" takes one off the
+  list; it stays off unless the price climbs at least 5% past what was
+  dismissed.
+- **A wrong automatic match couldn't be sent back.** Invoice items now show
+  their product, and invoices and product histories have "Wrong product?",
+  which returns the item to Match items (the endpoint existed; no screen
+  used it).
+
+### Gates
+Backend 363, frontend 54 unit, `tsc` and `next build` clean, Playwright 29
+(4 new, one extended).

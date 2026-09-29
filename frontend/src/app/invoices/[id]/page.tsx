@@ -41,10 +41,7 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
   const distributors = reviewable ? await getDistributors() : [];
   return (
     <>
-      {/* Keyed by status: the form keeps its own copy of the invoice, so when
-          a refresh brings a new status (read at last, or confirmed) it starts
-          again from the server's, rather than showing the old one. */}
-      <InvoiceReview key={invoice.status} initial={invoice} distributors={distributors} />
+      <InvoiceReview initial={invoice} distributors={distributors} />
       <section className="mt-8 max-w-4xl">
         <h2 className="section-title mb-2">History</h2>
         <ActivityList events={history} />
