@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 
 import AccountMenu from "@/components/AccountMenu";
 import NavLinks from "@/components/NavLinks";
@@ -10,6 +10,12 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Invoice Intelligence",
   description: "See what you pay for every product, catch price increases, and know what to ask your rep for.",
+  // On an iPhone's home screen: opens full screen, named in a word.
+  appleWebApp: { capable: true, title: "Invoices", statusBarStyle: "default" },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#4ade80",
 };
 
 

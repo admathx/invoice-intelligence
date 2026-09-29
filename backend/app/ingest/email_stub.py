@@ -2,7 +2,9 @@
 
 An email is parsed, routed to a tenant by the address it was sent to, and
 each PDF attachment becomes an invoice on the same queue the HTTP upload
-endpoint uses. Two ways in, one path underneath (route_email ->
+endpoint uses. An email with no PDF but photos of a paper invoice (someone
+at the back door emailing what their phone took) becomes one invoice, a page
+per photo; logos and signature images are left out (see is_invoice_photo). Two ways in, one path underneath (route_email ->
 record_invoices -> enqueue_invoices):
 
 - the inbound webhook (app/api/inbound.py), which a mail provider posts each
@@ -16,6 +18,7 @@ to `inbox/quarantine/` with a `.reason.txt` beside it, so a human can see
 exactly what arrived and why it didn't become an invoice.
 """
 import hashlib
+import io
 import re
 import time
 import uuid
@@ -31,7 +34,14 @@ from sqlalchemy.orm import Session
 from app import audit
 from app.config import settings
 from app.db import bind_tenant
-from app.ingest.upload import InvalidInvoiceFileError, is_pdf_bytes, save_invoice_bytes, validate_invoice_bytes
+from app.ingest.photos import MAX_PHOTOS, image_kind
+from app.ingest.upload import (
+    InvalidInvoiceFileError,
+    invoice_pdf_from_upload,
+    is_pdf_bytes,
+    save_invoice_bytes,
+    validate_invoice_bytes,
+)
 from app.storage import forget_original
 from app.models import Invoice, Tenant
 from app.models.enums import InvoiceSource, InvoiceStatus
@@ -52,11 +62,41 @@ QUARANTINE_DIRNAME = "quarantine"
 INBOX_SETTLE_SECONDS = 2.0
 
 
+# What a photo of an invoice at least is. A phone photo is hundreds of KB
+# and thousands of pixels across; a signature logo or a social-media icon is
+# a few KB and a couple of hundred pixels.
+MIN_PHOTO_BYTES = 30 * 1024
+MIN_PHOTO_SHORT_SIDE = 600
+
+
 @dataclass
 class EmailAttachment:
     filename: str
     content_type: str
     content: bytes
+    # "inline" images with a Content-ID are pictures inside the message body
+    # (a logo in a signature), not something the sender attached.
+    disposition: str | None = None
+    content_id: str | None = None
+
+    @property
+    def is_invoice_photo(self) -> bool:
+        """A photo someone attached, big enough to be a page of an invoice."""
+        if image_kind(self.content) is None:
+            return False
+        if self.content_id and self.disposition != "attachment":
+            return False
+        if len(self.content) < MIN_PHOTO_BYTES:
+            return False
+        try:
+            from PIL import Image
+
+            width, height = Image.open(io.BytesIO(self.content)).size
+        except Exception:
+            # Not something we can open: leave it for the upload path to
+            # refuse with a reason, rather than guessing here.
+            return True
+        return min(width, height) >= MIN_PHOTO_SHORT_SIDE
 
     @property
     def is_pdf(self) -> bool:
@@ -77,6 +117,10 @@ class ParsedEmail:
     @property
     def pdf_attachments(self) -> list[EmailAttachment]:
         return [a for a in self.attachments if a.is_pdf]
+
+    @property
+    def photo_attachments(self) -> list[EmailAttachment]:
+        return [a for a in self.attachments if a.is_invoice_photo]
 
 
 @dataclass
@@ -116,6 +160,8 @@ def parse_email(raw: bytes) -> ParsedEmail:
                 filename=filename or "attachment",
                 content_type=(part.get_content_type() or "").lower(),
                 content=payload,
+                disposition=part.get_content_disposition(),
+                content_id=part.get("content-id"),
             )
         )
 
@@ -204,7 +250,8 @@ def _already_ingested(db: Session, tenant_id: uuid.UUID, message_id: str) -> boo
 
 @dataclass
 class _Routed:
-    """An email that can become invoices: whose they are, and which PDFs."""
+    """An email that can become invoices: whose they are, and which PDFs, or
+    the one PDF its photos became."""
 
     parsed: ParsedEmail
     tenant: Tenant
@@ -214,6 +261,8 @@ class _Routed:
     # message itself, which a provider's retry reproduces byte for byte.
     # Stored as the invoices' source_message_id.
     dedupe_key: str
+    # Set when the email's photos became its one invoice: their filenames.
+    photo_names: str | None = None
 
     @property
     def context(self) -> str:
@@ -252,8 +301,13 @@ def route_email(db: Session, raw: bytes) -> _Routed | _Rejected:
 
     pdfs = parsed.pdf_attachments
     if not pdfs:
+        # PDFs win when there are both: an invoice PDF with a photo or a
+        # logo alongside is the PDF.
+        photos = parsed.photo_attachments
+        if photos:
+            return _route_photos(parsed, tenant, photos, raw)
         other = ", ".join(a.filename for a in parsed.attachments) or "none"
-        return _Rejected(f"no PDF attachment (attachments: {other}){context}", parsed, tenant)
+        return _Rejected(f"no PDF or photo of an invoice attached (attachments: {other}){context}", parsed, tenant)
 
     # The same gate the upload endpoint applies, so the two entry points can't
     # disagree about what's acceptable. Email used to skip the size limit and
@@ -266,8 +320,27 @@ def route_email(db: Session, raw: bytes) -> _Routed | _Rejected:
         except InvalidInvoiceFileError as exc:
             return _Rejected(f"attachment {attachment.filename!r} rejected: {exc}{context}", parsed, tenant)
 
-    dedupe_key = parsed.message_id or f"<sha256:{hashlib.sha256(raw).hexdigest()}@no-message-id>"
-    return _Routed(parsed, tenant, pdfs, dedupe_key)
+    return _Routed(parsed, tenant, pdfs, _dedupe_key(parsed, raw))
+
+
+def _dedupe_key(parsed: ParsedEmail, raw: bytes) -> str:
+    return parsed.message_id or f"<sha256:{hashlib.sha256(raw).hexdigest()}@no-message-id>"
+
+
+def _route_photos(parsed: ParsedEmail, tenant: Tenant, photos: list[EmailAttachment], raw: bytes) -> _Routed | _Rejected:
+    """Every photo in the email is a page of one invoice, in the order
+    attached: that's how a phone sends the pages of one paper invoice."""
+    context = _context(parsed)
+    if len(photos) > MAX_PHOTOS:
+        return _Rejected(f"{len(photos)} photos attached; one invoice can have up to {MAX_PHOTOS}{context}", parsed, tenant)
+    try:
+        pdf, _ = invoice_pdf_from_upload([a.content for a in photos])
+    except InvalidInvoiceFileError as exc:
+        return _Rejected(f"photos rejected: {exc}{context}", parsed, tenant)
+    as_pdf = EmailAttachment(filename=photos[0].filename, content_type="application/pdf", content=pdf)
+    return _Routed(
+        parsed, tenant, [as_pdf], _dedupe_key(parsed, raw), photo_names=", ".join(a.filename for a in photos)
+    )
 
 
 def _lock_message(db: Session, tenant_id: uuid.UUID, message_id: str) -> None:
@@ -325,6 +398,7 @@ def _add_invoices(db: Session, routed: _Routed, invoice_ids: list[uuid.UUID]) ->
             invoice.id,
             tenant.id,
             filename=attachment.filename,
+            photos=routed.photo_names,
             message_id=parsed.message_id,
         )
 

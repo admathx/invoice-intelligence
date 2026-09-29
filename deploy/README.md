@@ -150,11 +150,24 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.producti
 Skipping it, invoices recorded earlier still open their original PDF, but
 their page images disappear from the review screen.
 
-## 9. Backups
+## 9. Backups and monitoring
 
-The database is the thing to back up; everything else can be rebuilt.
+### Backups
+
+The `backup` service backs up the database every night (from
+`BACKUP_HOUR_UTC`, default 07:00 UTC) into the `backups` volume, checks each
+one reads back, and keeps two weeks (`BACKUP_KEEP_DAYS`). A new deployment
+gets its first backup as soon as it starts. With `STORAGE_BACKEND=s3`, the
+scheduler also copies each new backup to the bucket under `backups/` (the
+newest 30), so losing the server doesn't lose them. With local storage,
+copy them off the server yourself, and back up the `uploads` volume
+(original invoices) too.
+
+List them, or take one right now:
 
 ```
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production \
+  exec backup ls -lh /backups
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production \
   exec -T postgres pg_dump -U invoice -Fc invoice_intelligence > backup-$(date +%F).dump
 ```
@@ -170,7 +183,25 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.producti
   exec -T postgres pg_restore -U invoice -d invoice_intelligence --clean --if-exists < backup-....dump
 ```
 
-With local storage, also back up the `uploads` volume (original PDFs).
+### Being told when something's wrong
+
+Set `OPS_EMAIL` to the address that should hear about problems. It gets an
+email (through the same mail relay) when:
+
+- something errors in the API, or a page breaks in someone's browser;
+- invoices stop being read for a reason that isn't the invoice (an API key
+  or credit problem, the model service down, storage, the database);
+- the weekly summary or price-increase emails can't be sent;
+- the scheduler itself fails;
+- the newest backup is more than a day old, or there are none.
+
+Each kind of problem is emailed at most once an hour. Without `OPS_EMAIL`
+they're only in the logs (`docker compose ... logs api worker scheduler`).
+
+For outages the app can't report itself (the server down), point an uptime
+monitor (UptimeRobot, Better Stack, and the like) at
+`https://your-domain/api/health/ready`. It answers 200 when the API, the
+database and the queue are all working, and 503 naming which isn't.
 
 ## 10. Updating
 

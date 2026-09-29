@@ -5,10 +5,12 @@ import { useEffect, useRef } from "react";
 
 type Item = { href: string; label: string };
 
-// In the order of the work: invoices come in, their items get matched to
-// products, and then price alerts and savings are worth reading.
+// In the order of the work: invoices come in (and add up to spending), their
+// items get matched to products, and then price alerts and savings are worth
+// reading.
 const MAIN: Item[] = [
   { href: "/invoices", label: "Invoices" },
+  { href: "/spending", label: "Spending" },
   { href: "/review", label: "Match items" },
   { href: "/insights", label: "Price alerts" },
   { href: "/negotiation", label: "Savings" },

@@ -45,5 +45,9 @@ export function middleware(request: NextRequest) {
 export const config = {
   // The signed-out pages: signing in, getting back in without a password, help
   // (lib/api.ts isPublicPath, which the client-side session check uses).
-  matcher: ["/((?!login|logout|forgot-password|reset-password|help|api/|_next/|favicon\\.ico).*)"],
+  // Also the files a phone fetches to put the app on its home screen, which
+  // it asks for without the session cookie.
+  matcher: [
+    "/((?!login|logout|forgot-password|reset-password|help|api/|_next/|favicon\\.ico|manifest\\.webmanifest|icons/|icon\\.png|apple-icon\\.png).*)",
+  ],
 };

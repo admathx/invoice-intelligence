@@ -8,17 +8,23 @@ const TOPICS: Topic[] = [
   { id: "start", title: "Getting started" },
   { id: "add-invoices", title: "Adding invoices" },
   { id: "needs-a-look", title: "When an invoice needs a look" },
+  { id: "spending", title: "Spending" },
   { id: "match", title: "Matching items" },
   { id: "alerts", title: "Price alerts" },
   { id: "savings", title: "Savings" },
   { id: "products", title: "Products" },
   { id: "export", title: "Sending invoices to your accountant" },
+  { id: "phone", title: "Using it on your phone" },
   { id: "emails", title: "Emails we send you" },
   { id: "account", title: "Your account and password" },
   { id: "words", title: "What the labels mean" },
 ];
 
 const ADMIN_TOPIC: Topic = { id: "admin", title: "For admins" };
+
+function topic(id: string): Topic {
+  return TOPICS.find((t) => t.id === id)!;
+}
 
 /** One page that answers "how do I…?", with a link to where each thing is
  *  done. Open to everyone, signed in or not: someone who can't sign in needs
@@ -60,7 +66,7 @@ export default async function HelpPage() {
       </nav>
 
       <div className="mt-6 space-y-8 text-sm leading-relaxed text-gray-700">
-        <Section topic={TOPICS[0]}>
+        <Section topic={topic("start")}>
           <ol className="list-decimal space-y-1 pl-5">
             <li>
               <strong>Add your invoices</strong> on the <Go href="/invoices">Invoices</Go> page. We read the items and
@@ -77,7 +83,7 @@ export default async function HelpPage() {
           </ol>
         </Section>
 
-        <Section topic={TOPICS[1]}>
+        <Section topic={topic("add-invoices")}>
           <p>Three ways, all on the <Go href="/invoices">Invoices</Go> page:</p>
           <ul className="mt-2 list-disc space-y-1 pl-5">
             <li>
@@ -90,7 +96,8 @@ export default async function HelpPage() {
             </li>
             <li>
               <strong>Email it.</strong> Each location has its own invoice email address. Send or forward invoices
-              there, or ask your distributor to send them there directly.
+              there, or ask your distributor to send them there directly. You can email photos of a paper invoice
+              too: one invoice per email, a photo per page.
               {inboxes.length > 0 && (
                 <ul className="mt-1 space-y-0.5">
                   {inboxes.map((l) => (
@@ -108,7 +115,7 @@ export default async function HelpPage() {
           </p>
         </Section>
 
-        <Section topic={TOPICS[2]}>
+        <Section topic={topic("needs-a-look")}>
           <p>
             We check that every invoice adds up. If it doesn&rsquo;t, it&rsquo;s marked <Label>Needs a look</Label>{" "}
             and its prices aren&rsquo;t used until someone fixes it. Open the invoice from the{" "}
@@ -127,7 +134,16 @@ export default async function HelpPage() {
           </p>
         </Section>
 
-        <Section topic={TOPICS[3]}>
+        <Section topic={topic("spending")}>
+          <p>
+            <Go href="/spending">Spending</Go> shows what you spend each month, before tax, and where it goes: by
+            category (meat, produce, dairy and so on) and by distributor, with how each changed since the month before.
+            Click a month to see its breakdown. Invoices that need a look aren&rsquo;t counted until they&rsquo;re
+            fixed.
+          </p>
+        </Section>
+
+        <Section topic={topic("match")}>
           <p>
             Every invoice item is matched to a product, like &ldquo;Mozzarella, shredded&rdquo;, so its price can be
             followed over time and across distributors. We match most items ourselves. The ones we&rsquo;re unsure
@@ -145,7 +161,7 @@ export default async function HelpPage() {
           <p className="mt-2">Once you&rsquo;ve matched an item, the same item on later invoices is matched for you.</p>
         </Section>
 
-        <Section topic={TOPICS[4]}>
+        <Section topic={topic("alerts")}>
           <p>
             <Go href="/insights">Price alerts</Go> lists products you&rsquo;re now paying noticeably more for than you
             used to. Where we know what similar businesses pay, you&rsquo;ll see how your price compares. Open a
@@ -153,7 +169,7 @@ export default async function HelpPage() {
           </p>
         </Section>
 
-        <Section topic={TOPICS[5]}>
+        <Section topic={topic("savings")}>
           <p>
             <Go href="/negotiation">Savings</Go> lists products you could be paying less for, the price to ask for,
             and what that would save in a year. Press <em>Print</em> and take it to your rep.
@@ -172,14 +188,14 @@ export default async function HelpPage() {
           </ul>
         </Section>
 
-        <Section topic={TOPICS[6]}>
+        <Section topic={topic("products")}>
           <p>
             Search <Go href="/skus">Products</Go> to see everything you&rsquo;ve paid for one product, from every
             distributor, with the invoice each price came from.
           </p>
         </Section>
 
-        <Section topic={TOPICS[7]}>
+        <Section topic={topic("export")}>
           <p>
             On the <Go href="/invoices">Invoices</Go> page, press <em>Export</em>. Choose invoices or every item on
             them, the dates, and a distributor if you want just one. <strong>Excel</strong> is best for reading;{" "}
@@ -187,7 +203,23 @@ export default async function HelpPage() {
           </p>
         </Section>
 
-        <Section topic={TOPICS[8]}>
+        <Section topic={topic("phone")}>
+          <p>
+            Put the app on your phone&rsquo;s home screen and it opens like any other app, straight to your invoices,
+            ready to take a photo.
+          </p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            <li>
+              <strong>iPhone:</strong> open this site in Safari, tap <em>Share</em>, then <em>Add to Home Screen</em>.
+            </li>
+            <li>
+              <strong>Android:</strong> open it in Chrome, tap the menu (&#8942;), then <em>Add to Home screen</em> or{" "}
+              <em>Install app</em>.
+            </li>
+          </ul>
+        </Section>
+
+        <Section topic={topic("emails")}>
           <ul className="list-disc space-y-1 pl-5">
             <li>
               <strong>Price increases, as they happen</strong>: an email within minutes when a price jumps.
@@ -202,7 +234,7 @@ export default async function HelpPage() {
           </p>
         </Section>
 
-        <Section topic={TOPICS[9]}>
+        <Section topic={topic("account")}>
           <ul className="list-disc space-y-1 pl-5">
             <li>
               Change your password on <Go href="/account/password">your account</Go> page (press your name at the top).
@@ -218,7 +250,7 @@ export default async function HelpPage() {
           </ul>
         </Section>
 
-        <Section topic={TOPICS[10]}>
+        <Section topic={topic("words")}>
           <dl className="grid gap-x-4 gap-y-2 sm:grid-cols-[max-content_1fr]">
             <Term label="Reading">We&rsquo;re reading the invoice. Give it a minute.</Term>
             <Term label="Ready">Read, and everything adds up. Its prices are being used.</Term>

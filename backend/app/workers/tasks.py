@@ -1,3 +1,4 @@
+import decimal
 import logging
 import tempfile
 import uuid
@@ -7,7 +8,7 @@ from pathlib import Path
 
 from sqlalchemy import delete, select
 
-from app import audit
+from app import audit, ops
 from app.analytics.price_creep import upsert_creep_alerts
 from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS, SessionLocal, bind_tenant
@@ -28,6 +29,11 @@ extractor = get_extractor()
 # retry, or the same id enqueued twice) must not insert a second copy of the
 # invoice's line items.
 _ALREADY_PROCESSED = {InvoiceStatus.extracted, InvoiceStatus.needs_review, InvoiceStatus.confirmed}
+
+# Failures that are about the invoice itself (couldn't be read twice, or read
+# as nonsense numbers or dates), not about the service. ValueError covers
+# pydantic's validation errors and unparseable dates.
+_INVOICE_PROBLEMS = (ExtractionFailedError, decimal.InvalidOperation, ValueError)
 
 
 def _get_invoice_bypassing_tenant_scope(db, invoice_id: uuid.UUID, *, lock: bool = False) -> Invoice | None:
@@ -216,6 +222,17 @@ def process_invoice(invoice_id: str) -> None:
             )
             db.commit()
         db.close()
+        # An unreadable invoice is the invoice's problem, and it's already
+        # marked for a person to type in. Anything else (the API key, the
+        # credit balance, the model service, storage, the database) stops
+        # every invoice, not just this one: someone needs to know.
+        if not isinstance(exc, _INVOICE_PROBLEMS):
+            ops.alert(
+                f"worker:{type(exc).__name__}",
+                f"Invoices aren't being read: {type(exc).__name__}",
+                f"Invoice {invoice_id} failed, and others likely will until this is fixed.",
+                exc=exc,
+            )
         raise
 
     # Outside the failure handler on purpose. The invoice and its line items

@@ -138,6 +138,7 @@ jobs:
         run: |
           npm run build
           cp -r .next/static .next/standalone/.next/static
+          cp -r public .next/standalone/public
           PORT=3001 HOSTNAME=0.0.0.0 nohup node .next/standalone/server.js > ../logs/frontend.log 2>&1 &
           for i in $(seq 30); do curl -sf -o /dev/null http://localhost:3001/login && exit 0; sleep 1; done
           cat ../logs/frontend.log; exit 1

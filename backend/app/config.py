@@ -109,6 +109,14 @@ class Settings(BaseSettings):
     # wait for the weekly digest.
     alert_emails_enabled: bool = True
     alert_email_min_pct_change: float = 0.10
+    # Where problems are emailed (app/ops.py): errors, extraction failing,
+    # backups going stale. Empty: logged only.
+    ops_email: str = ""
+    # Where the backup service writes database dumps (deploy/backup.sh), for
+    # the scheduler to check they keep coming and, with S3 storage, to copy
+    # them off the server (app/backups.py). Empty: not checked.
+    backup_dir: str = ""
+    backup_max_age_hours: int = 26
     # "Forgot your password?" (app/api/auth.py): how long an emailed link
     # works, and how many one address can be sent per hour.
     password_reset_enabled: bool = True

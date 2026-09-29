@@ -67,7 +67,7 @@ export function describeEvent(event: AuditEvent): string {
     case "invoice.exported":
       return `exported ${d.kind === "line-items" ? "line items" : "invoices"} to a spreadsheet (${exportPeriod(d)}, ${show(d.rows)} rows)`;
     case "invoice.received_by_email":
-      return `received ${show(d.filename)} by email`;
+      return d.photos ? `received photos of an invoice by email (${show(d.photos)})` : `received ${show(d.filename)} by email`;
     case "invoice.extracted":
       return d.status === "extracted"
         ? `read ${show(d.line_count)} items; everything added up`

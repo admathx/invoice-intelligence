@@ -1,5 +1,7 @@
 """Sends the scheduled emails: price-increase alerts within minutes of an
 alert opening (app/alert_emails.py), and the weekly digest when it's due.
+Also, about hourly, checks the database backups are still being made and
+copies new ones off the server (app/backups.py).
 Runs for as long as the deployment does (the `scheduler` service in
 deploy/docker-compose.prod.yml).
 
@@ -18,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app import alert_emails, digest  # noqa: E402
+from app import alert_emails, backups, digest, ops  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db import SessionLocal  # noqa: E402
 
@@ -40,6 +42,8 @@ def send_digests(now: datetime) -> None:
         log.info("week of %s: sent %d, quiet %d, failed %d", run.week_of, run.sent, run.quiet, len(run.failed))
     for failure in run.failed:
         log.warning("digest failed: %s", failure)
+    if run.failed:
+        ops.alert("mail:digest", f"{len(run.failed)} weekly summaries couldn't be sent", "\n".join(run.failed[:20]))
 
 
 def send_alert_emails(now: datetime) -> None:
@@ -54,16 +58,31 @@ def send_alert_emails(now: datetime) -> None:
         log.info("price-increase emails: sent %d covering %d alerts, failed %d", run.sent, run.alerts, len(run.failed))
     for failure in run.failed:
         log.warning("price-increase email failed: %s", failure)
+    if run.failed:
+        ops.alert("mail:alerts", f"{len(run.failed)} price-increase emails couldn't be sent", "\n".join(run.failed[:20]))
+
+
+BACKUP_CHECK_EVERY = 3600
+_last_backup_check = 0.0
+
+
+def look_after_backups(now: datetime) -> None:
+    global _last_backup_check
+    if time.monotonic() - _last_backup_check < BACKUP_CHECK_EVERY:
+        return
+    _last_backup_check = time.monotonic()
+    backups.check(now)
+    backups.copy_offsite()
 
 
 def tick() -> None:
     now = datetime.now(timezone.utc)
     # Each on its own: a failure in one mustn't hold up the other.
-    for job in (send_alert_emails, send_digests):
+    for job in (send_alert_emails, send_digests, look_after_backups):
         try:
             job(now)
-        except Exception:  # a database blip mustn't end the scheduler
-            log.exception("%s failed; retrying next time", job.__name__)
+        except Exception as exc:  # a database blip mustn't end the scheduler
+            ops.alert(f"scheduler:{job.__name__}:{type(exc).__name__}", f"The scheduler's {job.__name__} failed", exc=exc)
 
 
 if __name__ == "__main__":

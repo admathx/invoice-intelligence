@@ -1,3 +1,4 @@
+import InstallPrompt from "@/components/InstallPrompt";
 import NoLocation from "@/components/NoLocation";
 import RefreshWhileReading from "@/components/RefreshWhileReading";
 import { money, READING_STATUSES, SOURCE_LABEL } from "@/lib/format";
@@ -5,6 +6,7 @@ import { requireSession, serverGet } from "@/lib/server";
 
 import { StatusBadge } from "./[id]/InvoiceReview";
 import ExportPanel from "./ExportPanel";
+import SetupChecklist, { type SetupSteps } from "./SetupChecklist";
 import UploadForm from "./UploadForm";
 
 type Invoice = {
@@ -17,6 +19,11 @@ type Invoice = {
   created_at: string;
 };
 
+async function getSetup(locationId: string): Promise<SetupSteps | null> {
+  const res = await serverGet(`/setup?tenant_id=${locationId}`);
+  return res.ok ? res.json() : null;
+}
+
 async function getInvoices(locationId: string): Promise<Invoice[]> {
   const res = await serverGet(`/invoices?tenant_id=${locationId}`);
   if (!res.ok) return [];
@@ -26,7 +33,7 @@ async function getInvoices(locationId: string): Promise<Invoice[]> {
 export default async function InvoicesPage() {
   const { user, locationId } = await requireSession();
   if (!locationId) return <NoLocation />;
-  const invoices = await getInvoices(locationId);
+  const [invoices, setup] = await Promise.all([getInvoices(locationId), getSetup(locationId)]);
   const location = user.locations.find((l) => l.id === locationId);
   const reading = invoices.filter((inv) => READING_STATUSES.has(inv.status)).length;
 
@@ -44,6 +51,7 @@ export default async function InvoicesPage() {
       {/* The export and photo panels open full width below the buttons
           (order-last), inside this same row. */}
       <RefreshWhileReading reading={reading > 0} />
+      <InstallPrompt />
       <div className="mb-5 flex flex-wrap items-center gap-2">
         <div className="mr-auto min-w-0 pr-2">
           <h1 className="page-title">Invoices</h1>
@@ -61,6 +69,8 @@ export default async function InvoicesPage() {
         <ExportPanel />
         <UploadForm />
       </div>
+
+      {setup && <SetupChecklist steps={setup} locationId={locationId} admin={user.is_operator} />}
 
       <div className="mb-5 grid gap-3 sm:grid-cols-3">
         <Stat label="Invoices" value={invoices.length.toLocaleString("en-US")} />

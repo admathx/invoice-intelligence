@@ -631,3 +631,44 @@ test.describe("finding your way", () => {
     runFixture("cleanup", TENANT_ID);
   });
 });
+
+test.describe("spending, setup and the phone app", () => {
+  test.skip(!TENANT_ID, "E2E_TENANT_ID not set in frontend/.env.local");
+
+  test.beforeEach(async ({ page }) => {
+    expect((await page.request.post("/api/auth/login", { data: e2eLogin(), headers: CSRF })).ok()).toBeTruthy();
+  });
+
+  test("spending shows each month, and clicking one shows where it went", async ({ page }) => {
+    await page.goto("/spending");
+    await expect(page.getByRole("heading", { name: "Spending", exact: true })).toBeVisible();
+    const bars = page.getByRole("button", { name: /^\w+ \d{4}: \$/ });
+    expect(await bars.count()).toBeGreaterThan(1);
+    const first = bars.first();
+    const month = (await first.getAttribute("aria-label"))!.split(":")[0];
+    await first.click();
+    await expect(page.getByRole("heading", { name: `Where it went: ${month}` })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "By category" })).toBeVisible();
+    await page.getByRole("button", { name: "Last 12 months" }).click();
+    await expect(page.getByRole("heading", { name: "Where it went: the last 12 months" })).toBeVisible();
+  });
+
+  test("the setup checklist ticks off what's done and can be hidden", async ({ page }) => {
+    await page.goto("/invoices");
+    const checklist = page.getByTestId("setup-checklist");
+    await expect(checklist).toBeVisible();
+    await expect(checklist.getByText("Add your first invoice (done)")).toBeAttached();
+    await checklist.getByRole("button", { name: "Hide" }).click();
+    await expect(checklist).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Invoices", exact: true })).toBeVisible();
+    await expect(page.getByTestId("setup-checklist")).toHaveCount(0);
+  });
+
+  test("a phone can put the app on its home screen", async ({ page }) => {
+    await page.context().clearCookies(); // a phone fetches these signed out
+    const manifest = await (await page.request.get("/manifest.webmanifest")).json();
+    expect(manifest).toMatchObject({ short_name: "Invoices", start_url: "/invoices", display: "standalone" });
+    for (const icon of manifest.icons) expect((await page.request.get(icon.src)).status(), icon.src).toBe(200);
+  });
+});

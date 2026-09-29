@@ -196,7 +196,7 @@ def test_a_rejection_for_a_known_location_shows_in_its_activity(tenant):
         event = db.scalar(select(AuditEvent).where(AuditEvent.tenant_id == tenant.id, AuditEvent.action == "email.rejected"))
     finally:
         db.close()
-    assert event is not None and "no PDF attachment" in event.details["reason"]
+    assert event is not None and "no PDF or photo of an invoice attached" in event.details["reason"]
     assert event.details["subject"] == "Statement"
 
 

@@ -21,6 +21,8 @@ x-backend: &backend
     FRONTEND_ORIGINS: '["https://${DOMAIN:?set DOMAIN}${PUBLIC_PORT_SUFFIX:-}"]'
     # Links in emails (the weekly digest) point here.
     PUBLIC_BASE_URL: https://${DOMAIN}${PUBLIC_PORT_SUFFIX:-}
+    # Where the backup service writes (only the scheduler mounts it).
+    BACKUP_DIR: /backups
   volumes:
     - uploads:/srv/backend/uploads
   restart: unless-stopped
@@ -89,11 +91,32 @@ services:
   scheduler:
     <<: *backend
     command: ["python", "scripts/digest_scheduler.py"]
+    # It also checks the backups keep coming, and copies them off the server
+    # when storage is S3 (app/backups.py), so it can read them.
+    volumes:
+      - uploads:/srv/backend/uploads
+      - backups:/backups:ro
     healthcheck:
       disable: true
     depends_on:
       migrate:
         condition: service_completed_successfully
+
+  # A database backup every night, kept for two weeks (deploy/backup.sh).
+  backup:
+    image: pgvector/pgvector:pg15
+    entrypoint: ["sh", "/backup.sh"]
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      BACKUP_HOUR_UTC: ${BACKUP_HOUR_UTC:-7}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+    volumes:
+      - ./backup.sh:/backup.sh:ro
+      - backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
 
   frontend:
     build:
@@ -126,6 +149,7 @@ services:
 
 volumes:
   pgdata:
+  backups:
   redisdata:
   uploads:
   caddy_data:

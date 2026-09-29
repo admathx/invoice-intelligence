@@ -205,7 +205,7 @@ def test_email_with_no_pdf_is_quarantined(db_session, inbox, tenant):
     result = ingest_email_file(db_session, path, inbox)
 
     assert result.status == "quarantined"
-    assert "no PDF attachment" in result.reason
+    assert "no PDF or photo of an invoice attached" in result.reason
     assert "signature-logo.png" in result.reason
     assert _invoices_for(db_session, tenant) == []
 
@@ -422,7 +422,7 @@ def test_an_attachment_merely_labelled_pdf_is_not_treated_as_one(db_session, inb
     result = ingest_email_file(db_session, path, inbox)
 
     assert result.status == "quarantined"
-    assert "no PDF attachment" in result.reason
+    assert "no PDF or photo of an invoice attached" in result.reason
     assert _invoices_for(db_session, tenant) == []
 
 
@@ -444,3 +444,79 @@ def test_an_oversized_attachment_is_quarantined_like_an_oversized_upload(db_sess
     assert result.status == "quarantined"
     assert "huge.pdf" in result.reason and "limit" in result.reason
     assert _invoices_for(db_session, tenant) == []
+
+
+# --- photos by email -----------------------------------------------------------
+
+
+def _photo(size=(1200, 1600), noise=True) -> bytes:
+    """A JPEG the size a phone takes. Noise keeps it from compressing to a
+    few KB, which is what separates a photo from a logo."""
+    from PIL import Image
+
+    image = Image.effect_noise(size, 60).convert("RGB") if noise else Image.new("RGB", size, "white")
+    buf = io.BytesIO()
+    image.save(buf, "JPEG", quality=80)
+    return buf.getvalue()
+
+
+def _logo() -> bytes:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (180, 60), "navy").save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_photos_emailed_without_a_pdf_become_one_invoice(db_session, inbox, tenant, no_real_queue):
+    import pypdfium2 as pdfium
+
+    from app.models import AuditEvent
+    from app.storage import read_uri
+
+    path = _write_eml(
+        inbox,
+        to=tenant.inbox_address,
+        attachments=[("IMG_0001.jpg", "jpeg", _photo()), ("IMG_0002.jpg", "jpeg", _photo()), ("logo.png", "png", _logo())],
+    )
+    result = ingest_email_file(db_session, path, inbox)
+
+    assert result.status == "ingested", result.reason
+    (invoice,) = _invoices_for(db_session, tenant)
+    assert invoice.source == InvoiceSource.email
+    assert len(pdfium.PdfDocument(read_uri(invoice.original_file_uri))) == 2, "a page per photo; the logo left out"
+    event = db_session.scalar(select(AuditEvent).where(AuditEvent.entity_id == invoice.id))
+    assert event.details["photos"] == "IMG_0001.jpg, IMG_0002.jpg"
+
+
+def test_a_pdf_wins_over_photos_in_the_same_email(db_session, inbox, tenant, no_real_queue):
+    path = _write_eml(
+        inbox, to=tenant.inbox_address, attachments=[("invoice.pdf", "pdf", _pdf_bytes()), ("IMG_0001.jpg", "jpeg", _photo())]
+    )
+    result = ingest_email_file(db_session, path, inbox)
+    assert result.status == "ingested", result.reason
+    assert len(result.invoice_ids) == 1
+
+
+def test_logos_and_pictures_in_the_signature_are_not_invoices(db_session, inbox, tenant):
+    # A big picture embedded in the body (cid:), and a small attached icon.
+    message = EmailMessage()
+    message["From"] = "chef@restaurant.example.com"
+    message["To"] = tenant.inbox_address
+    message["Subject"] = "fyi"
+    message.set_content("See below.")
+    message.add_alternative('<p>See below.</p><img src="cid:banner">', subtype="html")
+    message.get_payload()[1].add_related(_photo(), maintype="image", subtype="jpeg", cid="<banner>")
+    message.add_attachment(_logo(), maintype="image", subtype="png", filename="icon.png")
+    path = inbox / "signature.eml"
+    path.write_bytes(message.as_bytes())
+
+    result = ingest_email_file(db_session, path, inbox)
+    assert result.status == "quarantined"
+    assert "no PDF or photo of an invoice attached" in result.reason
+
+
+def test_a_small_low_resolution_picture_is_not_a_page(db_session, inbox, tenant):
+    path = _write_eml(inbox, to=tenant.inbox_address, attachments=[("thumb.jpg", "jpeg", _photo((400, 300)))])
+    result = ingest_email_file(db_session, path, inbox)
+    assert result.status == "quarantined"

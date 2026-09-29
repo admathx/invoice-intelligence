@@ -2224,3 +2224,65 @@ it shows your own invoice email addresses.
 ### Gates
 Backend 329, frontend 48 unit, `tsc` and `next build` clean, Playwright 22
 (2 new: help links all resolve and it's open signed out; skipping items).
+
+## Spending, the phone app, photos by email, first-time setup, monitoring
+
+### Spending (`/spending`, second in the menu)
+What a location spends each month, before tax: tiles for this month, last
+month (with the change) and the average month; a bar per month (hover for
+the figures, click one to see its breakdown); and where the money went, by
+category and by distributor, with each one's share and change against the
+period before. Periods: this month, last month, last 3 or 12 months, or any
+month clicked. Built from the invoice items, so the breakdowns add up to the
+total exactly; invoices that need a look aren't counted (and the page says
+how many). Starts at the first month with invoices, at most a year back,
+empty months kept. One colour for bars (validated for contrast), labels on
+every row, a screen-reader table behind the chart.
+
+### On a phone's home screen
+A web app manifest and icons: added to the home screen it opens full screen
+straight to Invoices, where Take photo is. On a phone, the Invoices page
+offers it once (a button on Android; on an iPhone, where only Safari's Share
+menu can do it, the two taps to make); Help explains both. The icons are
+served signed out (a phone fetches them without the session), and the
+production image and CI now copy `public/`, which a standalone build leaves
+out.
+
+### Photos by email
+An email with no PDF but photos becomes one invoice, a page per photo (up to
+10), same as photos uploaded. Logos and signature pictures aren't pages:
+pictures embedded in the message body, files under 30 KB, and anything under
+600 px on its short side are left out. A PDF wins when an email has both.
+
+### Get set up
+A checklist at the top of Invoices for a new location: add the first
+invoice, have invoices emailed in (with the address and a copy button),
+match your items, add your team. Each ticks itself off from what has
+actually happened (`GET /setup`); the card disappears when all four are
+done, or when hidden.
+
+### Monitoring and backups
+- `OPS_EMAIL` gets an email, at most hourly per kind of problem (the
+  throttle is in Redis, shared by every process), when: the API errors, a
+  page breaks in someone's browser, invoices stop being read for a reason
+  that isn't the invoice (API key, credit, model service, storage), the
+  weekly or price-increase emails can't send, the scheduler fails, or the
+  newest backup is over a day old. Without it, they're logged.
+- People get plain messages instead: "Something went wrong on our side",
+  and a "Something went wrong" page with Try again.
+- `/health/ready` for an uptime monitor: 200 when the API, database and
+  queue all work, 503 naming which doesn't.
+- A `backup` service dumps the database nightly, checks each dump reads
+  back, keeps two weeks, and takes the first one at once. With S3 storage
+  the scheduler copies new ones to the bucket (the newest 30). Tried for
+  real against the development database: a 5 MB dump that restores.
+
+### Along the way
+- The scheduler's offsite copy would have re-uploaded the oldest backups
+  every hour whenever more were kept locally than off the server; it now
+  copies only the newest that it keeps.
+
+### Gates
+Backend 348 (19 new), frontend 54 unit, `tsc` and `next build` clean,
+Playwright 25 (3 new). The page audit on a production build: every page
+under 0.25 s, 0 problems (links, console errors, overflow at phone width).

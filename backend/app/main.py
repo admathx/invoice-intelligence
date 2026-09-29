@@ -14,15 +14,29 @@ from app.api import (
     invoice_review,
     invoices,
     negotiation,
+    ops as ops_api,
     review,
+    setup,
     skus,
+    spending,
     tenants,
     users,
 )
+from app import ops
 from app.auth import CSRF_HEADER, csrf_ok
 from app.config import settings
 
 app = FastAPI(title="Invoice Intelligence")
+
+
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+    """Anything no endpoint handled: tell whoever runs the service (app.ops),
+    and the person a plain sentence rather than a stack trace."""
+    route = request.scope.get("route")
+    where = f"{request.method} {getattr(route, 'path', request.url.path)}"
+    ops.alert(f"api:{where}:{type(exc).__name__}", f"Error in {where}: {type(exc).__name__}", exc=exc)
+    return JSONResponse(status_code=500, content={"detail": "Something went wrong on our side. Try again in a moment."})
 
 
 @app.middleware("http")
@@ -61,9 +75,12 @@ app.include_router(distributors.router)
 app.include_router(exports.router)
 app.include_router(inbound.router)
 app.include_router(skus.router)
+app.include_router(spending.router)
 app.include_router(review.router)
+app.include_router(setup.router)
 app.include_router(insights.router)
 app.include_router(negotiation.router)
+app.include_router(ops_api.router)
 app.include_router(accounts.router)
 app.include_router(tenants.router)
 app.include_router(users.router)
