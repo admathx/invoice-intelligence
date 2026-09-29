@@ -64,9 +64,10 @@ INBOX_SETTLE_SECONDS = 2.0
 
 # What a photo of an invoice at least is. A phone photo is hundreds of KB
 # and thousands of pixels across; a signature logo or a social-media icon is
-# a few KB and a couple of hundred pixels.
+# a few KB and a couple of hundred pixels; a banner is far wider than tall.
 MIN_PHOTO_BYTES = 30 * 1024
 MIN_PHOTO_SHORT_SIDE = 600
+MAX_PHOTO_ASPECT = 3.0
 
 
 @dataclass
@@ -74,19 +75,29 @@ class EmailAttachment:
     filename: str
     content_type: str
     content: bytes
-    # "inline" images with a Content-ID are pictures inside the message body
-    # (a logo in a signature), not something the sender attached.
     disposition: str | None = None
     content_id: str | None = None
 
     @property
+    def is_pdf(self) -> bool:
+        # Decided by the bytes, not by the sender's label: a signature image or
+        # a .docx named "invoice.pdf" used to become an invoice row that only
+        # failed later in the renderer. A mislabelled attachment now counts as
+        # a non-PDF, so an email carrying only that quarantines with a reason.
+        return is_pdf_bytes(self.content)
+
+    @property
     def is_invoice_photo(self) -> bool:
-        """A photo someone attached, big enough to be a page of an invoice."""
-        if image_kind(self.content) is None:
-            return False
-        if self.content_id and self.disposition != "attachment":
-            return False
-        if len(self.content) < MIN_PHOTO_BYTES:
+        """A picture big enough, and shaped enough like a page, to be a photo
+        of an invoice.
+
+        Deliberately not "attached rather than inline": Apple Mail (iPhone
+        and Mac) sends photos inline with a Content-ID so they show in the
+        message, and that's how most of these arrive. Logos and banners are
+        caught by size and shape instead. (Pictures a newsletter's HTML
+        embeds sit inside its body, not among the attachments, so they never
+        get this far: parse_email only sees attachments.)"""
+        if image_kind(self.content) is None or len(self.content) < MIN_PHOTO_BYTES:
             return False
         try:
             from PIL import Image
@@ -96,15 +107,8 @@ class EmailAttachment:
             # Not something we can open: leave it for the upload path to
             # refuse with a reason, rather than guessing here.
             return True
-        return min(width, height) >= MIN_PHOTO_SHORT_SIDE
-
-    @property
-    def is_pdf(self) -> bool:
-        # Decided by the bytes, not by the sender's label: a signature image or
-        # a .docx named "invoice.pdf" used to become an invoice row that only
-        # failed later in the renderer. A mislabelled attachment now counts as
-        # a non-PDF, so an email carrying only that quarantines with a reason.
-        return is_pdf_bytes(self.content)
+        short, long = sorted((width, height))
+        return short >= MIN_PHOTO_SHORT_SIDE and long / short <= MAX_PHOTO_ASPECT
 
 
 @dataclass

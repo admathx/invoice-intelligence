@@ -1,12 +1,13 @@
 import InstallPrompt from "@/components/InstallPrompt";
 import NoLocation from "@/components/NoLocation";
 import RefreshWhileReading from "@/components/RefreshWhileReading";
+import StatTile from "@/components/StatTile";
 import { money, READING_STATUSES, SOURCE_LABEL } from "@/lib/format";
 import { requireSession, serverGet } from "@/lib/server";
 
 import { StatusBadge } from "./[id]/InvoiceReview";
 import ExportPanel from "./ExportPanel";
-import SetupChecklist, { type SetupSteps } from "./SetupChecklist";
+import SetupChecklist from "./SetupChecklist";
 import UploadForm from "./UploadForm";
 
 type Invoice = {
@@ -19,11 +20,6 @@ type Invoice = {
   created_at: string;
 };
 
-async function getSetup(locationId: string): Promise<SetupSteps | null> {
-  const res = await serverGet(`/setup?tenant_id=${locationId}`);
-  return res.ok ? res.json() : null;
-}
-
 async function getInvoices(locationId: string): Promise<Invoice[]> {
   const res = await serverGet(`/invoices?tenant_id=${locationId}`);
   if (!res.ok) return [];
@@ -33,7 +29,7 @@ async function getInvoices(locationId: string): Promise<Invoice[]> {
 export default async function InvoicesPage() {
   const { user, locationId } = await requireSession();
   if (!locationId) return <NoLocation />;
-  const [invoices, setup] = await Promise.all([getInvoices(locationId), getSetup(locationId)]);
+  const invoices = await getInvoices(locationId);
   const location = user.locations.find((l) => l.id === locationId);
   const reading = invoices.filter((inv) => READING_STATUSES.has(inv.status)).length;
 
@@ -70,12 +66,12 @@ export default async function InvoicesPage() {
         <UploadForm />
       </div>
 
-      {setup && <SetupChecklist steps={setup} locationId={locationId} admin={user.is_operator} />}
+      <SetupChecklist locationId={locationId} admin={user.is_operator} />
 
       <div className="mb-5 grid gap-3 sm:grid-cols-3">
-        <Stat label="Invoices" value={invoices.length.toLocaleString("en-US")} />
-        <Stat label="Spend" value={money(spend)} tone="text-brand-700" />
-        <Stat
+        <StatTile label="Invoices" value={invoices.length.toLocaleString("en-US")} />
+        <StatTile label="Spend" value={money(spend)} tone="text-brand-700" />
+        <StatTile
           label="Need a look"
           value={needsReview.length.toLocaleString("en-US")}
           tone={needsReview.length ? "text-amber-600" : "text-gray-900"}
@@ -142,15 +138,6 @@ export default async function InvoicesPage() {
           </tbody>
         </table>
       </div>
-    </div>
-  );
-}
-
-function Stat({ label, value, tone = "text-gray-900" }: { label: string; value: string; tone?: string }) {
-  return (
-    <div className="card border-t-4 border-t-brand-300 px-4 py-3">
-      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">{label}</div>
-      <div className={`num mt-1 text-2xl font-semibold ${tone}`}>{value}</div>
     </div>
   );
 }

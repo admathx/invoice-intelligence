@@ -240,3 +240,11 @@ def test_switching_to_a_bucket_keeps_existing_invoices_whole(tmp_path, s3):
         db.execute(delete(Tenant).where(Tenant.id == tenant_id))
         db.commit()
         db.close()
+
+
+def test_put_file_stores_a_file_without_reading_it_whole(storage, tmp_path):
+    source = tmp_path / "invoice-20260901-0700.dump"
+    source.write_bytes(b"PGDMP" + b"x" * 10_000)
+    storage.put_file("backups/invoice-20260901-0700.dump", source)
+    assert storage.get("backups/invoice-20260901-0700.dump") == source.read_bytes()
+    assert storage.list("backups/") == ["backups/invoice-20260901-0700.dump"]

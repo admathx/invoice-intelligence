@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 
+import { api } from "@/lib/api";
+
 export type SetupSteps = {
   first_invoice: boolean;
   emailed_invoice: boolean;
@@ -15,27 +17,47 @@ type Step = { done: boolean; title: string; body: React.ReactNode };
 
 /** A new location's first steps (backend app/api/setup.py). Each ticks
  *  itself off when it has happened; the card goes once all are done, or
- *  when this person hides it (remembered in this browser only). */
-export default function SetupChecklist({
-  steps,
-  locationId,
-  admin,
-}: {
-  steps: SetupSteps;
-  locationId: string;
-  admin: boolean;
-}) {
-  const storageKey = `ii_setup_hidden_${locationId}`;
-  // Hidden until known, so a hidden card doesn't flash on every load.
-  const [hidden, setHidden] = useState(true);
+ *  when this person hides it.
+ *
+ *  Fetches its own steps, and only while it can still be shown: once this
+ *  browser knows the location is set up (or the card was hidden), the
+ *  Invoices page stops asking on every visit. */
+export default function SetupChecklist({ locationId, admin }: { locationId: string; admin: boolean }) {
+  const hiddenKey = `ii_setup_hidden_${locationId}`;
+  const doneKey = `ii_setup_done_${locationId}`;
+  const [steps, setSteps] = useState<SetupSteps | null>(null);
+  const [hidden, setHidden] = useState(false);
   const [copied, setCopied] = useState(false);
+
   useEffect(() => {
+    let settled = false;
     try {
-      setHidden(localStorage.getItem(storageKey) === "1");
+      settled = localStorage.getItem(hiddenKey) === "1" || localStorage.getItem(doneKey) === "1";
     } catch {
-      setHidden(false);
+      // No storage: ask each time, which is only a little wasteful.
     }
-  }, [storageKey]);
+    if (settled) return;
+    let cancelled = false;
+    api(`/setup?tenant_id=${locationId}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: SetupSteps | null) => {
+        if (cancelled || !data) return;
+        setSteps(data);
+        if (data.first_invoice && data.emailed_invoice && data.items_matched && data.team_added) {
+          try {
+            localStorage.setItem(doneKey, "1");
+          } catch {
+            // Not remembered.
+          }
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [locationId, hiddenKey, doneKey]);
+
+  if (!steps || hidden) return null;
 
   const list: Step[] = [
     {
@@ -103,7 +125,7 @@ export default function SetupChecklist({
     },
   ];
   const doneCount = list.filter((s) => s.done).length;
-  if (hidden || doneCount === list.length) return null;
+  if (doneCount === list.length) return null;
 
   return (
     <section aria-labelledby="setup-title" className="card mb-5 border-l-4 border-l-brand-400 p-4" data-testid="setup-checklist">
@@ -120,7 +142,7 @@ export default function SetupChecklist({
           onClick={() => {
             setHidden(true);
             try {
-              localStorage.setItem(storageKey, "1");
+              localStorage.setItem(hiddenKey, "1");
             } catch {
               // Not remembered; it's back next visit, which is harmless.
             }

@@ -97,7 +97,8 @@ export default async function HelpPage() {
             <li>
               <strong>Email it.</strong> Each location has its own invoice email address. Send or forward invoices
               there, or ask your distributor to send them there directly. You can email photos of a paper invoice
-              too: one invoice per email, a photo per page.
+              too: one invoice per email, a photo per page. Send only invoices there: any photo emailed to it is read
+              as an invoice.
               {inboxes.length > 0 && (
                 <ul className="mt-1 space-y-0.5">
                   {inboxes.map((l) => (

@@ -31,6 +31,10 @@ class Storage(Protocol):
     def put(self, key: str, data: bytes) -> str:
         """Store data at key, replacing anything there. Returns its URI."""
 
+    def put_file(self, key: str, path: Path) -> str:
+        """Store a file at key without reading it all into memory (database
+        backups run to gigabytes). Returns its URI."""
+
     def get(self, key: str) -> bytes | None:
         """The bytes at key, or None if there are none."""
 
@@ -65,6 +69,16 @@ class LocalStorage:
         # Written aside and renamed, so a reader never sees half a file.
         partial = path.with_name(path.name + ".partial")
         partial.write_bytes(data)
+        partial.replace(path)
+        return path.as_uri()
+
+    def put_file(self, key: str, source: Path) -> str:
+        import shutil
+
+        path = self._path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        partial = path.with_name(path.name + ".partial")
+        shutil.copyfile(source, partial)
         partial.replace(path)
         return path.as_uri()
 
@@ -106,6 +120,12 @@ class S3Storage:
     def put(self, key: str, data: bytes) -> str:
         content_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
         self.client.put_object(Bucket=self.bucket, Key=self._key(key), Body=data, ContentType=content_type)
+        return f"s3://{self.bucket}/{self._key(key)}"
+
+    def put_file(self, key: str, source: Path) -> str:
+        # Streamed, and split into parts past a few MB: no whole file in
+        # memory, and no 5 GB single-upload ceiling.
+        self.client.upload_file(str(source), self.bucket, self._key(key))
         return f"s3://{self.bucket}/{self._key(key)}"
 
     def get(self, key: str) -> bytes | None:

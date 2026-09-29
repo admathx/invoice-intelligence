@@ -42,6 +42,21 @@ def _first_this_hour(key: str) -> bool:
         return True
 
 
+def within_limit(key: str, limit: int) -> bool:
+    """Whether `key` has happened at most `limit` times this hour (counting
+    this one). For anything outsiders can trigger, so it can't be used to
+    flood the ops inbox."""
+    try:
+        from app.queue import redis_conn
+
+        count = redis_conn.incr(f"ops-limit:{key}")
+        if count == 1:
+            redis_conn.expire(f"ops-limit:{key}", THROTTLE_SECONDS)
+        return count <= limit
+    except Exception:
+        return True  # the per-kind throttle in alert() still applies
+
+
 def alert(key: str, summary: str, detail: str = "", exc: BaseException | None = None) -> bool:
     """Report a problem. Returns whether an email went out. Never raises:
     reporting a problem mustn't become a second one."""

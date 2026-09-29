@@ -520,3 +520,29 @@ def test_a_small_low_resolution_picture_is_not_a_page(db_session, inbox, tenant)
     path = _write_eml(inbox, to=tenant.inbox_address, attachments=[("thumb.jpg", "jpeg", _photo((400, 300)))])
     result = ingest_email_file(db_session, path, inbox)
     assert result.status == "quarantined"
+
+
+def test_photos_from_apple_mail_inline_with_a_content_id_are_invoices(db_session, inbox, tenant, no_real_queue):
+    """How an iPhone or a Mac sends photos: inline, with a Content-ID so they
+    show in the message. They're the most common way these arrive."""
+    message = EmailMessage()
+    message["From"] = "chef@restaurant.example.com"
+    message["To"] = tenant.inbox_address
+    message["Subject"] = "Sysco delivery"
+    message.set_content("Invoice from this morning")
+    for n in (1, 2):
+        message.add_attachment(
+            _photo(), maintype="image", subtype="jpeg", filename=f"IMG_40{n}.jpeg", disposition="inline", cid=f"<40{n}@apple>"
+        )
+    path = inbox / "apple.eml"
+    path.write_bytes(message.as_bytes())
+
+    result = ingest_email_file(db_session, path, inbox)
+    assert result.status == "ingested", result.reason
+    assert len(result.invoice_ids) == 1
+
+
+def test_a_wide_banner_is_not_a_page(db_session, inbox, tenant):
+    path = _write_eml(inbox, to=tenant.inbox_address, attachments=[("banner.jpg", "jpeg", _photo((2400, 640)))])
+    result = ingest_email_file(db_session, path, inbox)
+    assert result.status == "quarantined"

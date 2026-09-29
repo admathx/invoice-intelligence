@@ -2286,3 +2286,34 @@ done, or when hidden.
 Backend 348 (19 new), frontend 54 unit, `tsc` and `next build` clean,
 Playwright 25 (3 new). The page audit on a production build: every page
 under 0.25 s, 0 problems (links, console errors, overflow at phone width).
+
+## Bug check of spending, the phone app, photos by email, setup, monitoring
+
+Ten findings, all fixed.
+
+- **Photos emailed from an iPhone or a Mac were refused.** Apple Mail sends
+  photos inline with a Content-ID (so they show in the message), and the
+  rule for skipping signature logos refused exactly those. Reproduced with a
+  1 MB phone photo, then fixed: logos and banners are now told apart by
+  size and shape only (at least 30 KB, 600 px on the short side, no more
+  than 3:1). Pictures a newsletter embeds in its HTML were never among the
+  attachments, so they still don't become invoices; Help says to send only
+  invoices to the address, since any photo there is read as one.
+- **The ops inbox could be flooded** through the page-error report: five
+  reports an hour per person now, and one alert per page an hour whatever
+  the messages say.
+- **Offsite backup copies loaded the whole dump into memory** (and couldn't
+  pass 5 GB). They're streamed now, in parts (`put_file`).
+- **A new deployment's first alert was a false "no backups"**, sent while
+  the first one was being made; two hours' grace after the scheduler starts.
+  The hourly backup check also started counting from the host's boot rather
+  than from the scheduler's start.
+- **Average month skipped months with no spending**, so it disagreed with
+  the chart; every finished month counts now.
+- Spending's change colours use the app's shared rule; one stat-tile
+  component for Invoices and Spending; the setup checklist asks for its
+  steps only until the location is set up or the card is hidden, instead
+  of on every Invoices visit.
+
+### Gates
+Backend 355, frontend 54 unit, `tsc` clean, Playwright 25.

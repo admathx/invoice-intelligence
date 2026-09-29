@@ -107,6 +107,9 @@ def test_the_health_check_says_whether_the_parts_answer():
 
 @pytest.mark.real_auth
 def test_page_errors_are_reported_by_signed_in_people_only(calls, test_operator):
+    from app.queue import redis_conn
+
+    redis_conn.delete(f"ops-limit:client-error:{test_operator.id}")
     body = {"message": "Cannot read properties of undefined", "page": "/spending?x=1", "digest": "abc"}
     assert TestClient(app).post("/ops/client-error", json=body).status_code == 401
     app.dependency_overrides[signed_in_user] = lambda: test_operator
@@ -114,7 +117,24 @@ def test_page_errors_are_reported_by_signed_in_people_only(calls, test_operator)
         assert TestClient(app).post("/ops/client-error", json=body).status_code == 204
     finally:
         app.dependency_overrides.pop(signed_in_user, None)
-    assert calls == [("client:/spending:Cannot read properties of undefined", "A page broke for someone: /spending")]
+    assert calls == [("client:/spending", "A page broke for someone: /spending")]
+
+
+@pytest.mark.real_auth
+def test_one_person_cant_flood_the_ops_inbox_with_page_errors(calls, test_operator, monkeypatch):
+    from app.queue import redis_conn
+
+    redis_conn.delete(f"ops-limit:client-error:{test_operator.id}")
+    app.dependency_overrides[signed_in_user] = lambda: test_operator
+    try:
+        client = TestClient(app)
+        for n in range(20):
+            body = {"message": f"error {n} at {uuid.uuid4()}", "page": f"/page-{n}"}
+            assert client.post("/ops/client-error", json=body).status_code == 204
+    finally:
+        app.dependency_overrides.pop(signed_in_user, None)
+        redis_conn.delete(f"ops-limit:client-error:{test_operator.id}")
+    assert len(calls) == 5, "a few reports an hour per person, however the messages vary"
 
 
 # --- extraction ---------------------------------------------------------------------------
@@ -204,3 +224,27 @@ def test_new_backups_are_copied_off_the_server_once(tmp_path, monkeypatch):
             ], "only the newest few kept off the server"
         finally:
             get_storage.cache_clear()
+
+
+def test_a_new_deployment_isnt_alarmed_while_its_first_backup_is_made(tmp_path, monkeypatch, calls):
+    monkeypatch.setattr(settings, "backup_dir", str(tmp_path))
+    assert backups.check(just_started=True) is None
+    assert calls == []
+    # Once it has been running a while, none at all is a problem.
+    assert backups.check() is not None
+
+
+def test_the_scheduler_checks_backups_on_its_first_pass_then_hourly(monkeypatch):
+    import sys
+
+    sys.path.insert(0, ".")
+    from scripts import digest_scheduler as scheduler
+
+    ran = []
+    monkeypatch.setattr(scheduler.backups, "check", lambda now, just_started: ran.append(just_started))
+    monkeypatch.setattr(scheduler.backups, "copy_offsite", lambda: None)
+    monkeypatch.setattr(scheduler, "_last_backup_check", None)
+    now = datetime.now(timezone.utc)
+    scheduler.look_after_backups(now)
+    scheduler.look_after_backups(now)  # within the hour: skipped
+    assert ran == [True], "checked straight away, in its start-up grace"

@@ -63,15 +63,21 @@ def send_alert_emails(now: datetime) -> None:
 
 
 BACKUP_CHECK_EVERY = 3600
-_last_backup_check = 0.0
+# How long after starting "no backups at all" is expected: a new
+# deployment's first backup is being made while this starts up.
+STARTUP_GRACE = 2 * 3600
+_started = time.monotonic()
+_last_backup_check: float | None = None
 
 
 def look_after_backups(now: datetime) -> None:
+    # Timed from this process, not from `0`: monotonic() counts from the
+    # host's boot, so a recently rebooted server would skip the first hour.
     global _last_backup_check
-    if time.monotonic() - _last_backup_check < BACKUP_CHECK_EVERY:
+    if _last_backup_check is not None and time.monotonic() - _last_backup_check < BACKUP_CHECK_EVERY:
         return
     _last_backup_check = time.monotonic()
-    backups.check(now)
+    backups.check(now, just_started=time.monotonic() - _started < STARTUP_GRACE)
     backups.copy_offsite()
 
 

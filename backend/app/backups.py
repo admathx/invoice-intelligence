@@ -30,13 +30,17 @@ def _dumps() -> list[Path]:
     return sorted(directory.glob("invoice-*.dump"), key=lambda p: p.stat().st_mtime) if directory.is_dir() else []
 
 
-def check(now: datetime | None = None) -> str | None:
-    """The problem found, if any (also alerted)."""
+def check(now: datetime | None = None, *, just_started: bool = False) -> str | None:
+    """The problem found, if any (also alerted). just_started: the service
+    has only just come up, so "no backups at all" is a new deployment whose
+    first one is still being made, not a problem yet."""
     if not settings.backup_dir:
         return None
     now = now or datetime.now(timezone.utc)
     dumps = _dumps()
     if not dumps:
+        if just_started:
+            return None
         problem = f"No database backups in {settings.backup_dir}"
     else:
         newest = datetime.fromtimestamp(dumps[-1].stat().st_mtime, timezone.utc)
@@ -59,7 +63,7 @@ def copy_offsite() -> list[str]:
     # back off below, and copied again next hour.
     for dump in _dumps()[-OFFSITE_KEEP:]:
         if dump.name not in already:
-            storage.put(f"{OFFSITE_PREFIX}{dump.name}", dump.read_bytes())
+            storage.put_file(f"{OFFSITE_PREFIX}{dump.name}", dump)
             copied.append(dump.name)
     # Oldest first by name (they're named by date), trimmed to the newest few.
     offsite = sorted(storage.list(OFFSITE_PREFIX))

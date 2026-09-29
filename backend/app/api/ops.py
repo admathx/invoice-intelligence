@@ -40,12 +40,21 @@ class ClientError(BaseModel):
     digest: str | None = Field(default=None, max_length=200)
 
 
+# A page that breaks tends to break for everyone who opens it; a handful of
+# reports an hour from one person says all there is to say.
+CLIENT_REPORTS_PER_HOUR = 5
+
+
 @router.post("/ops/client-error", status_code=204)
 def client_error(body: ClientError, user: User = Depends(signed_in_user)) -> None:
     """A page broke in someone's browser (frontend app/error.tsx). Signed-in
-    people only, so it can't be used to fill an inbox."""
+    people only, a few reports an hour each, and one alert per page an hour
+    whatever the messages say, so it can't be used to fill an inbox."""
+    if not ops.within_limit(f"client-error:{user.id}", CLIENT_REPORTS_PER_HOUR):
+        return
+    page = body.page.split("?")[0][:200]
     ops.alert(
-        f"client:{body.page.split('?')[0]}:{body.message[:80]}",
-        f"A page broke for someone: {body.page.split('?')[0]}",
+        f"client:{page}",
+        f"A page broke for someone: {page}",
         f"{body.message}\n\nSigned in as {user.email}." + (f"\nServer reference: {body.digest}" if body.digest else ""),
     )
