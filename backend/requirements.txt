@@ -24,5 +24,7 @@ httpx==0.27.2
 certifi==2024.8.30
 pyyaml==6.0.2
 reportlab==4.2.2
+# The Excel export (app/api/exports.py).
+openpyxl==3.1.5
 argon2-cffi==23.1.0
 boto3==1.35.36

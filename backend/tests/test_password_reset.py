@@ -164,3 +164,19 @@ def test_changing_the_password_another_way_ends_outstanding_links(db, outbox):
     )
     assert changed.status_code == 204
     assert client.post("/auth/password-reset/check", json={"token": token}, headers=CSRF).status_code == 410
+
+
+def test_simultaneous_requests_cant_get_past_the_hourly_limit(db, outbox, monkeypatch):
+    """Each request counts the links already issued; without the per-address
+    lock, requests arriving together all counted zero."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app import password_reset
+
+    monkeypatch.setattr(settings, "password_reset_max_per_hour", 2)
+    user = _user(db, _tenant(db))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _: password_reset.handle_request(user.email), range(8)))
+    issued = db.scalars(select(PasswordResetToken.id).where(PasswordResetToken.user_id == user.id)).all()
+    assert len(issued) == 2
+    assert len(_mails_to(outbox, user)) == 2

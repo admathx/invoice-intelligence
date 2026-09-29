@@ -118,9 +118,40 @@ def test_an_export_is_recorded_and_bad_ranges_are_refused(db_session, tenant):
     event = db_session.scalar(
         select(AuditEvent).where(AuditEvent.tenant_id == tenant.id, AuditEvent.action == "invoice.exported")
     )
-    assert event.details == {"kind": "line-items", "start": "2026-05-01", "rows": 0}
+    assert event.details == {"kind": "line-items", "format": "csv", "start": "2026-05-01", "rows": 0}
 
 
 def test_export_is_only_for_people_with_access(tenant):
     other_location = uuid.uuid4()
     assert TestClient(app).get("/exports/invoices", params={"tenant_id": str(other_location)}).status_code == 404
+
+
+def test_the_excel_export_keeps_codes_as_printed_and_amounts_as_numbers(db_session, tenant, distributor, canonical_sku):
+    """Opened from a CSV, Excel turned "0081234" into 81234 and a 16-digit
+    code into 1.23457E+15. In the workbook they're text; money and dates are
+    real numbers and dates."""
+    from openpyxl import load_workbook
+
+    invoice = _invoice(db_session, tenant, distributor, "0081234", date(2026, 5, 1))
+    _line(db_session, invoice, 1, "MOZZ SHRD", canonical_sku, raw_sku="0012345678901234", unit_price="0.5432", extended_price="-12.5000")
+    _line(db_session, invoice, 2, '=HYPERLINK("http://evil.example","click")\x07', raw_sku="-5")
+    db_session.commit()
+
+    resp = _get(tenant, "line-items", format="xlsx")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/vnd.openxmlformats")
+    assert resp.headers["content-disposition"].endswith('-all.xlsx"')
+    sheet = load_workbook(io.BytesIO(resp.content)).active
+    header = [c.value for c in sheet[1]]
+    first = dict(zip(header, sheet[2]))
+    second = dict(zip(header, sheet[3]))
+
+    assert first["Invoice #"].value == "0081234" and first["Invoice #"].data_type == "s"
+    assert first["Item code"].value == "0012345678901234"
+    assert first["Extended price"].value == -12.5 and first["Extended price"].number_format == "#,##0.00"
+    assert first["Unit price"].value == 0.5432
+    assert first["Invoice date"].value.date() == date(2026, 5, 1)
+    # Text, never a formula, and the control character a workbook can't hold is gone.
+    assert second["Description"].data_type == "s"
+    assert second["Description"].value == '=HYPERLINK("http://evil.example","click")'
+    assert second["Item code"].value == "-5"

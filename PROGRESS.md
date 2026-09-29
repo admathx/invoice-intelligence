@@ -2132,3 +2132,38 @@ Migrations 0015 (alert email sends, per-user switch) and 0016 (reset links).
 Backend 325 (31 new), frontend 48 unit, `tsc` and `next build` (with lint)
 clean, Playwright 19 (6 new). The new screens were checked at desktop and
 375px, and the two new emails at 375px.
+
+## Bug check of photo upload, export, price-increase emails and password reset
+
+Ten findings, all fixed.
+
+- **Price-increase emails would never have been sent.** The scheduler's
+  session expires what it loaded at every commit. After recording a send,
+  the sender re-read the alert, a location-scoped query on a session with no
+  location, which the tenant guard refuses. The crash left the alert
+  recorded as sent. Reproduced against a real session. The sender now works
+  from plain snapshots taken before any commit. The tests missed it because
+  their session never expires anything; they now send the way the scheduler
+  does, and the new test fails on the old code. The digest got the same
+  test and passes.
+- **Any failure after recording a send now undoes it**, not only a refused
+  send, so the next run retries.
+- **Excel export.** Opened from a CSV, Excel dropped leading zeros ("0081234"
+  became 81234) and turned 16-digit codes into 1.23457E+15, and no CSV can
+  prevent it. The export now defaults to a real .xlsx: codes and invoice
+  numbers are text, amounts and dates are numbers and dates, supplier text
+  is never a formula, and characters a workbook can't hold are dropped
+  rather than failing the export. CSV stays, for accounting-software imports.
+- **Password reset requests** now do all their work after the response,
+  which is then the same speed whether or not the address has an account.
+  The hourly limit is counted under a per-address lock: 8 simultaneous
+  requests used to all get through, and now exactly the limit do (the test
+  fails without the lock). Old links are pruned only when a link is
+  actually issued, not on every anonymous request.
+- The two emails' increase tables are one helper; the two password forms
+  share one set of new-password fields and one length rule.
+- The e2e password-reset login and its history are removed after each run.
+
+### Gates
+Backend 329, frontend 48 unit, `tsc` and `next build` clean, Playwright 20;
+no test data left in the dev database.

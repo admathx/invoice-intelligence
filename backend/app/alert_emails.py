@@ -50,9 +50,17 @@ REPEAT_QUIET = timedelta(days=7)
 LISTED = 8  # per location, before "and N more"
 
 
-@dataclass
+# Everything below works on these plain snapshots, taken before the first
+# commit. ORM objects expire on commit, and reloading a PriceAlert afterwards
+# is a tenant-scoped query on a session with no tenant bound, which the
+# guard in app/db.py refuses: that crashed every run after its first claim.
+
+
+@dataclass(frozen=True)
 class Increase:
     alert_id: uuid.UUID
+    tenant_id: uuid.UUID
+    sku_id: uuid.UUID
     sku: str
     before: Decimal
     now: Decimal
@@ -67,7 +75,15 @@ class LocationIncreases:
     increases: list[Increase] = field(default_factory=list)
 
 
-def due_alerts(db: Session, now: datetime) -> dict[uuid.UUID, list[tuple[PriceAlert, str, str]]]:
+@dataclass
+class Recipient:
+    id: uuid.UUID
+    email: str
+    name: str
+    locations: list[tuple[uuid.UUID, str]] = field(default_factory=list)  # (tenant id, name)
+
+
+def due_alerts(db: Session, now: datetime) -> dict[uuid.UUID, list[Increase]]:
     """Open, big-enough alerts opened within LOOKBACK, by location, biggest first."""
     rows = db.execute(
         select(PriceAlert, CanonicalSku.name, CanonicalSku.base_uom)
@@ -82,19 +98,30 @@ def due_alerts(db: Session, now: datetime) -> dict[uuid.UUID, list[tuple[PriceAl
         # whom to tell, and each person only gets their own locations' alerts.
         .execution_options(**{TENANT_SCOPE_BYPASS: True})
     ).all()
-    by_tenant: dict[uuid.UUID, list[tuple[PriceAlert, str, str]]] = {}
+    by_tenant: dict[uuid.UUID, list[Increase]] = {}
     for alert, name, uom in rows:
-        by_tenant.setdefault(alert.tenant_id, []).append((alert, name, design.UNIT_LABEL.get(uom.value, uom.value)))
+        by_tenant.setdefault(alert.tenant_id, []).append(
+            Increase(
+                alert_id=alert.id,
+                tenant_id=alert.tenant_id,
+                sku_id=alert.canonical_sku_id,
+                sku=name,
+                before=alert.baseline_price,
+                now=alert.current_price,
+                pct_change=alert.pct_change,
+                unit=design.UNIT_LABEL.get(uom.value, uom.value),
+            )
+        )
     return by_tenant
 
 
-def _recipients(db: Session, tenant_ids: list[uuid.UUID]) -> dict[uuid.UUID, tuple[User, list[Tenant]]]:
+def _recipients(db: Session, tenant_ids: list[uuid.UUID]) -> list[Recipient]:
     """Active members of these locations who want the emails. Membership, not
     operator access, as for the digest: operators would otherwise hear about
     every location in the system."""
-    people: dict[uuid.UUID, tuple[User, list[Tenant]]] = {}
-    for user, tenant in db.execute(
-        select(User, Tenant)
+    people: dict[uuid.UUID, Recipient] = {}
+    for user_id, email, name, tenant_id, tenant_name in db.execute(
+        select(User.id, User.email, User.name, Tenant.id, Tenant.name)
         .join(TenantMembership, TenantMembership.user_id == User.id)
         .join(Tenant, Tenant.id == TenantMembership.tenant_id)
         .where(
@@ -104,11 +131,11 @@ def _recipients(db: Session, tenant_ids: list[uuid.UUID]) -> dict[uuid.UUID, tup
         )
         .order_by(User.email, Tenant.name)
     ):
-        people.setdefault(user.id, (user, []))[1].append(tenant)
-    return people
+        people.setdefault(user_id, Recipient(user_id, email, name)).locations.append((tenant_id, tenant_name))
+    return list(people.values())
 
 
-def _claim(db: Session, user: User, alert_ids: list[uuid.UUID], now: datetime) -> set[uuid.UUID]:
+def _claim(db: Session, user_id: uuid.UUID, alert_ids: list[uuid.UUID], now: datetime) -> set[uuid.UUID]:
     """Record these alerts as emailed to this person; returns the ones this
     call recorded. Any another run got to first are left out, so each is
     sent once however many runs overlap."""
@@ -116,7 +143,7 @@ def _claim(db: Session, user: User, alert_ids: list[uuid.UUID], now: datetime) -
         return set()
     claimed = db.execute(
         pg_insert(AlertEmailSend)
-        .values([{"id": uuid.uuid4(), "alert_id": a, "user_id": user.id, "sent_at": now} for a in alert_ids])
+        .values([{"id": uuid.uuid4(), "alert_id": a, "user_id": user_id, "sent_at": now} for a in alert_ids])
         .on_conflict_do_nothing(constraint="uq_alert_email_sends_alert_user")
         .returning(AlertEmailSend.alert_id)
     ).scalars()
@@ -125,8 +152,9 @@ def _claim(db: Session, user: User, alert_ids: list[uuid.UUID], now: datetime) -
     return result
 
 
-def _release(db: Session, user: User, alert_ids: set[uuid.UUID]) -> None:
-    db.execute(delete(AlertEmailSend).where(AlertEmailSend.user_id == user.id, AlertEmailSend.alert_id.in_(alert_ids)))
+def _release(db: Session, user_id: uuid.UUID, alert_ids: set[uuid.UUID]) -> None:
+    db.rollback()  # whatever failed may have left the transaction unusable
+    db.execute(delete(AlertEmailSend).where(AlertEmailSend.user_id == user_id, AlertEmailSend.alert_id.in_(alert_ids)))
     db.commit()
 
 
@@ -142,7 +170,7 @@ def _subject(locations: list[LocationIncreases]) -> str:
     return f"{len(increases)} price increases at {where}"
 
 
-def compose(user: User, locations: list[LocationIncreases]) -> EmailMessage:
+def compose(user: Recipient, locations: list[LocationIncreases]) -> EmailMessage:
     e = html.escape
     unsubscribe = unsubscribe_url(user.id, "alerts")
     account = f"{settings.public_base_url}/account/password"
@@ -154,27 +182,16 @@ def compose(user: User, locations: list[LocationIncreases]) -> EmailMessage:
         shown = loc.increases[:LISTED]
         more = len(loc.increases) - len(shown)
         text += [loc.name, "=" * len(loc.name)]
-        text += [f"  - {i.sku}: {design.price_per(i.before, i.unit)} -> {design.price_per(i.now, i.unit)} (+{i.pct_change:.1%})" for i in shown]
+        text += [design.increase_line(i) for i in shown]
         if more:
             text.append(f"  ...and {more} more")
         text += [f"  {design.dashboard_link('/insights', loc.tenant_id)}", ""]
 
-        rows = "".join(
-            "<tr>"
-            f"<td style='padding:4px 12px 4px 0'>{e(i.sku)}</td>"
-            f"<td style='padding:4px 12px 4px 0;color:{design.MUTED}'><span style='white-space:nowrap'>{e(design.price_per(i.before, i.unit))} &rarr;</span> "
-            f"<strong style='color:#111827;white-space:nowrap'>{e(design.price_per(i.now, i.unit))}</strong></td>"
-            f"<td style='padding:4px 0;text-align:right'>{design.pill(f'▲ +{i.pct_change:.1%}', design.RED_TEXT, design.RED_TINT)}</td>"
-            "</tr>"
-            for i in shown
-        )
-        more_html = f"<p style='margin:4px 0 0;color:{design.MUTED}'>&hellip;and {more} more</p>" if more else ""
         sections.append(
             "<div style='margin:20px 0 0;border:1px solid #e5e7eb;border-left:4px solid #fca5a5;border-radius:8px;"
             "padding:16px 18px'>"
             f"<h2 style='font-size:17px;margin:0 0 10px'>{e(loc.name)}</h2>"
-            f"<table role='presentation' cellpadding='0' cellspacing='0' style='font-size:14px;border-collapse:collapse'>{rows}</table>"
-            f"{more_html}<p style='margin:12px 0 0'>{design.button(design.dashboard_link('/insights', loc.tenant_id), 'See it on Insights')}</p>"
+            f"{design.increase_table(shown, more)}<p style='margin:12px 0 0'>{design.button(design.dashboard_link('/insights', loc.tenant_id), 'See it on Insights')}</p>"
             "</div>"
         )
     text += [
@@ -225,7 +242,7 @@ def send_alert_emails(db: Session, now: datetime | None = None) -> AlertEmailRun
     by_tenant = due_alerts(db, now)
     if not by_tenant:
         return run
-    alert_ids = [a.id for rows in by_tenant.values() for a, _, _ in rows]
+    alert_ids = [i.alert_id for increases in by_tenant.values() for i in increases]
     already = set(
         db.execute(
             select(AlertEmailSend.alert_id, AlertEmailSend.user_id).where(AlertEmailSend.alert_id.in_(alert_ids))
@@ -240,29 +257,36 @@ def send_alert_emails(db: Session, now: datetime | None = None) -> AlertEmailRun
             .execution_options(**{TENANT_SCOPE_BYPASS: True})
         ).all()
     )
-    for user, tenants in _recipients(db, list(by_tenant)).values():
+    for person in _recipients(db, list(by_tenant)):
         wanted = [
-            (tenant, alert, name, unit)
-            for tenant in tenants
-            for alert, name, unit in by_tenant[tenant.id]
-            if (alert.id, user.id) not in already
-            and (user.id, tenant.id, alert.canonical_sku_id) not in recently
+            (tenant_name, increase)
+            for tenant_id, tenant_name in person.locations
+            for increase in by_tenant[tenant_id]
+            if (increase.alert_id, person.id) not in already
+            and (person.id, tenant_id, increase.sku_id) not in recently
         ]
-        claimed = _claim(db, user, [alert.id for _, alert, _, _ in wanted], now)
+        claimed = _claim(db, person.id, [i.alert_id for _, i in wanted], now)
         if not claimed:
             continue
-        locations: dict[uuid.UUID, LocationIncreases] = {}
-        for tenant, alert, name, unit in wanted:
-            if alert.id in claimed:
-                locations.setdefault(tenant.id, LocationIncreases(tenant.id, tenant.name)).increases.append(
-                    Increase(alert.id, name, alert.baseline_price, alert.current_price, alert.pct_change, unit)
-                )
         try:
-            mail.send(compose(user, list(locations.values())))
-            run.sent += 1
-            run.alerts += len(claimed)
-        except mail.MailError as exc:
-            _release(db, user, claimed)
-            run.failed.append(f"{user.email}: {exc}")
-            logger.warning("price-increase email to %s failed: %s", user.email, exc)
+            locations: dict[uuid.UUID, LocationIncreases] = {}
+            for tenant_name, increase in wanted:
+                if increase.alert_id in claimed:
+                    locations.setdefault(
+                        increase.tenant_id, LocationIncreases(increase.tenant_id, tenant_name)
+                    ).increases.append(increase)
+            mail.send(compose(person, list(locations.values())))
+        except Exception as exc:
+            # Anything at all between claiming and sending hands the claims
+            # back, or these increases would be recorded as sent and never
+            # be: the next run tries again.
+            _release(db, person.id, claimed)
+            run.failed.append(f"{person.email}: {exc}")
+            if isinstance(exc, mail.MailError):
+                logger.warning("price-increase email to %s failed: %s", person.email, exc)
+            else:
+                logger.exception("price-increase email to %s failed", person.email)
+            continue
+        run.sent += 1
+        run.alerts += len(claimed)
     return run

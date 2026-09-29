@@ -256,6 +256,20 @@ def test_sending_is_once_per_person_per_week(db, outbox):
     assert next_week.sent == 1
 
 
+def test_sending_works_on_the_schedulers_own_session(db, outbox):
+    """The scheduler's session expires everything on each commit; the
+    fixture's doesn't, so this runs one the scheduler's way."""
+    tenant = _tenant(db)
+    _invoice(db, tenant, status=InvoiceStatus.needs_review)
+    users = [_user(db, tenant), _user(db, tenant)]
+    session = SessionLocal()
+    try:
+        run = digest.send_due_digests(session, NOW, only=[u.id for u in users])
+    finally:
+        session.close()
+    assert run.sent == 2 and not run.failed
+
+
 def test_a_failed_send_is_retried_on_the_next_run(db, outbox, monkeypatch):
     tenant = _tenant(db)
     _invoice(db, tenant, status=InvoiceStatus.needs_review)

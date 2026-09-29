@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 
 import { CSRF_HEADERS } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
+import NewPasswordFields, { newPasswordProblem } from "@/components/NewPasswordFields";
 import { useHydrated } from "@/lib/useHydrated";
 
-const MIN_LENGTH = 12; // backend app/users.py MIN_PASSWORD_LENGTH
 
 async function post(path: string, body: unknown): Promise<Response> {
   return fetch(`/api/auth/${path}`, {
@@ -66,8 +66,9 @@ export default function ResetPasswordForm({ token: fromLink }: { token: string }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (next !== again) {
-      setError("the new passwords don't match");
+    const problem = newPasswordProblem(next, again);
+    if (problem) {
+      setError(problem);
       return;
     }
     setBusy(true);
@@ -110,42 +111,11 @@ export default function ResetPasswordForm({ token: fromLink }: { token: string }
     );
   }
 
-  const input = "input w-full";
   return (
     <form onSubmit={submit} className="card border-t-4 border-t-brand-400 p-6">
       {/* Disabled until interactive (see useHydrated) and until the link is known to work. */}
       <fieldset disabled={!hydrated || state === "checking"} className="space-y-4">
-        <div className="text-sm">
-          <label className="block">
-            <span className="mb-1 block text-gray-600">New password</span>
-            <input
-              type="password"
-              autoComplete="new-password"
-              required
-              autoFocus
-              minLength={MIN_LENGTH}
-              aria-describedby="reset-password-hint"
-              value={next}
-              onChange={(e) => setNext(e.target.value)}
-              className={input}
-            />
-          </label>
-          {/* Outside the label, so the field's name stays "New password". */}
-          <span id="reset-password-hint" className="mt-1 block text-xs text-gray-500">
-            At least {MIN_LENGTH} characters. A few unrelated words work well.
-          </span>
-        </div>
-        <label className="block text-sm">
-          <span className="mb-1 block text-gray-600">New password again</span>
-          <input
-            type="password"
-            autoComplete="new-password"
-            required
-            value={again}
-            onChange={(e) => setAgain(e.target.value)}
-            className={input}
-          />
-        </label>
+        <NewPasswordFields next={next} again={again} onNext={setNext} onAgain={setAgain} autoFocus />
         {error && (
           <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             {error}

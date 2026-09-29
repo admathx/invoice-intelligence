@@ -47,13 +47,16 @@ export function periodRange(period: Exclude<PeriodId, "custom">, today: Date): R
   }
 }
 
+export type ExportFormat = "xlsx" | "csv";
+
 export function exportUrl(
   kind: "invoices" | "line-items",
   locationId: string,
   range: Range,
   distributorId: string,
+  format: ExportFormat,
 ): string {
-  const params = new URLSearchParams({ tenant_id: locationId });
+  const params = new URLSearchParams({ tenant_id: locationId, format });
   if (range.start) params.set("start", range.start);
   if (range.end) params.set("end", range.end);
   if (distributorId) params.set("distributor_id", distributorId);

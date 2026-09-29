@@ -7,6 +7,7 @@ clients ignore stylesheets. Increases red, savings green, like the dashboard.
 import html
 import uuid
 from decimal import Decimal
+from typing import Iterable, Protocol
 
 from app.config import settings
 
@@ -82,3 +83,39 @@ def dashboard_link(path: str, location: uuid.UUID) -> str:
     one location's section of an email never opens in another's."""
     joiner = "&" if "?" in path else "?"
     return f"{settings.public_base_url}{path}{joiner}location={location}"
+
+
+class PriceIncreaseRow(Protocol):
+    sku: str
+    before: Decimal
+    now: Decimal
+    pct_change: Decimal
+    unit: str
+
+
+def increase_line(p: PriceIncreaseRow) -> str:
+    """One increase in a plain-text email."""
+    return f"  - {p.sku}: {price_per(p.before, p.unit)} -> {price_per(p.now, p.unit)} (+{p.pct_change:.1%})"
+
+
+def increase_table(increases: Iterable[PriceIncreaseRow], more: int = 0) -> str:
+    """Price increases as the emails show them: product, before → now, and
+    a red pill. Shared by the digest and the price-increase email, so a fix
+    for one screen size is a fix for both."""
+    e = html.escape
+    rows = "".join(
+        "<tr>"
+        f"<td style='padding:4px 12px 4px 0'>{e(p.sku)}</td>"
+        # Each price stays whole; the pair may wrap at the arrow, so a
+        # narrow screen doesn't crush the product name instead.
+        f"<td style='padding:4px 12px 4px 0;color:{MUTED}'><span style='white-space:nowrap'>{e(price_per(p.before, p.unit))} &rarr;</span> "
+        f"<strong style='color:#111827;white-space:nowrap'>{e(price_per(p.now, p.unit))}</strong></td>"
+        f"<td style='padding:4px 0;text-align:right'>{pill(f'▲ +{p.pct_change:.1%}', RED_TEXT, RED_TINT)}</td>"
+        "</tr>"
+        for p in increases
+    )
+    more_html = f"<p style='margin:4px 0 0;color:{MUTED}'>&hellip;and {more} more</p>" if more > 0 else ""
+    return (
+        f"<table role='presentation' cellpadding='0' cellspacing='0' style='font-size:14px;border-collapse:collapse'>{rows}</table>"
+        f"{more_html}"
+    )

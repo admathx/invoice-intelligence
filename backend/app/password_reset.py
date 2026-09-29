@@ -6,10 +6,11 @@ working links. It works once, for settings.password_reset_ttl_minutes, and
 using it ends every one of that person's links and sessions.
 
 Asking never reveals whether an address has an account: the API answers the
-same either way, and the email goes out after the response (so the time
-taken doesn't give it away either). Each address gets at most
-settings.password_reset_max_per_hour links an hour, so the form can't be
-used to flood someone's inbox.
+same either way, and does all the work (the lookup, the link, the email)
+after the response has gone, so the time taken doesn't give it away either.
+Each address gets at most settings.password_reset_max_per_hour links an
+hour, counted under a per-address lock so simultaneous requests can't slip
+past it, so the form can't be used to flood someone's inbox.
 """
 import hashlib
 import html
@@ -26,6 +27,7 @@ from app import email_design as design
 from app import mail
 from app.auth import hash_password
 from app.config import settings
+from app.db import SessionLocal
 from app.models import PasswordResetToken, User
 from app.users import check_new_password, end_reset_links, revoke_sessions
 
@@ -39,11 +41,29 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def request_reset(db: Session, email: str) -> tuple[User, str] | None:
-    """A new link for this address's active user, or None (no such active
-    user, or they've had their hourly allowance). Records the request either
-    way; commits."""
-    _prune(db)
+def handle_request(email: str) -> None:
+    """Everything a reset request does, run after the response (a background
+    task, with its own session): whether or not there's an account, the
+    request itself costs the same."""
+    db = SessionLocal()
+    try:
+        issued = request_reset(db, email)
+    except Exception:
+        logger.exception("password reset request for %s failed", email)
+        return
+    finally:
+        db.close()
+    if issued is not None:
+        send_reset_email(*issued)
+
+
+def request_reset(db: Session, email: str) -> tuple[str, str, str] | None:
+    """A new link for this address's active user, as (name, email, token);
+    None if there's no such active user or they've had their hourly
+    allowance. Records the request either way; commits."""
+    # One request per address at a time, so the count below can't be read
+    # by several at once before any of them has added a link.
+    db.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(f"password-reset|{email}", 0))))
     user = db.scalar(select(User).where(User.email == email))
     if user is None or not user.is_active:
         audit.record(db, None, REQUESTED, "user", None, email=email, sent=False)
@@ -59,16 +79,19 @@ def request_reset(db: Session, email: str) -> tuple[User, str] | None:
         audit.record(db, None, REQUESTED, "user", user.id, email=email, sent=False, reason="hourly limit")
         db.commit()
         return None
+    _prune(db)
     token = issue_token(db, user)
     audit.record(db, None, REQUESTED, "user", user.id, email=email, sent=True)
+    issued = (user.name, user.email, token)
     db.commit()
-    return user, token
+    return issued
 
 
 def _prune(db: Session) -> None:
     """Links dead for a while (used or expired) go, as for sessions
-    (app.auth.prune_sessions): run on each request, which is when the table
-    grows."""
+    (app.auth.prune_sessions). Run when a link is issued, which is when the
+    table grows, and so at most a few times an hour per real account; never
+    for a request anyone can make up an address for."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=settings.session_retention_days)
     db.execute(
         delete(PasswordResetToken).where(

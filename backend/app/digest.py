@@ -234,8 +234,7 @@ def _sections_text(week: LocationWeek) -> list[str]:
     out = [week.name, "=" * len(week.name)]
     if week.new_increase_count:
         out.append(f"New price increases ({week.new_increase_count}):")
-        for p in week.new_increases:
-            out.append(f"  - {p.sku}: {design.price_per(p.before, p.unit)} -> {design.price_per(p.now, p.unit)} (+{p.pct_change:.1%})")
+        out += [design.increase_line(p) for p in week.new_increases]
         if week.new_increase_count > len(week.new_increases):
             out.append(f"  ...and {week.new_increase_count - len(week.new_increases)} more")
         out.append(f"  {design.dashboard_link('/insights', week.tenant_id)}")
@@ -270,24 +269,12 @@ def _sections_html(week: LocationWeek) -> str:
         return design.dashboard_link(path, week.tenant_id)
 
     if week.new_increase_count:
-        rows = "".join(
-            "<tr>"
-            f"<td style='padding:4px 12px 4px 0'>{e(p.sku)}</td>"
-            # Each price stays whole; the pair may wrap at the arrow, so a
-            # narrow screen doesn't crush the product name instead.
-            f"<td style='padding:4px 12px 4px 0;color:{design.MUTED}'><span style='white-space:nowrap'>{e(design.price_per(p.before, p.unit))} &rarr;</span> "
-            f"<strong style='color:#111827;white-space:nowrap'>{e(design.price_per(p.now, p.unit))}</strong></td>"
-            f"<td style='padding:4px 0;text-align:right'>{design.pill(f'▲ +{p.pct_change:.1%}', design.RED_TEXT, design.RED_TINT)}</td>"
-            "</tr>"
-            for p in week.new_increases
-        )
         more = week.new_increase_count - len(week.new_increases)
-        more_html = f"<p style='margin:4px 0 0;color:{design.MUTED}'>&hellip;and {more} more</p>" if more > 0 else ""
         parts.append(
             f"<p style='margin:0 0 6px'><strong style='color:{design.RED_TEXT}'>{week.new_increase_count} new price "
             f"increase{'s' if week.new_increase_count != 1 else ''}</strong></p>"
-            f"<table role='presentation' cellpadding='0' cellspacing='0' style='font-size:14px;border-collapse:collapse'>{rows}</table>"
-            f"{more_html}<p style='margin:10px 0 0'>{design.button(link('/insights'), 'See them on Insights')}</p>"
+            f"{design.increase_table(week.new_increases, more)}"
+            f"<p style='margin:10px 0 0'>{design.button(link('/insights'), 'See them on Insights')}</p>"
         )
     if week.held_count:
         items = "".join(

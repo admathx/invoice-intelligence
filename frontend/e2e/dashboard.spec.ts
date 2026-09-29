@@ -507,11 +507,21 @@ test.describe("getting invoices in and out", () => {
     await expect(page.getByTestId("photo-tray")).toHaveCount(0);
   });
 
-  test("line items export as a spreadsheet Excel can read", async ({ page }) => {
+  test("the export is an Excel file unless CSV is asked for", async ({ page }) => {
     await page.goto("/invoices");
-    await page.getByRole("button", { name: "Export CSV" }).click();
+    await page.getByRole("button", { name: "Export" }).click();
+    const downloading = page.waitForEvent("download");
+    await page.getByTestId("export-panel").getByRole("link", { name: "Download Excel file" }).click();
+    const download = await downloading;
+    expect(download.suggestedFilename()).toMatch(/^invoices-.+\.xlsx$/);
+  });
+
+  test("line items export as a CSV Excel can read", async ({ page }) => {
+    await page.goto("/invoices");
+    await page.getByRole("button", { name: "Export" }).click();
     const panel = page.getByTestId("export-panel");
     await panel.getByText("Line items").click();
+    await panel.getByText("CSV", { exact: true }).click();
     await panel.getByLabel("Invoice dates").selectOption("all");
     await expect(panel.getByTestId("export-range")).toHaveText("Every invoice");
 
@@ -531,6 +541,12 @@ test.describe("getting invoices in and out", () => {
 
 test.describe("forgot your password", () => {
   test.skip(!TENANT_ID, "E2E_TENANT_ID not set in frontend/.env.local");
+
+  // The reset login (a member of the e2e location, which would otherwise get
+  // its emails and sit on the Users screen) and the requests' history.
+  test.afterAll(() => {
+    if (TENANT_ID) runFixture("cleanup-users");
+  });
 
   test("asking for a link says the same thing for any address", async ({ page }) => {
     await page.goto("/login");

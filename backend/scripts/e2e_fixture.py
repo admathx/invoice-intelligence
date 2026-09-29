@@ -14,8 +14,9 @@ Subcommands (see backend/scripts/e2e_fixture.py --help via argparse):
                              tenant) with a fresh random password, prints
                              {email, password} for the spec to sign in with.
   login-operator             the same for an e2e operator login.
-  cleanup-users              deletes the logins the Users-screen test created
-                             (e2e-new-*@dev.test) and their history.
+  cleanup-users              deletes the logins the Users-screen and password
+                             reset tests created (e2e-new-*@dev.test,
+                             e2e-reset@dev.test) and their history.
   pick-tenant                prints the id of the seeded location with the most
                              invoices (CI has no .env.local to name one).
   cleanup-locations          deletes the locations the Businesses test created
@@ -378,6 +379,8 @@ E2E_LOGIN = ("e2e@dev.test", "E2E Reviewer")
 E2E_OPERATOR = ("e2e-operator@dev.test", "E2E Operator")
 # The password-reset test changes this login's password, so it isn't E2E_LOGIN.
 E2E_RESET_LOGIN = ("e2e-reset@dev.test", "E2E Reset")
+# The address the "forgot your password" test asks about, which has no login.
+E2E_UNKNOWN_ADDRESS = "nobody-e2e@test.invalid"
 # Logins the Users-screen test creates through the UI.
 E2E_CREATED_PATTERN = "e2e-new-%@dev.test"
 # Locations the Businesses-screen test creates through the UI.
@@ -440,15 +443,29 @@ def cmd_reset_link(tenant_id: str) -> None:
 def cmd_cleanup_users() -> None:
     db = SessionLocal()
     try:
-        ids = list(db.scalars(sqlalchemy.select(User.id).where(User.email.like(E2E_CREATED_PATTERN))))
+        ids = list(
+            db.scalars(
+                sqlalchemy.select(User.id).where(
+                    sqlalchemy.or_(User.email.like(E2E_CREATED_PATTERN), User.email == E2E_RESET_LOGIN[0])
+                )
+            )
+        )
         if ids:
             db.execute(
                 sqlalchemy.delete(AuditEvent).where(
                     sqlalchemy.or_(AuditEvent.entity_id.in_(ids), AuditEvent.actor_user_id.in_(ids))
                 )
             )
-            db.execute(sqlalchemy.delete(User).where(User.id.in_(ids)))  # memberships and sessions cascade
-            db.commit()
+            # Memberships, sessions and reset links cascade.
+            db.execute(sqlalchemy.delete(User).where(User.id.in_(ids)))
+        # Reset requests for the address with no login belong to nobody.
+        db.execute(
+            sqlalchemy.delete(AuditEvent).where(
+                AuditEvent.action == "auth.password_reset_requested",
+                AuditEvent.details["email"].astext == E2E_UNKNOWN_ADDRESS,
+            )
+        )
+        db.commit()
         print(json.dumps({"deleted_users": len(ids)}))
     finally:
         db.close()

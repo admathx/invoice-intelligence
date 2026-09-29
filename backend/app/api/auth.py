@@ -228,17 +228,12 @@ def _reset_enabled() -> None:
 
 
 @router.post("/password-reset/request", status_code=202)
-def request_password_reset(
-    body: PasswordResetRequest, request: Request, background: BackgroundTasks, db: Session = Depends(get_db)
-) -> Response:
-    """Always the same answer, whether or not the address has an account; the
-    email, if there is one, goes out after the response."""
+def request_password_reset(body: PasswordResetRequest, request: Request, background: BackgroundTasks) -> Response:
+    """Always the same answer, at the same speed, whether or not the address
+    has an account: all the work happens after the response."""
     _require_csrf_header(request)
     _reset_enabled()
-    issued = password_reset.request_reset(db, normalize_email(body.email))
-    if issued is not None:
-        user, token = issued
-        background.add_task(password_reset.send_reset_email, user.name, user.email, token)
+    background.add_task(password_reset.handle_request, normalize_email(body.email))
     return Response(status_code=202)
 
 

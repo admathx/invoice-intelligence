@@ -27,9 +27,11 @@ describe("periodRange", () => {
 
 describe("exportUrl", () => {
   it("sends only the filters that are set", () => {
-    expect(exportUrl("invoices", "loc", { start: null, end: null }, "")).toBe("/api/exports/invoices?tenant_id=loc");
-    expect(exportUrl("line-items", "loc", { start: "2026-01-01", end: "2026-01-31" }, "d1")).toBe(
-      "/api/exports/line-items?tenant_id=loc&start=2026-01-01&end=2026-01-31&distributor_id=d1",
+    expect(exportUrl("invoices", "loc", { start: null, end: null }, "", "xlsx")).toBe(
+      "/api/exports/invoices?tenant_id=loc&format=xlsx",
+    );
+    expect(exportUrl("line-items", "loc", { start: "2026-01-01", end: "2026-01-31" }, "d1", "csv")).toBe(
+      "/api/exports/line-items?tenant_id=loc&format=csv&start=2026-01-01&end=2026-01-31&distributor_id=d1",
     );
   });
 });

@@ -44,6 +44,17 @@ def _alert(db, tenant, sku, *, pct="0.24", created_at=NOW - timedelta(hours=1), 
     return alert
 
 
+def _send(now):
+    """As the scheduler does it: its own plain session. The fixture's session
+    never expires what it loaded, which hid a crash that only a default
+    session (expire on commit) hits."""
+    session = SessionLocal()
+    try:
+        return alert_emails.send_alert_emails(session, now)
+    finally:
+        session.close()
+
+
 def _read(path):
     parsed = message_from_bytes(path.read_bytes(), policy=policy.default)
     return parsed, parsed.get_body(("plain",)).get_content(), parsed.get_body(("html",)).get_content()
@@ -66,7 +77,7 @@ def test_big_new_increases_go_to_members_who_want_them(db, outbox, monkeypatch):
     _user(db, tenant, is_active=False)
     _user(db, operator=True)  # sees every location, belongs to none
 
-    alert_emails.send_alert_emails(db, NOW)
+    _send(NOW)
     sent_to = set(db.scalars(select(AlertEmailSend.user_id).where(AlertEmailSend.alert_id == big.id)))
     assert _mine(db, sent_to) == {member.id}
     assert opted_out.id not in sent_to
@@ -87,8 +98,8 @@ def test_each_increase_is_emailed_once_and_several_share_one_email(db, outbox):
     b = _alert(db, second, _sku(db))
     user = _user(db, first, second)
 
-    alert_emails.send_alert_emails(db, NOW)
-    alert_emails.send_alert_emails(db, NOW + timedelta(minutes=5))
+    _send(NOW)
+    _send(NOW + timedelta(minutes=5))
     mine = [p for p in _outbox_files(outbox) if user.email.replace("@", "_at_") in p.name]
     assert len(mine) == 1
     parsed, _, _ = _read(mine[0])
@@ -103,8 +114,8 @@ def test_a_run_racing_another_sends_only_what_it_claimed(db):
     user = _user(db, tenant)
     other = SessionLocal()
     try:
-        assert alert_emails._claim(db, user, [alert.id], NOW) == {alert.id}
-        assert alert_emails._claim(other, other.get(User, user.id), [alert.id], NOW) == set()
+        assert alert_emails._claim(db, user.id, [alert.id], NOW) == {alert.id}
+        assert alert_emails._claim(other, user.id, [alert.id], NOW) == set()
     finally:
         other.close()
 
@@ -113,12 +124,12 @@ def test_a_product_isnt_emailed_again_within_the_week_when_its_alert_reopens(db,
     tenant, sku = _tenant(db), _sku(db)
     user = _user(db, tenant)
     first = _alert(db, tenant, sku)
-    alert_emails.send_alert_emails(db, NOW)
+    _send(NOW)
     # The price dipped, the alert resolved, and it climbed again: a new alert.
     first.status = AlertStatus.resolved
     db.commit()
     again = _alert(db, tenant, sku, created_at=NOW + timedelta(days=2))
-    alert_emails.send_alert_emails(db, NOW + timedelta(days=2, hours=1))
+    _send(NOW + timedelta(days=2, hours=1))
     assert db.scalar(select(AlertEmailSend.id).where(AlertEmailSend.alert_id == again.id)) is None
     assert len([p for p in _outbox_files(outbox) if user.email.replace("@", "_at_") in p.name]) == 1
 
@@ -126,7 +137,7 @@ def test_a_product_isnt_emailed_again_within_the_week_when_its_alert_reopens(db,
     later = NOW + timedelta(days=8)
     again.created_at = later - timedelta(hours=1)
     db.commit()
-    alert_emails.send_alert_emails(db, later)
+    _send(later)
     assert db.scalar(select(AlertEmailSend.id).where(AlertEmailSend.alert_id == again.id)) is not None
 
 
@@ -139,12 +150,12 @@ def test_a_failed_send_is_retried_on_the_next_run(db, outbox, monkeypatch):
         raise mail.MailError("relay unreachable")
 
     monkeypatch.setattr(mail, "send", down)
-    failed = alert_emails.send_alert_emails(db, NOW)
+    failed = _send(NOW)
     assert any(user.email in f for f in failed.failed)
     assert db.scalar(select(AlertEmailSend.id).where(AlertEmailSend.user_id == user.id)) is None
 
     monkeypatch.setattr(mail, "send", lambda message: None)
-    alert_emails.send_alert_emails(db, NOW)
+    _send(NOW)
     assert db.scalar(select(AlertEmailSend.alert_id).where(AlertEmailSend.user_id == user.id)) == alert.id
 
 
@@ -152,7 +163,7 @@ def test_names_are_escaped(db, outbox):
     tenant = _tenant(db, "<script>x</script> Grill")
     _alert(db, tenant, _sku(db, "<b>Onions</b>"))
     user = _user(db, tenant, name="<i>Dana</i>")
-    alert_emails.send_alert_emails(db, NOW)
+    _send(NOW)
     (path,) = [p for p in _outbox_files(outbox) if user.email.replace("@", "_at_") in p.name]
     _, _, html_body = _read(path)
     assert "<script>" not in html_body and "<b>Onions" not in html_body and "<i>Dana" not in html_body
@@ -191,3 +202,26 @@ def test_the_account_page_turns_them_off_and_on(db):
         select(AuditEvent.action).where(AuditEvent.entity_id == user.id, AuditEvent.action.like("user.alert_emails%"))
     ).all()
     assert sorted(actions) == ["user.alert_emails_subscribed", "user.alert_emails_unsubscribed"]
+
+
+def test_any_failure_after_claiming_hands_the_claims_back(db, outbox, monkeypatch):
+    """Not only a refused send: anything between claiming and sending
+    (building the email, a lost connection) must leave the alerts unsent,
+    not recorded as sent."""
+    tenant = _tenant(db)
+    alert = _alert(db, tenant, _sku(db))
+    user = _user(db, tenant)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("template bug")
+
+    monkeypatch.setattr(alert_emails, "compose", broken)
+    run = _send(NOW)
+    assert any(user.email in f for f in run.failed)
+    assert db.scalar(select(AlertEmailSend.id).where(AlertEmailSend.alert_id == alert.id)) is None
+
+    monkeypatch.undo()
+    monkeypatch.setattr(settings, "mail_backend", "outbox")
+    monkeypatch.setattr(settings, "outbox_dir", str(outbox))
+    assert _send(NOW).sent >= 1
+    assert db.scalar(select(AlertEmailSend.alert_id).where(AlertEmailSend.user_id == user.id)) == alert.id

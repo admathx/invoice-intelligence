@@ -4,9 +4,9 @@ import { useState } from "react";
 
 import { api, jsonInit } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
+import NewPasswordFields, { newPasswordProblem } from "@/components/NewPasswordFields";
 import { useHydrated } from "@/lib/useHydrated";
 
-const MIN_LENGTH = 12; // backend app/users.py MIN_PASSWORD_LENGTH
 
 export default function ChangePasswordForm({ required, email }: { required: boolean; email: string }) {
   const [current, setCurrent] = useState("");
@@ -19,8 +19,9 @@ export default function ChangePasswordForm({ required, email }: { required: bool
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (next !== again) {
-      setError("the new passwords don't match");
+    const problem = newPasswordProblem(next, again);
+    if (problem) {
+      setError(problem);
       return;
     }
     setBusy(true);
@@ -78,36 +79,7 @@ export default function ChangePasswordForm({ required, email }: { required: bool
               className={input}
             />
           </label>
-          <div className="text-sm">
-            <label className="block">
-              <span className="mb-1 block text-gray-600">New password</span>
-              <input
-                type="password"
-                autoComplete="new-password"
-                required
-                minLength={MIN_LENGTH}
-                aria-describedby="new-password-hint"
-                value={next}
-                onChange={(e) => setNext(e.target.value)}
-                className={input}
-              />
-            </label>
-            {/* Outside the label, so the field's name stays "New password". */}
-            <span id="new-password-hint" className="mt-1 block text-xs text-gray-500">
-              At least {MIN_LENGTH} characters. A few unrelated words work well.
-            </span>
-          </div>
-          <label className="block text-sm">
-            <span className="mb-1 block text-gray-600">New password again</span>
-            <input
-              type="password"
-              autoComplete="new-password"
-              required
-              value={again}
-              onChange={(e) => setAgain(e.target.value)}
-              className={input}
-            />
-          </label>
+          <NewPasswordFields next={next} again={again} onNext={setNext} onAgain={setAgain} />
           {error && (
             <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" data-testid="password-error">
               {error}
