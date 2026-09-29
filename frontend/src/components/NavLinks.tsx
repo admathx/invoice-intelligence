@@ -5,12 +5,14 @@ import { useEffect, useRef } from "react";
 
 type Item = { href: string; label: string };
 
+// In the order of the work: invoices come in, their items get matched to
+// products, and then price alerts and savings are worth reading.
 const MAIN: Item[] = [
   { href: "/invoices", label: "Invoices" },
-  { href: "/review", label: "Review queue" },
-  { href: "/insights", label: "Insights" },
-  { href: "/negotiation", label: "Negotiation" },
-  { href: "/skus", label: "SKUs" },
+  { href: "/review", label: "Match items" },
+  { href: "/insights", label: "Price alerts" },
+  { href: "/negotiation", label: "Savings" },
+  { href: "/skus", label: "Products" },
   { href: "/activity", label: "Activity" },
 ];
 
@@ -18,8 +20,8 @@ const MAIN: Item[] = [
 // inside the selected one. Set apart after a divider for that reason.
 const OPERATOR: Item[] = [
   { href: "/accounts", label: "Businesses" },
-  { href: "/users", label: "Users" },
-  { href: "/audit", label: "Audit log" },
+  { href: "/users", label: "People" },
+  { href: "/audit", label: "Change log" },
 ];
 
 function Link({ item, current }: { item: Item; current: boolean }) {

@@ -20,7 +20,7 @@ const OPTIONS: { setting: Setting; label: string; description: (threshold: strin
     setting: "digest_enabled",
     label: "Weekly summary",
     description: () =>
-      "Every Monday: new price increases, invoices to check, the review queue, and your biggest savings, for each of your locations. Nothing is sent in a quiet week.",
+      "Every Monday: new price increases, invoices that need a look, items to match, and your biggest savings. Nothing is sent in a quiet week.",
   },
 ];
 
@@ -58,7 +58,7 @@ export default function EmailPreferences({ initial, alertThreshold }: { initial:
 
   return (
     <section className="card max-w-sm p-5">
-      <h2 className="section-title">Email</h2>
+      <h2 className="section-title">Emails we send you</h2>
       <div className="mt-2 space-y-3">
         {OPTIONS.map(({ setting, label, description }) => (
           <label key={setting} className="flex items-start gap-2 text-sm">

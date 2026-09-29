@@ -69,7 +69,7 @@ export type PriceVerdict = {
  *  picture can never disagree. */
 export function priceVerdict(percentile: number, accountCount: number): PriceVerdict {
   const pct = Math.round(percentile * 100);
-  const peers = `${accountCount} comparable ${accountCount === 1 ? "business" : "businesses"}`;
+  const peers = `${accountCount} similar ${accountCount === 1 ? "business" : "businesses"}`;
 
   // The extremes get named rather than expressed as a percentage: "higher than
   // 100% of 12 businesses" is a sentence no one says, and it reads like a
@@ -77,6 +77,6 @@ export function priceVerdict(percentile: number, accountCount: number): PriceVer
   if (pct >= 100) return { tone: "bad", headline: `More expensive than all ${peers}` };
   if (pct <= 0) return { tone: "good", headline: `Cheaper than all ${peers}` };
   if (pct <= 25) return { tone: "good", headline: `Cheaper than ${100 - pct}% of ${peers}` };
-  if (pct <= 75) return { tone: "fair", headline: `Mid-pack among ${peers}` };
+  if (pct <= 75) return { tone: "fair", headline: `About average for ${peers}` };
   return { tone: "bad", headline: `More expensive than ${pct}% of ${peers}` };
 }

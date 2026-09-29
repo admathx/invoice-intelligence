@@ -147,7 +147,7 @@ def test_it_needs_the_request_header_and_can_be_switched_off(db, monkeypatch):
     assert client.post("/auth/password-reset/request", json={"email": user.email}).status_code == 403
     monkeypatch.setattr(settings, "password_reset_enabled", False)
     off = _ask(client, user.email)
-    assert off.status_code == 503 and "ask your operator" in off.json()["detail"]
+    assert off.status_code == 503 and "Ask whoever set up your account" in off.json()["detail"]
     db.expire_all()
     assert db.scalar(select(PasswordResetToken.id).where(PasswordResetToken.user_id == user.id)) is None
     assert db.get(User, user.id).is_active

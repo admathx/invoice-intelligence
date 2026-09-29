@@ -126,7 +126,7 @@ export default function AddLineModal({
       );
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        setError(formatApiError(data?.detail, "Couldn't add the line."));
+        setError(formatApiError(data?.detail, "Couldn't add that item."));
         return;
       }
       onAdded(data);
@@ -152,9 +152,9 @@ export default function AddLineModal({
       >
         <h2 id="add-line-title" className="flex items-center gap-2 text-lg font-semibold">
           <span aria-hidden className="grid h-6 w-6 place-items-center rounded-md bg-brand-100 text-sm text-brand-800">+</span>
-          Add line item
+          Add an item
         </h2>
-        <p className="mt-1 text-xs text-gray-500">Enter the line as it&rsquo;s printed on the invoice.</p>
+        <p className="mt-1 text-xs text-gray-500">Type it as it&rsquo;s printed on the invoice.</p>
 
         <div className="relative mt-4">
           <input
@@ -204,15 +204,15 @@ export default function AddLineModal({
             <input ref={quantityRef} inputMode="decimal" value={fields.quantity} onChange={set("quantity")} className={input} />
           </label>
           <label className="text-xs text-gray-600">
-            Unit (UOM)
+            Unit (e.g. CS, LB)
             <input value={fields.uom} onChange={set("uom")} className={input} />
           </label>
           <label className="text-xs text-gray-600">
-            Unit price
+            Price each
             <input inputMode="decimal" value={fields.unit_price} onChange={set("unit_price")} className={input} />
           </label>
           <label className="text-xs text-gray-600">
-            Extended price
+            Line total
             <input inputMode="decimal" value={fields.extended_price} onChange={set("extended_price")} className={input} />
           </label>
 
@@ -235,7 +235,7 @@ export default function AddLineModal({
               disabled={busy || !complete}
               className="btn-primary"
             >
-              Add line
+              Add item
             </button>
           </div>
         </form>

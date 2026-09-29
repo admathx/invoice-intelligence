@@ -52,11 +52,15 @@ export default function ChangePasswordForm({ required, email }: { required: bool
   const input = "input w-full";
   return (
     <div className="max-w-sm">
-      <h1 className="page-title">{required ? "Choose your password" : "Change your password"}</h1>
+      {required ? (
+        <h1 className="page-title">Choose your password</h1>
+      ) : (
+        <h2 className="section-title">Change your password</h2>
+      )}
       <p className="mt-1 text-sm text-gray-600">
         {required
-          ? "You signed in with a temporary password someone gave you. Choose one only you know to continue."
-          : `For ${email}. Your other signed-in browsers will be signed out.`}
+          ? "You signed in with a temporary password someone gave you. Choose one that only you know."
+          : "You'll stay signed in here, and be signed out everywhere else."}
       </p>
       {done && (
         <p role="status" className="mt-4 rounded-lg border border-brand-200 border-l-4 border-l-brand-400 bg-brand-50 px-3 py-2 text-sm font-medium text-brand-900">

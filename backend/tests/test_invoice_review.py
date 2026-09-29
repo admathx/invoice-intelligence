@@ -161,7 +161,7 @@ def test_the_detail_explains_what_doesnt_add_up(client, misread_invoice, tenant)
 
     assert body["check"]["passes"] is False
     assert body["check"]["failed_line_numbers"] == [1]
-    assert any("line(s) [1]" in reason for reason in body["check"]["reasons"])
+    assert "On item 1, qty × price each doesn't equal the line total." in body["check"]["reasons"]
 
 
 def test_confirming_is_refused_while_the_numbers_still_dont_add_up(client, db, misread_invoice, tenant):
@@ -401,7 +401,7 @@ def test_the_first_line_can_be_added_to_an_invoice_extraction_found_empty(client
     assert Decimal(line["normalized_unit_price"]) == Decimal("2.3750")  # $47.50 per 20 lb case
     assert line["extraction_confidence"] is None  # typed, not extracted
     # Now the only thing missing is the totals the page prints.
-    assert not any("no line items" in r for r in resp.json()["check"]["reasons"])
+    assert "There are no items yet." not in resp.json()["check"]["reasons"]
 
 
 def test_hand_entered_lines_are_checked_like_extracted_ones(client, empty_invoice, tenant):

@@ -2167,3 +2167,60 @@ Ten findings, all fixed.
 ### Gates
 Backend 329, frontend 48 unit, `tsc` and `next build` clean, Playwright 20;
 no test data left in the dev database.
+
+## App experience pass: speed, buttons, navigation, plain language, help
+
+### Speed
+Measured, not guessed, on a production build: every page as a member, an
+admin and signed out, at 1280 and 390px. First byte 6-119 ms, fully loaded
+36-198 ms; every API call the screens make answers in 3-62 ms (the Excel
+line-item export, a download, ~375 ms). Nothing needed speeding up.
+
+A global loading screen was tried and dropped: it made the invoice screen
+fall back to stale data after saving (the browser tests caught it).
+
+### Buttons and links
+An audit script followed every internal link each kind of user is shown
+(all 200), and checked every page for console errors, failed requests,
+missing headings, dead anchors and sideways overflow at phone width: 0
+problems. The browser suite covers the working buttons end to end (22
+tests). Fixed along the way:
+- Match items had no way past an item you can't match: **Skip for now**.
+- Removing a location from a business happened on one click; it now asks.
+- An invoice being read never updated until reloaded; the list and the
+  invoice now refresh themselves every 5 seconds until it's done.
+
+### Navigation
+- Plain section names, in the order of the work: Invoices, Match items,
+  Price alerts, Savings, Products, Activity; for admins Businesses, People,
+  Change log. Each page says in one line what it's for, and every page has
+  a browser-tab title.
+- Help and Your account at the top of every page (Account on a phone, where
+  a name squeezed the location picker).
+- Back links on invoice and product pages; items to match link to their
+  invoice; alert and savings rows link to the product; product history rows
+  link to the invoice; a finished queue offers Price alerts and Savings next.
+- Invoice links in the change log open at the invoice's own location.
+- A proper "Page not found" with a way back.
+- Each location's invoice email is shown to its members (Invoices page,
+  Your account, Help); only admins could see it before.
+
+### Plain language
+Everywhere a person reads: every page, button, empty state, status and
+message, the server's error messages, the history log, and the emails.
+"Canonical SKU" is a product, "needs_review" is "Needs a look", "extended
+price" is the line total, "negotiation sheet" is Savings, "operator" is
+admin, "benchmark"/"peer p25" is what similar businesses pay. Server errors
+are short sentences ("That email and password don't match.").
+
+### Help
+`/help`, open to everyone (linked from sign-in too): getting started in
+three steps, then how to add invoices, fix one that needs a look, match
+items, read price alerts and savings, look up a product, export for the
+accountant, the emails, your account and password, what each label means,
+and a section for admins. Every topic links to where it's done; signed in,
+it shows your own invoice email addresses.
+
+### Gates
+Backend 329, frontend 48 unit, `tsc` and `next build` clean, Playwright 22
+(2 new: help links all resolve and it's open signed out; skipping items).

@@ -43,14 +43,21 @@ export default function AccountMenu({
           ))}
         </select>
       ) : (
-        <span className="min-w-0 truncate rounded-md bg-brand-50 px-2.5 py-1 font-medium text-brand-800">{locations[0]?.name ?? "No locations"}</span>
+        <span className="min-w-0 truncate rounded-md bg-brand-50 px-2.5 py-1 font-medium text-brand-800">{locations[0]?.name ?? "No location yet"}</span>
       )}
+      <a href="/help" className="font-medium text-gray-600 hover:text-brand-700">
+        Help
+      </a>
       <a
         href={CHANGE_PASSWORD_PATH}
         title="Your account"
+        aria-label={`Your account (${name})`}
         className="min-w-0 max-w-40 truncate font-medium text-gray-600 hover:text-brand-700"
       >
-        {name}
+        {/* A phone has no room for a name beside the location; "Account"
+            says where it goes in a word. */}
+        <span className="sm:hidden">Account</span>
+        <span className="hidden sm:inline">{name}</span>
       </a>
       {/* A form, not a click handler: works before hydration (app/logout/route.ts). */}
       <form action="/logout" method="post">

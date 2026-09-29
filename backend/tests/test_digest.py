@@ -198,7 +198,7 @@ def test_one_email_covers_every_location_with_news_and_links_to_each(db, monkeyp
     message = digest.compose(user, [_week(db, t) for t in (busy, quiet, also_busy)])
     parsed, text, html_body = _parts(message)
     assert parsed["To"] == user.email
-    assert parsed["Subject"] == "Your week at 2 locations: 1 price increase, 1 invoice to check"
+    assert parsed["Subject"] == "Your week at 2 locations: 1 price increase, 1 invoice to look at"
     assert busy.name in text and also_busy.name in text and quiet.name not in text
     assert f"https://app.example.com/review" not in text  # nothing pending
     assert f"/insights?location={also_busy.id}" in text

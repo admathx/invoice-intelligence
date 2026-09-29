@@ -29,8 +29,8 @@ describe("activity", () => {
     expect(lines).toEqual([
       "total 20.00 → 24.00",
       "distributor changed",
-      "line 3: unit price 74.50 → 47.50",
-      "line 3: item code blank → A1",
+      "item 3: price each 74.50 → 47.50",
+      "item 3: item code blank → A1",
     ]);
   });
 
@@ -43,11 +43,11 @@ describe("activity", () => {
 
   it("says whether extraction's numbers added up", () => {
     expect(describeEvent(event({ action: "invoice.extracted", details: { status: "extracted", line_count: 12 } }))).toBe(
-      "read 12 lines; the numbers added up",
+      "read 12 items; everything added up",
     );
     expect(
       describeEvent(event({ action: "invoice.extracted", details: { status: "needs_review", line_count: 3 } })),
-    ).toBe("read 3 lines; held for review");
+    ).toBe("read 3 items; some numbers need a look");
   });
 
   it("links a line's event to its invoice, even once the line is gone", () => {
@@ -66,13 +66,13 @@ describe("activity", () => {
     ).toBe("deactivated a@b.test");
     expect(
       describeEvent(event({ action: "user.updated", details: { email: "a@b.test", changes: { is_operator: { from: false, to: true } } } })),
-    ).toBe("made a@b.test an operator");
+    ).toBe("made a@b.test an admin");
   });
 
   it("names a new location's forwarding address", () => {
     expect(
       describeEvent(event({ action: "tenant.created", details: { metro: "Austin, TX", inbox_address: "x@invoices.example.com" } })),
-    ).toBe("added this location (Austin, TX); invoices forward to x@invoices.example.com");
+    ).toBe("added this location; its invoice email is x@invoices.example.com");
   });
 
   it("tells a password change from a sign-in", () => {
@@ -85,7 +85,7 @@ describe("activity", () => {
   it("says why an email didn't become invoices", () => {
     expect(
       describeEvent(event({ action: "email.rejected", details: { reason: "no PDF attachment (attachments: none)" } })),
-    ).toBe("couldn't take an email: no PDF attachment (attachments: none)");
+    ).toBe("couldn't use an emailed invoice: no PDF attachment (attachments: none)");
   });
 
   it("colors events by what kind of thing happened", () => {

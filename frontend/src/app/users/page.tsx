@@ -26,7 +26,7 @@ type Handover = { email: string; password: string; reason: "created" | "reset" }
 export default function UsersPage() {
   const session = useSession();
   if (!session?.user.is_operator) {
-    return <p className="text-sm text-gray-600">Only operators can manage users.</p>;
+    return <p className="text-sm text-gray-600">Only the people who run this service can manage logins.</p>;
   }
   // Operators can open every location, so their list is the full set to grant from.
   return <Users selfId={session.user.id} allLocations={session.user.locations} />;
@@ -47,7 +47,7 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
   const load = useCallback(async () => {
     const res = await api("/users");
     if (res.ok) setUsers(await res.json());
-    else setError("Couldn't load users.");
+    else setError("Couldn't load the list. Try again.");
   }, []);
 
   useEffect(() => {
@@ -94,8 +94,8 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
 
   function setOperator(user: User, operator: boolean) {
     const question = operator
-      ? `Make ${user.name} an operator? They'll see every location and can manage users and businesses.`
-      : `Remove ${user.name}'s operator access? They'll only see the locations granted to them.`;
+      ? `Make ${user.name} an admin? They'll see every location and can manage people and businesses.`
+      : `Take away ${user.name}'s admin access? They'll only see the locations you've given them.`;
     if (!window.confirm(question)) return;
     void act(() => api(`/users/${user.id}`, jsonInit("PATCH", { is_operator: operator })));
   }
@@ -103,15 +103,19 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
   return (
     <div className="max-w-5xl">
       <div className="flex items-baseline justify-between">
-        <h1 className="page-title">Users</h1>
+        <h1 className="page-title">People</h1>
         {!adding && (
           <button type="button" onClick={() => setAdding(true)} className="btn-primary">
-            + Add user
+            + Add person
           </button>
         )}
       </div>
       <p className="mt-1 text-sm text-gray-600">
-        Who can sign in, and which locations each person can open. Every change here is recorded in the audit log.
+        Who can sign in, and which locations each person can see. Every change here is kept in the{" "}
+        <a href="/audit" className="link">
+          change log
+        </a>
+        .
       </p>
 
       {handover && <PasswordHandover handover={handover} onDone={() => setHandover(null)} />}
@@ -164,7 +168,7 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
                 </td>
                 <td className="py-3 pr-4">
                   {user.is_operator ? (
-                    <span className="badge bg-violet-100 text-violet-800">Operator · every location</span>
+                    <span className="badge bg-violet-100 text-violet-800">Admin · every location</span>
                   ) : (
                     <LocationAccess
                       user={user}
@@ -191,7 +195,7 @@ function Users({ selfId, allLocations }: { selfId: string; allLocations: Locatio
                         onClick={() => setOperator(user, !user.is_operator)}
                         className="btn-secondary btn-sm"
                       >
-                        {user.is_operator ? "Remove operator" : "Make operator"}
+                        {user.is_operator ? "Remove admin" : "Make admin"}
                       </button>
                       <button
                         type="button"
@@ -256,7 +260,7 @@ function LocationAccess({
           onChange={(e) => e.target.value && onGrant(e.target.value)}
           className="input max-w-48 px-1.5 py-0.5 text-xs text-gray-600"
         >
-          <option value="">+ location</option>
+          <option value="">+ Add location</option>
           {grantable.map((l) => (
             <option key={l.id} value={l.id}>
               {l.name}
@@ -305,7 +309,7 @@ function AddUser({
       </div>
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={operator} onChange={(e) => setOperator(e.target.checked)} />
-        Operator: sees every location and can manage users and businesses
+        Admin: sees every location and can manage people and businesses
       </label>
       {!operator && (
         <fieldset className="text-sm">

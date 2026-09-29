@@ -22,8 +22,9 @@ const FIELD_LABELS: Record<string, string> = {
   raw_sku: "item code",
   raw_pack_size: "pack size",
   uom: "unit",
-  unit_price: "unit price",
-  extended_price: "extended price",
+  quantity: "qty",
+  unit_price: "price each",
+  extended_price: "line total",
 };
 
 export function fieldLabel(field: string): string {
@@ -52,7 +53,7 @@ export function actorLabel(event: AuditEvent): string {
   return event.action === "auth.login_failed" || event.action === "auth.password_reset_requested" ? "Someone" : "System";
 }
 
-const LINE = (d: Record<string, unknown>) => (d.line_number ? `line ${d.line_number}` : "a line");
+const LINE = (d: Record<string, unknown>) => (d.line_number ? `item ${d.line_number}` : "an item");
 
 /** One-line summary. Details beyond it (per-field changes) are rendered by
  *  the caller from describeChanges. */
@@ -69,14 +70,14 @@ export function describeEvent(event: AuditEvent): string {
       return `received ${show(d.filename)} by email`;
     case "invoice.extracted":
       return d.status === "extracted"
-        ? `read ${show(d.line_count)} lines; the numbers added up`
-        : `read ${show(d.line_count)} lines; held for review`;
+        ? `read ${show(d.line_count)} items; everything added up`
+        : `read ${show(d.line_count)} items; some numbers need a look`;
     case "email.rejected":
-      return `couldn't take an email: ${show(d.reason)}`;
+      return `couldn't use an emailed invoice: ${show(d.reason)}`;
     case "invoice.extraction_failed":
       return "couldn't read the invoice";
     case "invoice.edited":
-      return "corrected the invoice";
+      return "fixed the invoice";
     case "invoice.confirmed":
       return `confirmed the invoice (total ${show(d.total)})`;
     case "invoice_line.added":
@@ -84,11 +85,11 @@ export function describeEvent(event: AuditEvent): string {
     case "invoice_line.removed":
       return `removed ${LINE(d)} (${show((d.values as Record<string, unknown> | undefined)?.raw_description)})`;
     case "invoice_line.match_confirmed":
-      return `confirmed the product match for ${show(d.raw_description)}`;
+      return `confirmed which product ${show(d.raw_description)} is`;
     case "invoice_line.match_corrected":
-      return `corrected the product match for ${show(d.raw_description)}`;
+      return `changed which product ${show(d.raw_description)} is`;
     case "invoice_line.reopened":
-      return `sent ${show(d.raw_description)} back to review`;
+      return `sent ${show(d.raw_description)} back to be matched again`;
     case "auth.login":
       return "signed in";
     case "auth.logout":
@@ -96,7 +97,7 @@ export function describeEvent(event: AuditEvent): string {
     case "auth.login_failed":
       return `failed to sign in as ${show(d.email)}`;
     case "user.created":
-      return `created a login for ${show(d.email)}${d.is_operator ? " (operator)" : ""}`;
+      return `created a login for ${show(d.email)}${d.is_operator ? " (admin)" : ""}`;
     case "user.access_granted":
       return `gave ${show(d.email)} access to ${show(d.location)}`;
     case "user.access_revoked":
@@ -124,7 +125,7 @@ export function describeEvent(event: AuditEvent): string {
     case "account.created":
       return `created the business ${show(d.name)}`;
     case "tenant.created":
-      return `added this location (${show(d.metro)}); invoices forward to ${show(d.inbox_address)}`;
+      return `added this location; its invoice email is ${show(d.inbox_address)}`;
     case "account.location_attached":
       return `added this location to ${show(d.account_name)}`;
     case "account.location_detached":
@@ -146,7 +147,7 @@ function describeUserUpdate(d: Record<string, unknown>): string {
   const parts: string[] = [];
   if (changes.is_active) parts.push(`${changes.is_active.to ? "reactivated" : "deactivated"} ${who}`);
   if (changes.is_operator)
-    parts.push(changes.is_operator.to ? `made ${who} an operator` : `removed ${who}'s operator access`);
+    parts.push(changes.is_operator.to ? `made ${who} an admin` : `removed ${who}'s admin access`);
   if (changes.name) parts.push(`renamed ${who} from ${show(changes.name.from)} to ${show(changes.name.to)}`);
   return parts.length ? parts.join("; ") : `changed ${who}`;
 }
@@ -160,7 +161,7 @@ export function eventDetailLines(event: AuditEvent): string[] {
   };
   const lines = describeChanges(d.changes);
   for (const [lineNumber, changes] of Object.entries(d.line_changes ?? {})) {
-    for (const text of describeChanges(changes)) lines.push(`line ${lineNumber}: ${text}`);
+    for (const text of describeChanges(changes)) lines.push(`item ${lineNumber}: ${text}`);
   }
   return lines;
 }

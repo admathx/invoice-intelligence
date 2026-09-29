@@ -1,0 +1,292 @@
+import { getSession } from "@/lib/server";
+
+export const metadata = { title: "Help · Invoice Intelligence" };
+
+type Topic = { id: string; title: string };
+
+const TOPICS: Topic[] = [
+  { id: "start", title: "Getting started" },
+  { id: "add-invoices", title: "Adding invoices" },
+  { id: "needs-a-look", title: "When an invoice needs a look" },
+  { id: "match", title: "Matching items" },
+  { id: "alerts", title: "Price alerts" },
+  { id: "savings", title: "Savings" },
+  { id: "products", title: "Products" },
+  { id: "export", title: "Sending invoices to your accountant" },
+  { id: "emails", title: "Emails we send you" },
+  { id: "account", title: "Your account and password" },
+  { id: "words", title: "What the labels mean" },
+];
+
+const ADMIN_TOPIC: Topic = { id: "admin", title: "For admins" };
+
+/** One page that answers "how do I…?", with a link to where each thing is
+ *  done. Open to everyone, signed in or not: someone who can't sign in needs
+ *  it most. */
+export default async function HelpPage() {
+  const session = await getSession();
+  const user = session?.user;
+  const admin = !!user?.is_operator;
+  const topics = admin ? [...TOPICS, ADMIN_TOPIC] : TOPICS;
+  const inboxes = (user?.locations ?? []).filter((l) => l.inbox_address);
+
+  return (
+    <div className="max-w-3xl">
+      <h1 className="page-title">Help</h1>
+      <p className="mt-0.5 text-sm text-gray-500">
+        How to get your invoices in, and what to do with what comes out.
+        {!user && (
+          <>
+            {" "}
+            <a href="/login" className="link">
+              Sign in
+            </a>{" "}
+            to use the links below.
+          </>
+        )}
+      </p>
+
+      <nav aria-label="Help topics" className="card mt-4 p-4">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">On this page</h2>
+        <ul className="mt-2 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+          {topics.map((t) => (
+            <li key={t.id}>
+              <a href={`#${t.id}`} className="link">
+                {t.title}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+
+      <div className="mt-6 space-y-8 text-sm leading-relaxed text-gray-700">
+        <Section topic={TOPICS[0]}>
+          <ol className="list-decimal space-y-1 pl-5">
+            <li>
+              <strong>Add your invoices</strong> on the <Go href="/invoices">Invoices</Go> page. We read the items and
+              prices for you.
+            </li>
+            <li>
+              <strong>Match items</strong> we weren&rsquo;t sure about on the <Go href="/review">Match items</Go> page.
+              It takes a second each.
+            </li>
+            <li>
+              <strong>Check</strong> <Go href="/insights">Price alerts</Go> for prices that went up, and{" "}
+              <Go href="/negotiation">Savings</Go> for what to raise with your rep.
+            </li>
+          </ol>
+        </Section>
+
+        <Section topic={TOPICS[1]}>
+          <p>Three ways, all on the <Go href="/invoices">Invoices</Go> page:</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            <li>
+              <strong>Upload a PDF.</strong> Press <em>Upload invoice</em> and choose the file. You can choose several;
+              each becomes its own invoice.
+            </li>
+            <li>
+              <strong>Take photos</strong> of a paper invoice. On a phone, press <em>Take photo</em>. For an invoice
+              with several pages, add a photo of each page, then press <em>Upload invoice</em>.
+            </li>
+            <li>
+              <strong>Email it.</strong> Each location has its own invoice email address. Send or forward invoices
+              there, or ask your distributor to send them there directly.
+              {inboxes.length > 0 && (
+                <ul className="mt-1 space-y-0.5">
+                  {inboxes.map((l) => (
+                    <li key={l.id}>
+                      {l.name}:{" "}
+                      <span className="font-medium text-gray-900 [overflow-wrap:anywhere]">{l.inbox_address}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          </ul>
+          <p className="mt-2">
+            Reading an invoice takes about a minute. The page updates by itself when it&rsquo;s done.
+          </p>
+        </Section>
+
+        <Section topic={TOPICS[2]}>
+          <p>
+            We check that every invoice adds up. If it doesn&rsquo;t, it&rsquo;s marked <Label>Needs a look</Label>{" "}
+            and its prices aren&rsquo;t used until someone fixes it. Open the invoice from the{" "}
+            <Go href="/invoices">Invoices</Go> page:
+          </p>
+          <ol className="mt-2 list-decimal space-y-1 pl-5">
+            <li>Compare the highlighted items with the picture of the invoice.</li>
+            <li>Fix anything that was misread, then press <em>Save and check</em>.</li>
+            <li>
+              When everything adds up, press <em>Confirm invoice</em>.
+            </li>
+          </ol>
+          <p className="mt-2">
+            If an invoice is marked <Label>Couldn&rsquo;t read</Label>, type its items in from the picture with{" "}
+            <em>+ Add item</em>. Start typing an item you&rsquo;ve bought before and we&rsquo;ll fill it in.
+          </p>
+        </Section>
+
+        <Section topic={TOPICS[3]}>
+          <p>
+            Every invoice item is matched to a product, like &ldquo;Mozzarella, shredded&rdquo;, so its price can be
+            followed over time and across distributors. We match most items ourselves. The ones we&rsquo;re unsure
+            about wait on the <Go href="/review">Match items</Go> page.
+          </p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            <li>
+              If our guess is right, press <em>Enter</em> (or <em>That&rsquo;s right</em>).
+            </li>
+            <li>If it&rsquo;s wrong, type the right product&rsquo;s name and pick it from the list.</li>
+            <li>
+              Not sure? Press <em>Skip for now</em>. It&rsquo;ll be there next time.
+            </li>
+          </ul>
+          <p className="mt-2">Once you&rsquo;ve matched an item, the same item on later invoices is matched for you.</p>
+        </Section>
+
+        <Section topic={TOPICS[4]}>
+          <p>
+            <Go href="/insights">Price alerts</Go> lists products you&rsquo;re now paying noticeably more for than you
+            used to. Where we know what similar businesses pay, you&rsquo;ll see how your price compares. Open a
+            product to see every price you&rsquo;ve paid for it.
+          </p>
+        </Section>
+
+        <Section topic={TOPICS[5]}>
+          <p>
+            <Go href="/negotiation">Savings</Go> lists products you could be paying less for, the price to ask for,
+            and what that would save in a year. Press <em>Print</em> and take it to your rep.
+          </p>
+          <p className="mt-2">The buttons at the top change what the target price is based on:</p>
+          <ul className="mt-1 list-disc space-y-1 pl-5">
+            <li>
+              <strong>What others pay</strong>: a low price that similar businesses near you pay.
+            </li>
+            <li>
+              <strong>What you used to pay</strong>: your own usual price. Works for every product.
+            </li>
+            <li>
+              <strong>Best available</strong>: what others pay where we know it, otherwise what you used to pay.
+            </li>
+          </ul>
+        </Section>
+
+        <Section topic={TOPICS[6]}>
+          <p>
+            Search <Go href="/skus">Products</Go> to see everything you&rsquo;ve paid for one product, from every
+            distributor, with the invoice each price came from.
+          </p>
+        </Section>
+
+        <Section topic={TOPICS[7]}>
+          <p>
+            On the <Go href="/invoices">Invoices</Go> page, press <em>Export</em>. Choose invoices or every item on
+            them, the dates, and a distributor if you want just one. <strong>Excel</strong> is best for reading;{" "}
+            <strong>CSV</strong> is for importing into accounting software.
+          </p>
+        </Section>
+
+        <Section topic={TOPICS[8]}>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>
+              <strong>Price increases, as they happen</strong>: an email within minutes when a price jumps.
+            </li>
+            <li>
+              <strong>Weekly summary</strong>: every Monday, what happened that week and what needs doing.
+            </li>
+          </ul>
+          <p className="mt-2">
+            Turn either one off on <Go href="/account/password">your account</Go> page, or with the link at the bottom
+            of any of those emails.
+          </p>
+        </Section>
+
+        <Section topic={TOPICS[9]}>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>
+              Change your password on <Go href="/account/password">your account</Go> page (press your name at the top).
+            </li>
+            <li>
+              Forgot it? Use <Go href="/forgot-password">Forgot your password?</Go> on the sign-in page and we&rsquo;ll
+              email you a link.
+            </li>
+            <li>If you have several locations, switch between them with the menu at the top of every page.</li>
+            <li>
+              Need access to another location? Ask whoever set up your account.
+            </li>
+          </ul>
+        </Section>
+
+        <Section topic={TOPICS[10]}>
+          <dl className="grid gap-x-4 gap-y-2 sm:grid-cols-[max-content_1fr]">
+            <Term label="Reading">We&rsquo;re reading the invoice. Give it a minute.</Term>
+            <Term label="Ready">Read, and everything adds up. Its prices are being used.</Term>
+            <Term label="Needs a look">Some numbers don&rsquo;t add up. Open it to fix them.</Term>
+            <Term label="Couldn't read">We couldn&rsquo;t read it. Type its items in from the picture.</Term>
+            <Term label="Confirmed">Someone checked it. Its prices are being used.</Term>
+            <Term label="Matched / Confirmed / Fixed">
+              An item that&rsquo;s been matched to a product, by us, or by a person.
+            </Term>
+            <Term label="To match">An item waiting on the <Go href="/review">Match items</Go> page.</Term>
+          </dl>
+        </Section>
+
+        {admin && (
+          <Section topic={ADMIN_TOPIC}>
+            <ul className="list-disc space-y-1 pl-5">
+              <li>
+                <strong>Add a restaurant</strong> on <Go href="/accounts">Businesses</Go>. It gets its own invoice
+                email address. Put locations with the same owner into one business.
+              </li>
+              <li>
+                <strong>Give someone access</strong> on <Go href="/users">People</Go>: add them, tick their locations,
+                and give them the temporary password shown. They choose their own when they first sign in.
+              </li>
+              <li>
+                <strong>See who changed what</strong>, anywhere, in the <Go href="/audit">Change log</Go>.
+              </li>
+            </ul>
+          </Section>
+        )}
+      </div>
+
+      <p className="mt-10 border-t border-gray-200 pt-4 text-sm text-gray-500">
+        Still stuck? Ask whoever set up your account.{" "}
+        <a href="#start" className="link">
+          Back to top
+        </a>
+      </p>
+    </div>
+  );
+}
+
+function Section({ topic, children }: { topic: Topic; children: React.ReactNode }) {
+  return (
+    <section id={topic.id} className="scroll-mt-24">
+      <h2 className="section-title mb-2 text-gray-900">{topic.title}</h2>
+      {children}
+    </section>
+  );
+}
+
+function Go({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a href={href} className="link">
+      {children}
+    </a>
+  );
+}
+
+function Label({ children }: { children: React.ReactNode }) {
+  return <span className="badge bg-gray-100 text-gray-800">{children}</span>;
+}
+
+function Term({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <>
+      <dt className="font-semibold text-gray-900">{label}</dt>
+      <dd>{children}</dd>
+    </>
+  );
+}

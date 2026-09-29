@@ -1,5 +1,5 @@
 import NoLocation from "@/components/NoLocation";
-import { percent, priceChangeTone, REVIEW_BADGE, TONE_TEXT, unitPrice } from "@/lib/format";
+import { MATCH_LABEL, percent, priceChangeTone, REVIEW_BADGE, TONE_TEXT, unitPrice } from "@/lib/format";
 import { requireSession, serverGet } from "@/lib/server";
 
 type MatchedLine = {
@@ -33,7 +33,14 @@ export default async function SkuDetailPage({ params }: { params: { id: string }
   const sku = await getSku(params.id, locationId);
 
   if (!sku) {
-    return <p className="text-sm text-gray-600">SKU not found.</p>;
+    return (
+      <p className="text-sm text-gray-600">
+        We couldn&rsquo;t find that product.{" "}
+        <a href="/skus" className="link">
+          Search products
+        </a>
+      </p>
+    );
   }
 
   const distributors = Array.from(new Set(sku.matched_lines.map((l) => l.distributor_name)));
@@ -44,15 +51,19 @@ export default async function SkuDetailPage({ params }: { params: { id: string }
 
   return (
     <div className="max-w-5xl">
+      <a href="/skus" className="link mb-2 inline-block text-sm">
+        &larr; Products
+      </a>
       <h1 className="page-title">{sku.name}</h1>
       <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-gray-500">
         {sku.category}
         {sku.subcategory ? ` / ${sku.subcategory}` : ""}
-        <span className="badge bg-gray-100 text-gray-600">price per {sku.base_uom}</span>
+        <span className="badge bg-gray-100 text-gray-600">priced per {sku.base_uom}</span>
       </p>
       <p className="mb-4 mt-2 text-sm text-gray-600">
-        Matched across <strong>{distributors.length}</strong> distributor{distributors.length === 1 ? "" : "s"}:{" "}
-        {distributors.join(", ") || "none yet"}
+        {distributors.length
+          ? `Bought from ${distributors.length} distributor${distributors.length === 1 ? "" : "s"}: ${distributors.join(", ")}`
+          : "Not bought here yet."}
       </p>
 
       <div className="card overflow-x-auto">
@@ -61,10 +72,10 @@ export default async function SkuDetailPage({ params }: { params: { id: string }
             <tr className="border-b border-gray-200">
               <th className="th pl-4">Date</th>
               <th className="th">Distributor</th>
-              <th className="th">As printed</th>
-              <th className="th text-right">Price / {sku.base_uom}</th>
-              <th className="th text-right">Match</th>
-              <th className="th">Review</th>
+              <th className="th">On the invoice</th>
+              <th className="th text-right">Price per {sku.base_uom}</th>
+              <th className="th text-right">How sure</th>
+              <th className="th">Match</th>
             </tr>
           </thead>
           <tbody>
@@ -76,7 +87,11 @@ export default async function SkuDetailPage({ params }: { params: { id: string }
                   : null;
               return (
                 <tr key={i} className="border-b border-gray-100 last:border-0">
-                  <td className="whitespace-nowrap py-2.5 pl-4 pr-4 text-gray-600">{l.invoice_date ?? "—"}</td>
+                  <td className="whitespace-nowrap py-2.5 pl-4 pr-4">
+                    <a href={`/invoices/${l.invoice_id}`} className="link">
+                      {l.invoice_date ?? "No date"}
+                    </a>
+                  </td>
                   <td className="whitespace-nowrap py-2.5 pr-4">{l.distributor_name}</td>
                   <td className="min-w-[10rem] py-2.5 pr-4">{l.raw_description}</td>
                   <td className="num whitespace-nowrap py-2.5 pr-4 text-right">
@@ -92,7 +107,7 @@ export default async function SkuDetailPage({ params }: { params: { id: string }
                   </td>
                   <td className="py-2.5 pr-4">
                     <span className={`badge ${REVIEW_BADGE[l.review_status] ?? "bg-gray-100 text-gray-700"}`}>
-                      {l.review_status}
+                      {MATCH_LABEL[l.review_status] ?? l.review_status}
                     </span>
                   </td>
                 </tr>
@@ -101,7 +116,7 @@ export default async function SkuDetailPage({ params }: { params: { id: string }
             {lines.length === 0 && (
               <tr>
                 <td colSpan={6} className="px-4 py-6 text-gray-500">
-                  No matched invoice lines yet at this location.
+                  You haven&rsquo;t bought this product at this location yet.
                 </td>
               </tr>
             )}

@@ -84,7 +84,7 @@ def invoice_history(
     """
     get_tenant_or_404(db, tenant_id)
     if db.get(Invoice, invoice_id) is None:  # tenant-scoped: another location's id is simply not found
-        raise HTTPException(status_code=404, detail="invoice not found")
+        raise HTTPException(status_code=404, detail="We couldn't find that invoice.")
     return _events(
         db,
         AuditEvent.tenant_id == tenant_id,

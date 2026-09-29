@@ -34,15 +34,17 @@ export default function SkusPage() {
 
   return (
     <div className="max-w-2xl">
-      <h1 className="page-title mb-4">Canonical SKUs</h1>
+      <h1 className="page-title">Products</h1>
+      <p className="mb-4 mt-0.5 text-sm text-gray-500">Look up a product to see what you&rsquo;ve paid for it over time.</p>
       <input
         type="text"
         value={query}
         onChange={(e) => search(e.target.value)}
-        placeholder="Search canonical SKUs (e.g. mozzarella)"
+        aria-label="Search products"
+        placeholder="Search products, e.g. mozzarella"
         className="input mb-4 w-full max-w-md"
       />
-      {loading && <p className="text-sm text-gray-500">Searching...</p>}
+      {loading && <p className="text-sm text-gray-500">Searching…</p>}
       {(results.length > 0 || (query && !loading)) && (
         <ul className="card divide-y divide-gray-100">
           {results.map((r) => (
@@ -53,11 +55,11 @@ export default function SkusPage() {
               <span className="flex items-center gap-2 text-sm text-gray-500">
                 {r.category}
                 {r.subcategory ? ` / ${r.subcategory}` : ""}
-                <span className="badge bg-gray-100 text-gray-600">per {r.base_uom}</span>
+                <span className="badge bg-gray-100 text-gray-600">priced per {r.base_uom}</span>
               </span>
             </li>
           ))}
-          {query && !loading && results.length === 0 && <li className="px-4 py-3 text-sm text-gray-500">No matches.</li>}
+          {query && !loading && results.length === 0 && <li className="px-4 py-3 text-sm text-gray-500">No products match. Try a shorter word.</li>}
         </ul>
       )}
     </div>

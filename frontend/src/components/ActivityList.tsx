@@ -21,7 +21,7 @@ export default function ActivityList({
   linkInvoices?: boolean;
   showLocation?: boolean;
 }) {
-  if (events.length === 0) return <p className="text-sm text-gray-500">Nothing recorded yet.</p>;
+  if (events.length === 0) return <p className="text-sm text-gray-500">Nothing has happened here yet.</p>;
   return (
     <ol className="card divide-y divide-gray-100 px-4 text-sm">
       {events.map((event) => {
@@ -43,8 +43,13 @@ export default function ActivityList({
                 {invoiceId && (
                   <>
                     {" · "}
-                    <a href={`/invoices/${invoiceId}`} className="link">
-                      invoice
+                    {/* ?location= opens it at its own location, even from the
+                        change log, which spans all of them. */}
+                    <a
+                      href={`/invoices/${invoiceId}${event.tenant_id ? `?location=${event.tenant_id}` : ""}`}
+                      className="link"
+                    >
+                      see invoice
                     </a>
                   </>
                 )}

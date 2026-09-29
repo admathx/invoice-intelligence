@@ -15,6 +15,10 @@ PDF_MAGIC = b"%PDF-"
 PDF_HEADER_WINDOW = 1024
 
 
+def _megabytes(size: int) -> str:
+    return f"{size // (1024 * 1024)} MB"
+
+
 class InvalidInvoiceFileError(ValueError):
     """The bytes can't be an invoice this pipeline can process."""
 
@@ -37,10 +41,10 @@ def validate_invoice_bytes(data: bytes) -> None:
     """
     if len(data) > settings.max_upload_bytes:
         raise InvalidInvoiceFileError(
-            f"file is {len(data)} bytes; the limit is {settings.max_upload_bytes}", too_large=True
+            f"That file is too big. The limit is {_megabytes(settings.max_upload_bytes)}.", too_large=True
         )
     if not is_pdf_bytes(data):
-        raise InvalidInvoiceFileError("file is not a PDF")
+        raise InvalidInvoiceFileError("That file isn't a PDF.")
 
 
 def invoice_pdf_from_upload(files: list[bytes]) -> tuple[bytes, bool]:
@@ -52,26 +56,28 @@ def invoice_pdf_from_upload(files: list[bytes]) -> tuple[bytes, bool]:
     sent, all files together, and again to the PDF the photos became.
     """
     if not files:
-        raise InvalidInvoiceFileError("no file was uploaded")
+        raise InvalidInvoiceFileError("Choose a file to upload.")
     sent = sum(len(data) for data in files)
     if sent > settings.max_upload_bytes:
-        raise InvalidInvoiceFileError(f"upload is {sent} bytes; the limit is {settings.max_upload_bytes}", too_large=True)
+        raise InvalidInvoiceFileError(
+            f"That's too much to upload at once. The limit is {_megabytes(settings.max_upload_bytes)}.", too_large=True
+        )
 
     kinds = [("pdf" if is_pdf_bytes(data) else image_kind(data)) for data in files]
     if kinds == ["pdf"]:
         validate_invoice_bytes(files[0])
         return files[0], False
     if "pdf" in kinds:
-        raise InvalidInvoiceFileError("upload one PDF at a time, without photos alongside it")
+        raise InvalidInvoiceFileError("Upload a PDF on its own, without photos.")
     if None in kinds:
         which = kinds.index(None) + 1
         raise InvalidInvoiceFileError(
-            "file is not a PDF or a photo (JPEG, PNG, HEIC or WebP)"
+            "That file isn't a PDF or a photo."
             if len(files) == 1
-            else f"file {which} is not a PDF or a photo (JPEG, PNG, HEIC or WebP)"
+            else f"File {which} isn't a PDF or a photo."
         )
     if len(files) > MAX_PHOTOS:
-        raise InvalidInvoiceFileError(f"at most {MAX_PHOTOS} photos make one invoice; this was {len(files)}")
+        raise InvalidInvoiceFileError(f"One invoice can have up to {MAX_PHOTOS} photos.")
     try:
         pdf = photos_to_pdf(files)
     except UnreadablePhotoError as exc:

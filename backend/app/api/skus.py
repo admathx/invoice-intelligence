@@ -30,7 +30,7 @@ def get_sku(sku_id: uuid.UUID, tenant_id: uuid.UUID, db: Session = Depends(get_d
     get_tenant_or_404(db, tenant_id)
     sku = db.get(CanonicalSku, sku_id)
     if sku is None:
-        raise HTTPException(status_code=404, detail="canonical SKU not found")
+        raise HTTPException(status_code=404, detail="We couldn't find that product.")
 
     rows = db.execute(
         select(InvoiceLineItem, Invoice, Distributor)

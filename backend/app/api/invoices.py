@@ -95,7 +95,7 @@ def get_invoice(
     get_tenant_or_404(db, tenant_id)
     invoice = db.get(Invoice, invoice_id)
     if invoice is None:
-        raise HTTPException(status_code=404, detail="invoice not found")
+        raise HTTPException(status_code=404, detail="We couldn't find that invoice.")
     # Shared with the review endpoints, so the detail page always carries the
     # same arithmetic check the confirm endpoint will enforce.
     return build_invoice_detail(db, invoice)

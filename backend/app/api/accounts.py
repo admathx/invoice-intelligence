@@ -29,7 +29,7 @@ router = APIRouter(prefix="/accounts", tags=["accounts"], dependencies=[Depends(
 def _get_account_or_404(db: Session, account_id: uuid.UUID) -> Account:
     account = db.get(Account, account_id)
     if account is None:
-        raise HTTPException(status_code=404, detail="account not found")
+        raise HTTPException(status_code=404, detail="We couldn't find that business.")
     return account
 
 
@@ -92,7 +92,7 @@ def attach_location(
     account = _get_account_or_404(db, account_id)
     tenant = db.get(Tenant, payload.tenant_id)
     if tenant is None:
-        raise HTTPException(status_code=404, detail="tenant not found")
+        raise HTTPException(status_code=404, detail="We couldn't find that location.")
 
     if tenant.account_id is not None and tenant.account_id != account.id:
         # Rejected rather than silently re-parented: moving a location between
@@ -101,7 +101,7 @@ def attach_location(
         # deliberate two-step.
         raise HTTPException(
             status_code=409,
-            detail=f"tenant already belongs to account {tenant.account_id}; detach it first",
+            detail="That location is already in another business. Take it out of that one first.",
         )
 
     if tenant.account_id is None:
@@ -123,7 +123,7 @@ def detach_location(
     account = _get_account_or_404(db, account_id)
     tenant = db.get(Tenant, tenant_id)
     if tenant is None or tenant.account_id != account_id:
-        raise HTTPException(status_code=404, detail="tenant is not a location of this account")
+        raise HTTPException(status_code=404, detail="That location isn't in this business.")
 
     tenant.account_id = None
     audit.record(db, user, "account.location_detached", "account", account.id, tenant.id, account_name=account.name)

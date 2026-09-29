@@ -35,7 +35,7 @@ export default function AccountsPage() {
   // The API refuses non-operators anyway (403); this just says so plainly
   // instead of rendering a page of failed requests.
   if (!useSession()?.user.is_operator) {
-    return <p className="text-sm text-gray-600">Only operators can manage businesses.</p>;
+    return <p className="text-sm text-gray-600">Only the people who run this service can manage businesses.</p>;
   }
   return <Businesses />;
 }
@@ -66,7 +66,7 @@ function Businesses() {
       // action clears the error itself (act).
     } catch {
       setAccounts([]);
-      setError("Couldn't reach the API.");
+      setError("Couldn't reach the server. Try again.");
     }
   }, []);
 
@@ -84,7 +84,7 @@ function Businesses() {
       // hand, so it gets shown rather than swallowed into a silent no-op.
       const body = await resp.json().catch(() => null);
       if (!resp.ok) {
-        setError(formatApiError(body?.detail, "Request failed."));
+        setError(formatApiError(body?.detail, "That didn't work. Try again."));
         await load();
         return false;
       }
@@ -93,7 +93,7 @@ function Businesses() {
       await load();
       return true;
     } catch {
-      setError("Couldn't reach the API.");
+      setError("Couldn't reach the server. Try again.");
       return false;
     } finally {
       setBusy(false);
@@ -104,7 +104,15 @@ function Businesses() {
 
   return (
     <div className="max-w-4xl">
-      <h1 className="page-title">Locations and businesses</h1>
+      <h1 className="page-title">Businesses</h1>
+      <p className="mt-0.5 text-sm text-gray-500">
+        Add restaurant locations, and group locations that belong to the same business. Then give people access on
+        the{" "}
+        <a href="/users" className="link">
+          People
+        </a>{" "}
+        page.
+      </p>
 
       {error && <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
@@ -115,21 +123,23 @@ function Businesses() {
       />
       {created && (
         <p role="status" className="mt-3 rounded-lg border border-brand-200 border-l-4 border-l-brand-400 bg-brand-50 px-4 py-2.5 text-sm text-brand-950">
-          Added <strong>{created.name}</strong>. They forward invoices to{" "}
+          Added <strong>{created.name}</strong>. Its invoice email is{" "}
           <code className="rounded bg-white px-1.5 py-0.5 font-semibold ring-1 ring-brand-200 [overflow-wrap:anywhere]">
             {created.inbox_address}
           </code>
-          . Give
-          someone access on the Users page.
+          . Next, give someone access on the{" "}
+          <a href="/users" className="link">
+            People
+          </a>{" "}
+          page.
         </p>
       )}
 
-      <h2 className="section-title mt-8">Businesses</h2>
+      <h2 className="section-title mt-8">Businesses with several locations</h2>
       <p className="mt-1 max-w-2xl text-sm text-gray-600">
-        Group a multi-unit operator&rsquo;s locations into one business. A business counts{" "}
-        <strong>once</strong> in a peer benchmark no matter how many locations it has, and its locations
-        can&rsquo;t corroborate each other&rsquo;s SKU corrections &mdash; without this, a five-location group
-        clears the five-business privacy threshold using nothing but itself.
+        Put locations that belong to the same owner into one business. When prices are compared with other
+        businesses, the group then counts once, not once per location, so it can&rsquo;t make up the numbers on its
+        own. A single-location restaurant doesn&rsquo;t need a business.
       </p>
 
       <form
@@ -158,8 +168,7 @@ function Businesses() {
       {accounts === null && <p className="mt-4 text-sm text-gray-500">Loading...</p>}
       {accounts !== null && accounts.length === 0 && !error && (
         <p className="mt-4 text-sm text-gray-500">
-          No businesses yet. Every tenant currently counts as its own, which is correct for single-location
-          customers.
+          No businesses yet. Each location counts on its own, which is right for single-location restaurants.
         </p>
       )}
 
@@ -169,8 +178,7 @@ function Businesses() {
             <div className="flex items-baseline justify-between">
               <h2 className="font-semibold">{account.name}</h2>
               <span className="badge bg-brand-100 text-brand-800">
-                {account.location_count} location{account.location_count === 1 ? "" : "s"} &middot; 1 vote in any
-                benchmark
+                {account.location_count} location{account.location_count === 1 ? "" : "s"}
               </span>
             </div>
 
@@ -183,6 +191,7 @@ function Businesses() {
                   <button
                     disabled={busy}
                     onClick={() =>
+                      window.confirm(`Take ${location.name} out of ${account.name}? The location itself stays.`) &&
                       void act(() =>
                         api(`/accounts/${account.id}/locations/${location.id}`, { method: "DELETE" })
                       )
@@ -204,7 +213,7 @@ function Businesses() {
               className="input mt-2 w-full disabled:opacity-50"
             >
               <option value="">
-                {unassigned.length === 0 ? "No unassigned locations" : "Add a location..."}
+                {unassigned.length === 0 ? "Every location is already in a business" : "Add a location to this business…"}
               </option>
               {unassigned.map((tenant) => (
                 <option key={tenant.id} value={tenant.id}>
@@ -222,8 +231,8 @@ function Businesses() {
         <thead className="bg-gray-50">
           <tr className="border-b border-gray-200">
             <th className="th pl-4">Location</th>
-            <th className="th">Metro</th>
-            <th className="th">Forwards invoices to</th>
+            <th className="th">Area</th>
+            <th className="th">Invoice email</th>
           </tr>
         </thead>
         <tbody>
@@ -267,12 +276,12 @@ function AddLocation({
     >
       <h2 className="section-title">Add a location</h2>
       <p className="mt-0.5 text-xs text-gray-500">
-        A new restaurant, or a new site of an existing one. Pick an existing metro where one fits: benchmarks compare
-        within a metro, so a second spelling splits it.
+        A new restaurant, or a new site of an existing one. Pick an area from the list when one fits: prices are
+        compared within an area, so a second spelling of the same city splits it in two.
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
         <input aria-label="Location name" placeholder="Name" required value={name} onChange={(e) => setName(e.target.value)} className={`${input} flex-1`} />
-        <input aria-label="Metro" placeholder="Metro, e.g. Austin, TX" required list="known-metros" value={metro} onChange={(e) => setMetro(e.target.value)} className={input} />
+        <input aria-label="Area" placeholder="Area, e.g. Austin, TX" required list="known-metros" value={metro} onChange={(e) => setMetro(e.target.value)} className={input} />
         <datalist id="known-metros">
           {metros.map((m) => (
             <option key={m} value={m} />

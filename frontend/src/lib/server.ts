@@ -16,7 +16,7 @@ export const SESSION_COOKIE = "ii_session";
  *  checks access on every request, so a hand-edited value gets a 404, not data. */
 export const LOCATION_COOKIE = "ii_location";
 
-export type Location = { id: string; name: string; metro: string };
+export type Location = { id: string; name: string; metro: string; inbox_address?: string | null };
 export type Me = {
   id: string;
   email: string;

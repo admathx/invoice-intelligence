@@ -6,7 +6,18 @@ import { useMemo, useState } from "react";
 import { useLocationId } from "@/components/SessionContext";
 import { api } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
-import { editableNumber, money, quantity, REVIEW_BADGE, STATUS_BADGE, STATUS_LABEL, unitPrice } from "@/lib/format";
+import RefreshWhileReading from "@/components/RefreshWhileReading";
+import {
+  editableNumber,
+  MATCH_LABEL,
+  money,
+  quantity,
+  READING_STATUSES,
+  REVIEW_BADGE,
+  STATUS_BADGE,
+  STATUS_LABEL,
+  unitPrice,
+} from "@/lib/format";
 
 import AddLineModal from "./AddLineModal";
 
@@ -53,6 +64,8 @@ const MONEY_FIELDS: readonly LineField[] = [
   "unit_price",
   "extended_price",
 ];
+
+const HEADER_LABEL: Record<string, string> = { subtotal: "Subtotal", tax: "Tax", total: "Total" };
 
 function sameValue(
   field: LineField,
@@ -156,7 +169,7 @@ export default function InvoiceReview({
         setError(
           formatApiError(
             data?.detail,
-            "Request failed — check the values and try again.",
+            "That didn't save. Check the numbers and try again.",
             (loc) => {
               const i = loc.indexOf("line_items");
               if (i === -1 || typeof loc[i + 1] !== "number") return null;
@@ -185,7 +198,7 @@ export default function InvoiceReview({
 
   async function removeLine(li: LineItem) {
     if (
-      !window.confirm(`Remove line ${li.line_number} (${li.raw_description})?`)
+      !window.confirm(`Remove item ${li.line_number} (${li.raw_description})?`)
     )
       return;
     setBusy(true);
@@ -199,7 +212,7 @@ export default function InvoiceReview({
       );
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        setError(formatApiError(data?.detail, "Couldn't remove the line."));
+        setError(formatApiError(data?.detail, "Couldn't remove that item."));
         return;
       }
       setInvoice(data);
@@ -240,14 +253,24 @@ export default function InvoiceReview({
 
   return (
     <div>
-      <div className="mb-1 flex items-baseline gap-3">
-        <h1 className="page-title">{invoice.invoice_number ?? invoice.id}</h1>
+      <a href="/invoices" className="link mb-2 inline-block text-sm">
+        &larr; All invoices
+      </a>
+      <div className="mb-1 flex flex-wrap items-baseline gap-3">
+        <h1 className="page-title">{invoice.invoice_number ? `Invoice ${invoice.invoice_number}` : "Invoice"}</h1>
         <StatusBadge status={invoice.status} />
       </div>
       <p className="mb-4 text-sm text-gray-500">
-        {invoice.distributor_name ?? "Unrecognized distributor"} ·{" "}
-        {invoice.invoice_date ?? "no date"}
+        {invoice.distributor_name ?? "Distributor not known"} ·{" "}
+        {invoice.invoice_date ?? "No date"}
       </p>
+
+      {READING_STATUSES.has(invoice.status) && (
+        <p role="status" className="mb-4 rounded-lg border border-sky-200 border-l-4 border-l-sky-400 bg-sky-50 px-4 py-2.5 text-sm font-medium text-sky-900">
+          We&rsquo;re still reading this invoice. This page updates by itself when it&rsquo;s done.
+          <RefreshWhileReading reading />
+        </p>
+      )}
 
       {editable && (
         <div
@@ -259,10 +282,10 @@ export default function InvoiceReview({
         >
           <p className={`font-medium ${invoice.check.passes ? "text-brand-900" : "text-amber-900"}`}>
             {invoice.status === "failed"
-              ? "This invoice couldn't be read automatically, so nothing from it is in your analytics. Enter its lines from the invoice image."
+              ? "We couldn't read this invoice. Type in its items from the picture, then save."
               : invoice.check.passes
-                ? "The numbers add up now. Confirm to let this invoice's prices into your analytics."
-                : "This invoice's numbers don't add up, so its prices are being kept out of your analytics."}
+                ? "Everything adds up now. Confirm the invoice to start using its prices."
+                : "Some numbers on this invoice don't add up, so its prices aren't being used yet."}
           </p>
           {!invoice.check.passes && (
             <>
@@ -273,8 +296,8 @@ export default function InvoiceReview({
               </ul>
               <p className="mt-2 text-amber-800">
                 {invoice.line_items.length === 0
-                  ? "Add each line from the invoice image, enter its totals, then save."
-                  : "Compare the highlighted lines with the invoice image, correct what was misread, then save."}
+                  ? "Add each item from the picture, fill in the totals, then save."
+                  : "Check the highlighted items against the picture, fix anything that was misread, then save."}
               </p>
             </>
           )}
@@ -282,8 +305,7 @@ export default function InvoiceReview({
       )}
       {invoice.status === "confirmed" && (
         <p className="mb-4 rounded-lg border border-brand-200 border-l-4 border-l-brand-400 bg-brand-50 px-4 py-2.5 text-sm font-medium text-brand-900">
-          Confirmed after review. Its prices now feed your benchmarks, alerts
-          and negotiation sheet.
+          Confirmed. Its prices now count toward your price alerts and savings.
         </p>
       )}
 
@@ -300,7 +322,7 @@ export default function InvoiceReview({
                 <img
                   key={url}
                   src={`/api${url}`}
-                  alt="Invoice page"
+                  alt="The invoice"
                   className="w-full rounded-lg border border-gray-200 shadow-sm"
                 />
               ))}
@@ -326,7 +348,7 @@ export default function InvoiceReview({
                   className="input py-1.5"
                 >
                   {!recognized && (
-                    <option value="">Unrecognized — choose</option>
+                    <option value="">Choose the distributor</option>
                   )}
                   {distributors.map((d) => (
                     <option key={d.id} value={d.id}>
@@ -358,12 +380,12 @@ export default function InvoiceReview({
               <thead className="bg-gray-50">
                 <tr className="border-b border-gray-200">
                   <th className="th pl-3">#</th>
-                  <th className="th">Description</th>
+                  <th className="th">Item</th>
                   <th className="th text-right">Qty</th>
-                  <th className="th">UOM</th>
-                  <th className="th text-right">Unit price</th>
-                  <th className="th text-right">Extended</th>
-                  <th className="th">Match</th>
+                  <th className="th">Unit</th>
+                  <th className="th text-right">Price each</th>
+                  <th className="th text-right">Line total</th>
+                  <th className="th">Product</th>
                   {editable && <th className="th" />}
                 </tr>
               </thead>
@@ -417,7 +439,7 @@ export default function InvoiceReview({
                         )}
                         {flagged && (
                           <div className="mt-0.5 text-xs font-semibold text-red-700">
-                            qty × unit price ≠ extended
+                            Qty × price each doesn&rsquo;t equal the line total
                           </div>
                         )}
                       </td>
@@ -482,7 +504,7 @@ export default function InvoiceReview({
                       )}
                       <td className="py-1.5 pr-3">
                         <span className={`badge ${REVIEW_BADGE[li.review_status] ?? "bg-gray-100 text-gray-700"}`}>
-                          {li.review_status}
+                          {MATCH_LABEL[li.review_status] ?? li.review_status}
                         </span>
                       </td>
                       {editable && (
@@ -507,8 +529,8 @@ export default function InvoiceReview({
           {/* No header row over nothing: one box that says what to do. */}
           {invoice.line_items.length === 0 && (
             <p className="rounded-lg border-2 border-dashed border-gray-300 bg-white px-4 py-6 text-center text-sm text-gray-500">
-              No line items were detected on this invoice.
-              {editable && " Add them from the invoice image."}
+              We didn&rsquo;t find any items on this invoice.
+              {editable && " Add them from the picture."}
             </p>
           )}
           {editable && (
@@ -517,17 +539,17 @@ export default function InvoiceReview({
               disabled={busy}
               className="btn-secondary btn-sm mt-3 text-brand-800"
             >
-              + Add line item
+              + Add item
             </button>
           )}
 
           <div className="mt-4 flex flex-wrap items-center gap-5 text-sm text-gray-700">
             {(["subtotal", "tax", "total"] as HeaderField[]).map((f) => (
-              <label key={f} className="flex items-center gap-2 capitalize">
-                {f}
+              <label key={f} className="flex items-center gap-2">
+                {HEADER_LABEL[f]}
                 {editable ? (
                   <input
-                    aria-label={f}
+                    aria-label={HEADER_LABEL[f]}
                     inputMode="decimal"
                     value={headerValue(f)}
                     onChange={(e) =>
@@ -551,7 +573,7 @@ export default function InvoiceReview({
                 disabled={busy || !dirty}
                 className="btn-secondary"
               >
-                Save &amp; re-check
+                Save and check
               </button>
               <button
                 onClick={() => void send("POST", "/confirm")}
@@ -560,7 +582,7 @@ export default function InvoiceReview({
                   dirty
                     ? "Save your changes first"
                     : !invoice.check.passes
-                      ? "The numbers still don't add up"
+                      ? "Some numbers still don't add up"
                       : ""
                 }
                 className="btn-primary"

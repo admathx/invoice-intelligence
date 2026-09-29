@@ -14,17 +14,17 @@ type Person = { id: string; name: string; email: string };
 const KINDS: { label: string; prefix: string }[] = [
   { label: "Everything", prefix: "" },
   { label: "Invoices", prefix: "invoice." },
-  { label: "Review queue", prefix: "invoice_line." },
-  { label: "Users and access", prefix: "user." },
+  { label: "Matching items", prefix: "invoice_line." },
+  { label: "People and access", prefix: "user." },
   { label: "Sign-ins", prefix: "auth." },
   { label: "Businesses", prefix: "account." },
-  { label: "Rejected emails", prefix: "email." },
+  { label: "Emails we couldn't use", prefix: "email." },
 ];
 
 export default function AuditPage() {
   const session = useSession();
   if (!session?.user.is_operator) {
-    return <p className="text-sm text-gray-600">Only operators can see the full audit log.</p>;
+    return <p className="text-sm text-gray-600">Only admins can see the change log.</p>;
   }
   return <AuditLog />;
 }
@@ -100,9 +100,9 @@ function AuditLog() {
   const select = "input min-w-0 max-w-full py-1.5 sm:max-w-xs";
   return (
     <div className="max-w-4xl">
-      <h1 className="page-title">Audit log</h1>
+      <h1 className="page-title">Change log</h1>
       <p className="mt-1 text-sm text-gray-600">
-        Everything, everywhere: including what isn&rsquo;t tied to one location, like sign-ins, logins and businesses.
+        Everything that&rsquo;s happened, at every location, plus sign-ins, logins and businesses.
       </p>
 
       <div className="mt-4 flex flex-wrap gap-2">
@@ -149,7 +149,7 @@ function AuditLog() {
             disabled={loadingMore}
             className="btn-secondary mt-3"
           >
-            {loadingMore ? "Loading…" : "Older"}
+            {loadingMore ? "Loading…" : "Show older"}
           </button>
         )}
       </div>

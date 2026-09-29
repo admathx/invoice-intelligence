@@ -18,5 +18,5 @@ from app.models import Tenant
 def get_tenant_or_404(db: Session, tenant_id: uuid.UUID) -> Tenant:
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
-        raise HTTPException(status_code=404, detail="tenant not found")
+        raise HTTPException(status_code=404, detail="We couldn't find that location.")
     return tenant

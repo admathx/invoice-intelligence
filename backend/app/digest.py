@@ -225,7 +225,7 @@ def _headline(weeks: list[LocationWeek]) -> str:
     if increases:
         parts.append(f"{increases} price increase{'s' if increases != 1 else ''}")
     if held:
-        parts.append(f"{held} invoice{'s' if held != 1 else ''} to check")
+        parts.append(f"{held} invoice{'s' if held != 1 else ''} to look at")
     where = weeks[0].name if len(weeks) == 1 else f"{len(weeks)} locations"
     return f"Your week at {where}: " + (", ".join(parts) if parts else "all quiet")
 
@@ -239,16 +239,16 @@ def _sections_text(week: LocationWeek) -> list[str]:
             out.append(f"  ...and {week.new_increase_count - len(week.new_increases)} more")
         out.append(f"  {design.dashboard_link('/insights', week.tenant_id)}")
     if week.held_count:
-        out.append(f"Invoices to check ({week.held_count}): held out of your numbers until someone does")
+        out.append(f"Invoices that need a look ({week.held_count}): their prices aren't used until they're fixed")
         for h in week.held:
             out.append(f"  - {h.label}: {design.dashboard_link(f'/invoices/{h.invoice_id}', week.tenant_id)}")
     if week.pending_lines:
-        out.append(f"Review queue: {week.pending_lines} line{'s' if week.pending_lines != 1 else ''} to match")
+        out.append(f"Match items: {week.pending_lines} item{'s' if week.pending_lines != 1 else ''} to match")
         out.append(f"  {design.dashboard_link('/review', week.tenant_id)}")
     if week.received_count:
         out.append(f"Received this week: {week.received_count} invoice{'s' if week.received_count != 1 else ''}, {design.money(week.received_total)}")
     if week.savings:
-        out.append("Biggest savings on your negotiation sheet:")
+        out.append("Your biggest savings:")
         for s in week.savings:
             out.append(f"  - {s.sku}: about {design.money(s.annualized)} a year")
         out.append(f"  {design.dashboard_link('/negotiation', week.tenant_id)}")
@@ -274,7 +274,7 @@ def _sections_html(week: LocationWeek) -> str:
             f"<p style='margin:0 0 6px'><strong style='color:{design.RED_TEXT}'>{week.new_increase_count} new price "
             f"increase{'s' if week.new_increase_count != 1 else ''}</strong></p>"
             f"{design.increase_table(week.new_increases, more)}"
-            f"<p style='margin:10px 0 0'>{design.button(link('/insights'), 'See them on Insights')}</p>"
+            f"<p style='margin:10px 0 0'>{design.button(link('/insights'), 'See price alerts')}</p>"
         )
     if week.held_count:
         items = "".join(
@@ -284,15 +284,15 @@ def _sections_html(week: LocationWeek) -> str:
         )
         parts.append(
             f"<div style='margin:16px 0 0;padding:10px 12px;background:{design.AMBER_TINT};border-radius:6px;color:{design.AMBER_TEXT}'>"
-            f"<strong>{week.held_count} invoice{'s' if week.held_count != 1 else ''} to check</strong> "
-            "&middot; held out of your numbers until someone does"
+            f"<strong>{week.held_count} invoice{'s' if week.held_count != 1 else ''} need{'s' if week.held_count == 1 else ''} a look</strong> "
+            "&middot; their prices aren&rsquo;t used until they&rsquo;re fixed"
             f"<ul style='margin:6px 0 0;padding-left:20px'>{items}</ul></div>"
         )
     if week.pending_lines:
-        lines = f"{week.pending_lines} line{'s' if week.pending_lines != 1 else ''}"
+        lines = f"{week.pending_lines} item{'s' if week.pending_lines != 1 else ''}"
         parts.append(
-            f"<p style='margin:16px 0 0'><strong>Review queue:</strong> {design.pill(lines + ' to match', design.AMBER_TEXT, design.AMBER_TINT)} "
-            f"&nbsp;{design.button(link('/review'), 'Open the queue')}</p>"
+            f"<p style='margin:16px 0 0'><strong>Match items:</strong> {design.pill(lines + ' to match', design.AMBER_TEXT, design.AMBER_TINT)} "
+            f"&nbsp;{design.button(link('/review'), 'Match them')}</p>"
         )
     if week.received_count:
         invoices = f"{week.received_count} invoice{'s' if week.received_count != 1 else ''}"
@@ -309,10 +309,10 @@ def _sections_html(week: LocationWeek) -> str:
         total = sum((s.annualized for s in week.savings), Decimal("0"))
         parts.append(
             f"<div style='margin:16px 0 0;padding:12px 14px;background:{design.GREEN_TINT};border:1px solid #bbf7d0;border-radius:6px'>"
-            f"<p style='margin:0 0 6px;color:{design.GREEN_TEXT}'><strong>Biggest savings on your negotiation sheet</strong> "
+            f"<p style='margin:0 0 6px;color:{design.GREEN_TEXT}'><strong>Your biggest savings</strong> "
             f"&middot; about <strong>{design.money(total)}</strong> a year</p>"
             f"<table role='presentation' cellpadding='0' cellspacing='0' style='font-size:14px;border-collapse:collapse'>{rows}</table>"
-            f"<p style='margin:10px 0 0'>{design.button(link('/negotiation'), 'Open the sheet')}</p></div>"
+            f"<p style='margin:10px 0 0'>{design.button(link('/negotiation'), 'See savings')}</p></div>"
         )
     parts.append("</div>")
     return "".join(parts)

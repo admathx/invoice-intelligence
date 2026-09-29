@@ -4,7 +4,7 @@ import { isPublicPath, safeNext } from "./api";
 
 describe("isPublicPath", () => {
   it("is the signed-out pages and nothing that merely starts like them", () => {
-    for (const path of ["/login", "/forgot-password", "/reset-password"]) expect(isPublicPath(path)).toBe(true);
+    for (const path of ["/login", "/forgot-password", "/reset-password", "/help"]) expect(isPublicPath(path)).toBe(true);
     expect(isPublicPath("/invoices")).toBe(false);
     expect(isPublicPath("/login-as-admin")).toBe(false);
   });

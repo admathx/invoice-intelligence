@@ -60,7 +60,7 @@ def _me(db: Session, user: User) -> MeOut:
         digest_enabled=user.digest_enabled,
         alert_emails_enabled=user.alert_emails_enabled,
         alert_email_min_pct_change=settings.alert_email_min_pct_change,
-        locations=[LocationOut(id=t.id, name=t.name, metro=t.metro) for t in tenants],
+        locations=[LocationOut(id=t.id, name=t.name, metro=t.metro, inbox_address=t.inbox_address) for t in tenants],
     )
 
 
@@ -124,7 +124,7 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
     # locked-out guess costs no Argon2 work, and the same way whether or not
     # the address has an account.
     if _recent_failures(db, email, user) >= settings.login_max_failures:
-        raise HTTPException(status_code=429, detail="too many failed sign-ins; try again in a few minutes")
+        raise HTTPException(status_code=429, detail="Too many tries. Wait a few minutes, then try again.")
 
     # verify_password runs even when there's no such user, so both failures
     # take the same time; and both get the same message, so the response
@@ -132,7 +132,7 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
     if not verify_password(user, body.password) or not user.is_active:
         audit.record(db, None, LOGIN_FAILED, "user", user.id if user else None, email=email)
         db.commit()
-        raise HTTPException(status_code=401, detail="email or password is incorrect")
+        raise HTTPException(status_code=401, detail="That email and password don't match.")
 
     prune_sessions(db)
     token = create_session(db, user)
@@ -168,18 +168,18 @@ def change_password(body: PasswordChange, request: Request, db: Session = Depend
     count toward the same lockout as failed sign-ins."""
     found = session_for_token(db, request.cookies.get(SESSION_COOKIE))
     if found is None:
-        raise HTTPException(status_code=401, detail="sign in required")
+        raise HTTPException(status_code=401, detail="Please sign in.")
     session, user = found
     if _recent_failures(db, user.email, user) >= settings.login_max_failures:
-        raise HTTPException(status_code=429, detail="too many failed attempts; try again in a few minutes")
+        raise HTTPException(status_code=429, detail="Too many tries. Wait a few minutes, then try again.")
     # 422, not 401: the session is fine, only the typed password is wrong,
     # and a 401 would send the screen to sign-in.
     if not verify_password(user, body.current_password):
         audit.record(db, user, PASSWORD_CHANGE_FAILED, "user", user.id, email=user.email)
         db.commit()
-        raise HTTPException(status_code=422, detail="current password is incorrect")
+        raise HTTPException(status_code=422, detail="Your current password isn't right.")
     if body.new_password == body.current_password:
-        raise HTTPException(status_code=422, detail="choose a password different from the current one")
+        raise HTTPException(status_code=422, detail="Choose a new password, not your current one.")
     try:
         user_service.change_own_password(db, user, session.id, body.new_password)
     except user_service.UserError as exc:
@@ -218,8 +218,8 @@ _EMAIL_SETTINGS = {
 
 # --- Forgot your password? (app/password_reset.py) ----------------------------
 
-_RESET_OFF = "password reset by email isn't set up here; ask your operator to reset your password"
-_LINK_INVALID = "this link has expired or has already been used; ask for a new one"
+_RESET_OFF = "Password reset by email isn't set up. Ask whoever set up your account to reset it."
+_LINK_INVALID = "This link has expired or was already used. Ask for a new one."
 
 
 def _reset_enabled() -> None:

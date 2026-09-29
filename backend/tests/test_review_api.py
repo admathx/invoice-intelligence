@@ -552,14 +552,14 @@ def test_an_iphone_heic_photo_is_accepted(db_session, tenant, monkeypatch):
 @pytest.mark.parametrize(
     "files, message",
     [
-        ([("a.pdf", _make_test_pdf(), "application/pdf"), ("b.jpg", _photo(), "image/jpeg")], "one PDF at a time"),
-        ([("a.pdf", _make_test_pdf(), "application/pdf")] * 2, "one PDF at a time"),
-        ([("p.jpg", _photo((200, 200)), "image/jpeg")] * 11, "at most 10 photos"),
-        ([("a.jpg", _photo(), "image/jpeg"), ("notes.txt", b"hello", "text/plain")], "file 2 is not a PDF or a photo"),
+        ([("a.pdf", _make_test_pdf(), "application/pdf"), ("b.jpg", _photo(), "image/jpeg")], "Upload a PDF on its own"),
+        ([("a.pdf", _make_test_pdf(), "application/pdf")] * 2, "Upload a PDF on its own"),
+        ([("p.jpg", _photo((200, 200)), "image/jpeg")] * 11, "up to 10 photos"),
+        ([("a.jpg", _photo(), "image/jpeg"), ("notes.txt", b"hello", "text/plain")], "File 2 isn't a PDF or a photo."),
         # The right signature, and nothing readable after it.
-        ([("broken.jpg", b"\xff\xd8\xff\xe0" + b"\x00" * 64, "image/jpeg")], "photo 1 couldn't be read"),
+        ([("broken.jpg", b"\xff\xd8\xff\xe0" + b"\x00" * 64, "image/jpeg")], "We couldn't open photo 1."),
         # 64 MP: a small file that would decode to ~200 MB in the API process.
-        ([("huge.png", _photo((8000, 8000), fmt="PNG", mode="L"), "image/png")], "photo 1 is too large"),
+        ([("huge.png", _photo((8000, 8000), fmt="PNG", mode="L"), "image/png")], "Photo 1 is too big."),
     ],
 )
 def test_uploads_that_arent_one_invoice_are_refused_before_anything_is_stored(db_session, tenant, monkeypatch, files, message):

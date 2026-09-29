@@ -1,5 +1,5 @@
 import { computeSparklineCoords, type PriceHistoryPoint } from "@/lib/sparkline";
-import { labelAnchor, ordinal, priceVerdict, trackPosition } from "@/lib/spectrum";
+import { labelAnchor, priceVerdict, trackPosition } from "@/lib/spectrum";
 
 import NoLocation from "@/components/NoLocation";
 import { percent, priceChangeTone, TONE_TEXT, unitPrice } from "@/lib/format";
@@ -36,7 +36,7 @@ async function getInsights(locationId: string): Promise<InsightCard[]> {
 }
 
 function Sparkline({ points }: { points: PriceHistoryPoint[] }) {
-  if (points.length < 2) return <span className="text-xs text-gray-400">not enough history</span>;
+  if (points.length < 2) return <span className="text-xs text-gray-400">Not enough history for a chart yet</span>;
 
   const width = 220;
   const height = 40;
@@ -49,6 +49,12 @@ function Sparkline({ points }: { points: PriceHistoryPoint[] }) {
     </svg>
   );
 }
+
+const ALERT_TYPE: Record<string, string> = {
+  creep: "Price going up",
+  off_contract: "Off your usual price",
+  above_peer: "Above what others pay",
+};
 
 const TONE = {
   good: { text: "text-brand-700", pin: "#15803d" },
@@ -81,7 +87,7 @@ function BenchmarkSpectrum({ benchmark }: { benchmark: BenchmarkPosition }) {
   return (
     <div className="mt-3">
       <div className={`text-sm font-medium ${tone.text}`}>
-        {verdict.headline} · {ordinal(percentile * 100)} percentile
+        {verdict.headline}
       </div>
 
       <div className="relative mt-2 h-11">
@@ -147,8 +153,8 @@ function BenchmarkSpectrum({ benchmark }: { benchmark: BenchmarkPosition }) {
       <div className="mt-1 text-xs text-gray-400">
         {/* "businesses", not "tenants": a multi-unit group counts once, so this
             is how many independent operators stand behind the cell. */}
-        25th / 50th / 75th percentile across {benchmark.distinct_account_count} comparable businesses (
-        {benchmark.scope})
+        Low, typical and high prices paid by {benchmark.distinct_account_count} similar businesses{" "}
+        {benchmark.scope === "metro" ? "in your area" : "nationwide"}
       </div>
     </div>
   );
@@ -161,20 +167,29 @@ export default async function InsightsPage() {
 
   return (
     <div className="max-w-3xl">
-      <div className="mb-4 flex items-baseline gap-3">
-        <h1 className="page-title">Insights</h1>
-        {cards.length > 0 && (
-          <span className="badge bg-red-100 text-red-700">
-            {cards.length} price increase{cards.length === 1 ? "" : "s"}
-          </span>
-        )}
+      <div className="mb-4">
+        <div className="flex flex-wrap items-baseline gap-3">
+          <h1 className="page-title">Price alerts</h1>
+          {cards.length > 0 && (
+            <span className="badge bg-red-100 text-red-700">
+              {cards.length} price increase{cards.length === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
+        <p className="mt-0.5 text-sm text-gray-500">
+          Products you&rsquo;re now paying noticeably more for. Worth raising with your rep; your{" "}
+          <a href="/negotiation" className="link">
+            savings
+          </a>{" "}
+          list has the numbers to bring.
+        </p>
       </div>
       {cards.length === 0 && (
         <div className="card flex items-center gap-3 border-l-4 border-l-brand-400 px-4 py-4 text-sm text-gray-700">
           <span aria-hidden className="grid h-8 w-8 place-items-center rounded-full bg-brand-100 text-brand-800">
             ✓
           </span>
-          No open alerts right now. Prices are holding steady.
+          No price increases right now. Prices are holding steady.
         </div>
       )}
       <div className="space-y-4">
@@ -185,8 +200,12 @@ export default async function InsightsPage() {
                 the SKU name and the price line onto six lines apiece. */}
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <span className="badge bg-amber-100 uppercase tracking-wide text-amber-800">{card.alert_type}</span>
-                <div className="mt-1 text-lg font-semibold">{card.canonical_sku_name}</div>
+                <span className="badge bg-amber-100 text-amber-800">{ALERT_TYPE[card.alert_type] ?? "Price change"}</span>
+                <div className="mt-1 text-lg font-semibold">
+                  <a href={`/skus/${card.canonical_sku_id}`} className="hover:text-brand-700 hover:underline">
+                    {card.canonical_sku_name}
+                  </a>
+                </div>
                 <div className="num mt-0.5 flex flex-wrap items-center gap-2 text-sm text-gray-600">
                   <span>
                     {unitPrice(card.baseline_price)} &rarr;{" "}

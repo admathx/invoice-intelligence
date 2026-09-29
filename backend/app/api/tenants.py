@@ -71,7 +71,7 @@ def create_tenant(
 ) -> TenantSummary:
     name, metro = body.name.strip(), _known_metro(db, body.metro)
     if not name or not metro:
-        raise HTTPException(status_code=422, detail="enter a name and a metro")
+        raise HTTPException(status_code=422, detail="Enter a name and an area.")
     # Two locations created with the same name at once would both pick the
     # same free address; the unique index refuses the second, which then
     # takes the next number (once the first commits, the lookup sees it).
@@ -91,7 +91,7 @@ def create_tenant(
         except IntegrityError:
             continue
     else:
-        raise HTTPException(status_code=409, detail="couldn't allocate a forwarding address; try again")
+        raise HTTPException(status_code=409, detail="Couldn't create an invoice email for it. Try again.")
     audit.record(
         db,
         operator,

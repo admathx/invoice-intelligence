@@ -14,10 +14,10 @@ export const CSRF_HEADERS = { "X-Requested-With": "invoice-intelligence" } as co
 export const CHANGE_PASSWORD_PATH = "/account/password";
 export const PASSWORD_CHANGE_REQUIRED = "password change required";
 
-/** The pages for people who aren't signed in: signing in, and getting back
- *  in without the password. middleware.ts's matcher lists the same ones (it
+/** The pages for people who aren't signed in: signing in, getting back in
+ *  without the password, and help. middleware.ts's matcher lists the same ones (it
  *  has to be a literal there). */
-const PUBLIC_PATHS = ["/login", "/forgot-password", "/reset-password"];
+const PUBLIC_PATHS = ["/login", "/forgot-password", "/reset-password", "/help"];
 
 export function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`) || pathname.startsWith(`${p}?`));

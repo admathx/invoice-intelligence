@@ -24,7 +24,7 @@ NO_STORE = "no-store"
 def _user_or_404(db: Session, user_id: uuid.UUID) -> User:
     user = db.get(User, user_id)
     if user is None:
-        raise HTTPException(status_code=404, detail="user not found")
+        raise HTTPException(status_code=404, detail="We couldn't find that person.")
     return user
 
 

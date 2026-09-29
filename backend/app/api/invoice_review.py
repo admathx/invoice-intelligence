@@ -91,28 +91,34 @@ class InvoiceCheck:
     def reasons(self) -> list[str]:
         out = []
         if self.no_line_items:
-            out.append("no line items")
+            out.append("There are no items yet.")
         if self.failed_line_numbers:
-            out.append(f"quantity x unit price doesn't equal the extended price on line(s) {self.failed_line_numbers}")
+            out.append(_line_mismatch(self.failed_line_numbers))
         if self.no_line_items:
             # With nothing to add up, "lines don't sum to the subtotal" is
             # noise on top of the one thing to do: enter the lines.
             pass
         elif not self.lines_sum_to_subtotal:
-            out.append("line totals don't add up to the subtotal")
+            out.append("The items don't add up to the subtotal.")
         elif not self.totals_reconcile:
             # Only reported once the lines reconcile: until then the subtotal
             # itself is suspect, so this would be noise on top of the real error.
-            out.append("subtotal + tax doesn't equal the total")
+            out.append("Subtotal plus tax doesn't equal the total.")
         if self.missing_distributor:
-            out.append("distributor not recognized — choose one")
+            out.append("Choose the distributor.")
         if self.missing_invoice_date:
-            out.append("invoice date missing")
+            out.append("Add the invoice date.")
         return out
 
     @property
     def passes(self) -> bool:
         return not self.reasons
+
+
+def _line_mismatch(line_numbers: list[int]) -> str:
+    items = ", ".join(str(n) for n in line_numbers)
+    which = f"item {items}" if len(line_numbers) == 1 else f"items {items}"
+    return f"On {which}, qty × price each doesn't equal the line total."
 
 
 def check_stored_invoice(
@@ -274,12 +280,12 @@ def _get_reviewable_invoice(db: Session, invoice_id: uuid.UUID, *, editing: bool
     # otherwise both see needs_review and both write its observations.
     invoice = db.get(Invoice, invoice_id, with_for_update=True)
     if invoice is None:
-        raise HTTPException(status_code=404, detail="invoice not found")
+        raise HTTPException(status_code=404, detail="We couldn't find that invoice.")
     allowed = {InvoiceStatus.needs_review, InvoiceStatus.failed} if editing else {InvoiceStatus.needs_review}
     if invoice.status not in allowed:
         raise HTTPException(
             status_code=409,
-            detail=f"invoice is {invoice.status.value}; only invoices that need review can be edited or confirmed",
+            detail="This invoice can't be changed. Only invoices that need a look can be.",
         )
     return invoice
 
@@ -311,7 +317,7 @@ def edit_invoice(
     # All validation before any mutation, so a bad request changes nothing.
     unknown = [str(edit.id) for edit in body.line_items if edit.id not in lines]
     if unknown:
-        raise HTTPException(status_code=422, detail=f"line items not on this invoice: {unknown}")
+        raise HTTPException(status_code=422, detail="Some of those items aren't on this invoice any more. Reload the page and try again.")
     sent = body.model_fields_set
     distributor_changed = (
         "distributor_id" in sent and body.distributor_id is not None and body.distributor_id != invoice.distributor_id
@@ -319,7 +325,7 @@ def edit_invoice(
     if distributor_changed:
         chosen = db.get(Distributor, body.distributor_id)
         if chosen is None or chosen.slug == UNRECOGNIZED_SLUG:
-            raise HTTPException(status_code=422, detail="choose a recognized distributor")
+            raise HTTPException(status_code=422, detail="Choose a distributor from the list.")
 
     invoice_before = _snapshot(invoice, _INVOICE_AUDITED)
     lines_before = {line.id: _snapshot(line, _LINE_AUDITED) for line in lines.values()}
@@ -390,7 +396,7 @@ def confirm_invoice(
         # The same rules the worker enforced: confirming is a claim that the
         # numbers are now right, so it can't be granted while they still
         # don't add up.
-        raise HTTPException(status_code=422, detail={"message": "invoice still doesn't reconcile", "reasons": check.reasons})
+        raise HTTPException(status_code=422, detail={"message": "Some numbers still don't add up", "reasons": check.reasons})
 
     invoice.status = InvoiceStatus.confirmed
     tenant = db.get(Tenant, invoice.tenant_id)
@@ -504,7 +510,7 @@ def remove_line_item(
     invoice = _get_reviewable_invoice(db, invoice_id, editing=True)
     line = db.get(InvoiceLineItem, line_item_id)
     if line is None or line.invoice_id != invoice.id:
-        raise HTTPException(status_code=404, detail="line item not on this invoice")
+        raise HTTPException(status_code=404, detail="That item isn't on this invoice.")
     # Removing a line says it was never on the invoice, so any correction made
     # on it (line queue confirm/correct) was a correction of nothing. Left in
     # place, a phantom line's alias kept matching that item code for this
@@ -549,7 +555,7 @@ def suggest_line_items(
     get_tenant_or_404(db, tenant_id)
     invoice = db.get(Invoice, invoice_id)
     if invoice is None:
-        raise HTTPException(status_code=404, detail="invoice not found")
+        raise HTTPException(status_code=404, detail="We couldn't find that invoice.")
 
     identity = func.coalesce(InvoiceLineItem.raw_sku, InvoiceLineItem.raw_description)
     conditions = [

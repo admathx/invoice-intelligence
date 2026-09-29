@@ -47,7 +47,7 @@ the canonical SKU catalog (both idempotent). The API and worker wait for it.
 ## 4. Create the first operator
 
 There's no sign-up page. The first operator is made from the command line;
-after that, operators add everyone else on the Users page.
+after that, admins add everyone else on the People page.
 
 ```
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production \
@@ -86,7 +86,7 @@ and have it send the raw message:
 | Anything else | POST the raw message with `Content-Type: message/rfc822` |
 
 Emails that can't become invoices (unknown address, no PDF) are not dropped:
-they're stored under `inbound/rejected/` and appear in the Audit log
+they're stored under `inbound/rejected/` and appear in the Change log
 ("Rejected emails") with the reason.
 
 ## 7. Outgoing email
@@ -109,9 +109,8 @@ unsubscribe link in each email.
 ### The weekly summary
 
 Every Monday at 12:00 UTC the `scheduler` service emails each person a
-summary of their locations' week: new price increases, invoices to check,
-the review queue, what arrived, and the biggest savings on the negotiation
-sheet. Nothing is sent to someone whose locations had a quiet week.
+summary of their locations' week: new price increases, invoices that need
+a look, items waiting to be matched, what arrived, and the biggest savings. Nothing is sent to someone whose locations had a quiet week.
 
 It sends through your provider's SMTP relay (`SMTP_*` and `MAIL_FROM` in
 `.env.production`); set up SPF and DKIM for the `MAIL_FROM` domain as your
@@ -126,8 +125,8 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.producti
 
 (It's written to the `outbox` folder inside the container.) No provider yet:
 set `DIGESTS_ENABLED=false`, `ALERT_EMAILS_ENABLED=false` and
-`PASSWORD_RESET_ENABLED=false` (operators then reset passwords from the Users
-screen); the API refuses to start in production with any of them on and no
+`PASSWORD_RESET_ENABLED=false` (admins then reset passwords from the People
+page); the API refuses to start in production with any of them on and no
 SMTP configured, rather than silently sending nothing.
 
 ## 8. Storage

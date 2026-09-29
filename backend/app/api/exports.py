@@ -208,7 +208,7 @@ def export_invoices(
     whether it belongs in the period."""
     tenant = get_tenant_or_404(db, tenant_id)
     if start and end and start > end:
-        raise HTTPException(status_code=422, detail="the start date is after the end date")
+        raise HTTPException(status_code=422, detail="The start date is after the end date.")
 
     conditions = [Invoice.tenant_id == tenant_id]
     if start:

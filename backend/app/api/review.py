@@ -50,16 +50,16 @@ def _lock_line_for_action(db: Session, line_item_id: uuid.UUID, *, pending: bool
     """
     line = db.get(InvoiceLineItem, line_item_id)
     if line is None:
-        raise HTTPException(status_code=404, detail="line item not found")
+        raise HTTPException(status_code=404, detail="We couldn't find that item.")
     invoice = db.get(Invoice, line.invoice_id, with_for_update=True, populate_existing=True)
     db.refresh(line)
     if pending and line.review_status != ReviewStatus.pending:
         # Already resolved — a second tab, or a client retrying a request
         # whose commit already landed. Reject rather than write a second
         # sku_aliases/price_observations row for the same line.
-        raise HTTPException(status_code=409, detail=f"line item is already {line.review_status.value}, not pending")
+        raise HTTPException(status_code=409, detail="That item has already been matched.")
     if not pending and line.review_status == ReviewStatus.pending:
-        raise HTTPException(status_code=409, detail="line item is already pending review")
+        raise HTTPException(status_code=409, detail="That item is already waiting to be matched.")
     return line, invoice
 
 
@@ -72,7 +72,7 @@ def _require_recognized_distributor(db: Session, invoice: Invoice) -> None:
     if distributor is None or distributor.slug == UNRECOGNIZED_SLUG:
         raise HTTPException(
             status_code=409,
-            detail="this invoice's distributor isn't known yet; choose it on the invoice screen first",
+            detail="We don't know this invoice's distributor yet. Choose it on the invoice first.",
         )
 
 
@@ -233,7 +233,7 @@ def confirm_line_item(
     line, invoice = _lock_line_for_action(db, line_item_id, pending=True)
     _require_recognized_distributor(db, invoice)
     if line.canonical_sku_id is None:
-        raise HTTPException(status_code=400, detail="no suggested match to confirm — use /correct instead")
+        raise HTTPException(status_code=400, detail="There's no suggestion to confirm. Search for the product instead.")
 
     line.review_status = ReviewStatus.confirmed
     return _finalize(
@@ -259,7 +259,7 @@ def correct_line_item(
     _require_recognized_distributor(db, invoice)
     sku = db.get(CanonicalSku, body.canonical_sku_id)
     if sku is None:
-        raise HTTPException(status_code=404, detail="canonical SKU not found")
+        raise HTTPException(status_code=404, detail="We couldn't find that product.")
     previous_sku_id, suggested_confidence = line.canonical_sku_id, line.match_confidence
 
     result = _exact_match_result(

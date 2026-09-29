@@ -83,8 +83,34 @@ export const REVIEW_BADGE: Record<string, string> = {
   pending: "bg-amber-100 text-amber-800",
 };
 
+/** Invoice statuses in plain words. The three steps of reading an invoice
+ *  are one thing to the person waiting for it. */
 export const STATUS_LABEL: Record<string, string> = {
-  needs_review: "needs review",
+  received: "Reading",
+  rendering: "Reading",
+  extracting: "Reading",
+  extracted: "Ready",
+  needs_review: "Needs a look",
+  confirmed: "Confirmed",
+  failed: "Couldn't read",
+};
+
+/** Still being read: the invoice has no numbers yet. */
+export const READING_STATUSES = new Set(["received", "rendering", "extracting"]);
+
+/** Whether a line has been matched to a product, in plain words. */
+export const MATCH_LABEL: Record<string, string> = {
+  auto: "Matched",
+  pending: "To match",
+  confirmed: "Confirmed",
+  corrected: "Fixed",
+};
+
+/** How an invoice arrived. */
+export const SOURCE_LABEL: Record<string, string> = {
+  upload: "Upload",
+  email: "Email",
+  photo: "Photo",
 };
 
 /** A stored decimal as the starting text of an edit box: no padding zeros

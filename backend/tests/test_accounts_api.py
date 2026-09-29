@@ -117,7 +117,7 @@ def test_moving_a_location_between_businesses_is_rejected_not_silent(client, db)
     conflict = client.post(f"/accounts/{second}/locations", json={"tenant_id": str(tenant.id)})
 
     assert conflict.status_code == 409
-    assert "detach it first" in conflict.json()["detail"]
+    assert "Take it out of that one first" in conflict.json()["detail"]
 
 
 def test_detaching_returns_the_location_to_the_unassigned_pool(client, db):

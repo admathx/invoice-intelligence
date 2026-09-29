@@ -191,7 +191,7 @@ def compose(user: Recipient, locations: list[LocationIncreases]) -> EmailMessage
             "<div style='margin:20px 0 0;border:1px solid #e5e7eb;border-left:4px solid #fca5a5;border-radius:8px;"
             "padding:16px 18px'>"
             f"<h2 style='font-size:17px;margin:0 0 10px'>{e(loc.name)}</h2>"
-            f"{design.increase_table(shown, more)}<p style='margin:12px 0 0'>{design.button(design.dashboard_link('/insights', loc.tenant_id), 'See it on Insights')}</p>"
+            f"{design.increase_table(shown, more)}<p style='margin:12px 0 0'>{design.button(design.dashboard_link('/insights', loc.tenant_id), 'See price alerts')}</p>"
             "</div>"
         )
     text += [

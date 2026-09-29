@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import NoLocation from "@/components/NoLocation";
-import { useLocationId } from "@/components/SessionContext";
+import { useLocationId, useSession } from "@/components/SessionContext";
 import { api } from "@/lib/api";
 import { money, quantity, unitPrice } from "@/lib/format";
 
@@ -37,9 +37,9 @@ const EMPTY: NegotiationSheet = {
 };
 
 const BASIS_OPTIONS: { value: Basis; label: string; hint: string }[] = [
-  { value: "auto", label: "Best available", hint: "Peer price where we have it, your own history where we don't" },
-  { value: "peer", label: "Peer benchmark", hint: "Only SKUs with 5+ independent businesses in the cell" },
-  { value: "history", label: "Your own history", hint: "What you used to pay — no peer data needed" },
+  { value: "auto", label: "Best available", hint: "What other businesses pay where we know it, otherwise what you used to pay" },
+  { value: "peer", label: "What others pay", hint: "Only products that at least 5 other businesses buy" },
+  { value: "history", label: "What you used to pay", hint: "Your own past prices, so it works for every product" },
 ];
 
 /** The "how do you know that" answer, which is different per basis and is the
@@ -50,14 +50,15 @@ function TargetEvidence({ line }: { line: NegotiationLine }) {
   // around, and this column is the one a rep reads down.
   const text =
     line.basis === "peer"
-      ? `peer p25 · ${line.peer_account_count} businesses`
-      : `your median · ${line.history_observation_count} priors`;
+      ? `a low price among ${line.peer_account_count} businesses`
+      : `your usual price, from ${line.history_observation_count} deliveries`;
   return <div className="whitespace-nowrap text-xs text-gray-400">{text}</div>;
 }
 
 export default function NegotiationPage() {
   const [basis, setBasis] = useState<Basis>("auto");
   const locationId = useLocationId();
+  const locationName = useSession()?.user.locations.find((l) => l.id === locationId)?.name;
   // Held as one object rather than separate pieces of state: every figure on
   // the page (including the total, summed server-side in Decimal per
   // backend/app/api/negotiation.py) belongs to the same sheet, and a partial
@@ -98,15 +99,20 @@ export default function NegotiationPage() {
   if (!locationId) return <NoLocation />;
 
   const emptyMessage = failed
-    ? "Couldn't load the sheet — the server didn't respond. Nothing here is out of date; there's just nothing here yet."
+    ? "Couldn't load your savings. Try again in a moment."
     : basis === "peer"
-      ? "No overpriced SKUs with enough peer data right now. Try “Your own history” — it needs no peers."
-      : "No overpriced SKUs yet. This fills in once a SKU has four deliveries to compare.";
+      ? "Nothing to save on yet: not enough other businesses buy the same products. Try “What you used to pay”."
+      : "Nothing to save on yet. This fills in once a product has been delivered four times.";
 
   return (
     <div className="max-w-5xl">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 print:hidden">
-        <h1 className="page-title">Negotiation sheet</h1>
+        <div className="min-w-0">
+          <h1 className="page-title">Savings</h1>
+          <p className="mt-0.5 text-sm text-gray-500">
+            Products you could be paying less for. Print this and take it to your rep.
+          </p>
+        </div>
         <div className="flex min-w-0 max-w-full flex-wrap items-center gap-3">
           <div className="flex max-w-full overflow-x-auto rounded-lg bg-gray-100 p-1 text-sm">
             {BASIS_OPTIONS.map((option) => (
@@ -129,7 +135,12 @@ export default function NegotiationPage() {
         </div>
       </div>
 
-      {sheet === null && <p className="text-sm text-gray-500">Loading...</p>}
+      {/* The screen's heading row is hidden on paper; the sheet still says
+          what it is and whose it is. */}
+      <h1 className="mb-3 hidden text-xl font-semibold print:block">
+        Prices to review{locationName ? ` · ${locationName}` : ""}
+      </h1>
+      {sheet === null && <p className="text-sm text-gray-500">Loading…</p>}
       {sheet !== null && sheet.lines.length === 0 && (
         <div className="card px-4 py-4 text-sm text-gray-600">{emptyMessage}</div>
       )}
@@ -137,30 +148,34 @@ export default function NegotiationPage() {
         <>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-brand-200 bg-gradient-to-r from-brand-50 to-white px-5 py-4">
             <div>
-              <div className="text-xs font-semibold uppercase tracking-wide text-brand-800">Savings on the table</div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-brand-800">Possible savings</div>
               <div className="num text-3xl font-bold text-brand-700">{money(sheet.total_annualized_savings)}</div>
-              <div className="text-xs text-gray-500">a year, if these prices came down to target</div>
+              <div className="text-xs text-gray-500">a year, if these prices came down to the target</div>
             </div>
             <div className="num text-right text-sm text-gray-600">
-              <strong className="text-gray-900">{sheet.lines.length}</strong> item{sheet.lines.length === 1 ? "" : "s"} to raise with your rep
+              <strong className="text-gray-900">{sheet.lines.length}</strong> product{sheet.lines.length === 1 ? "" : "s"} to raise with your rep
             </div>
           </div>
           <div className="card overflow-x-auto">
             <table className="w-full border-collapse text-sm">
               <thead className="bg-gray-50">
                 <tr className="border-b border-gray-200">
-                  <th className="th pl-4">SKU</th>
+                  <th className="th pl-4">Product</th>
                   <th className="th text-right">You pay</th>
                   <th className="th text-right">Target</th>
-                  <th className="th text-right">Qty ({sheet.window_days}d)</th>
-                  <th className="th text-right">Recoverable</th>
-                  <th className="th text-right">Per year</th>
+                  <th className="th text-right">Bought ({sheet.window_days} days)</th>
+                  <th className="th text-right">Saving ({sheet.window_days} days)</th>
+                  <th className="th text-right">Saving per year</th>
                 </tr>
               </thead>
               <tbody>
                 {sheet.lines.map((line) => (
                   <tr key={line.canonical_sku_id} className="border-b border-gray-100 last:border-0">
-                    <td className="min-w-[10rem] py-2.5 pl-4 pr-4 font-medium">{line.canonical_sku_name}</td>
+                    <td className="min-w-[10rem] py-2.5 pl-4 pr-4 font-medium">
+                      <a href={`/skus/${line.canonical_sku_id}`} className="hover:text-brand-700 hover:underline print:no-underline">
+                        {line.canonical_sku_name}
+                      </a>
+                    </td>
                     <td className="num whitespace-nowrap py-2.5 pr-4 text-right font-medium text-red-600">
                       {unitPrice(line.current_price)}
                     </td>
@@ -184,8 +199,8 @@ export default function NegotiationPage() {
               projection from this much history, and the rep across the table
               is entitled to know how much that is. */}
           <p className="mt-2 text-xs text-gray-500">
-            Recoverable figures cover {sheet.window_days} days of invoices; annualized at{" "}
-            {sheet.annualization_factor}&times;.
+            Based on the last {sheet.window_days} days of invoices, scaled up to a year (&times;
+            {sheet.annualization_factor}).
           </p>
         </>
       )}

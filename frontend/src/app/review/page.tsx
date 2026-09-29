@@ -6,6 +6,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import NoLocation from "@/components/NoLocation";
 import { useLocationId } from "@/components/SessionContext";
 import { api, jsonInit } from "@/lib/api";
+import { formatApiError } from "@/lib/apiError";
 import { quantity, unitPrice } from "@/lib/format";
 
 /** How sure the matcher was: the review band starts at 80%. */
@@ -41,7 +42,7 @@ type SearchResult = {
 
 export default function ReviewQueuePage() {
   return (
-    <Suspense fallback={<p className="text-sm text-gray-500">Loading review queue...</p>}>
+    <Suspense fallback={<p className="text-sm text-gray-500">Loading…</p>}>
       <ReviewQueueInner />
     </Suspense>
   );
@@ -56,8 +57,12 @@ function ReviewQueueInner() {
   const [queue, setQueue] = useState<QueueItem[] | null>(null);
   const [index, setIndex] = useState(0);
   const [clearedCount, setClearedCount] = useState(0);
+  const [skippedCount, setSkippedCount] = useState(0);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
+  // What the results on screen are for: "no matches" only once a search
+  // has actually answered, not while it's still on its way.
+  const [answered, setAnswered] = useState("");
   const [selected, setSelected] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,7 +128,10 @@ function ReviewQueueInner() {
     try {
       const res = await api(`/skus?q=${encodeURIComponent(q)}`);
       const data = res.ok ? await res.json() : [];
-      if (requestId === latestSearch.current) setResults(data);
+      if (requestId === latestSearch.current) {
+        setResults(data);
+        setAnswered(q);
+      }
     } catch {
       if (requestId === latestSearch.current) setResults([]);
     }
@@ -134,6 +142,12 @@ function ReviewQueueInner() {
     setIndex((i) => i + 1);
   }
 
+  /** Leave this one for later: it stays waiting, and comes back next time. */
+  function skip() {
+    setSkippedCount((c) => c + 1);
+    setIndex((i) => i + 1);
+  }
+
   async function confirm() {
     if (!current || !current.canonical_sku_id || busy) return;
     setBusy(true);
@@ -141,7 +155,7 @@ function ReviewQueueInner() {
     try {
       const res = await api(`/review/${current.id}/confirm?tenant_id=${locationId}`, { method: "POST" });
       if (!res.ok) {
-        setError((await res.json()).detail ?? "confirm failed");
+        setError(formatApiError((await res.json().catch(() => null))?.detail, "Couldn't save that. Try again."));
         return;
       }
       advance();
@@ -160,7 +174,7 @@ function ReviewQueueInner() {
         jsonInit("POST", { canonical_sku_id: skuId }),
       );
       if (!res.ok) {
-        setError((await res.json()).detail ?? "correct failed");
+        setError(formatApiError((await res.json().catch(() => null))?.detail, "Couldn't save that. Try again."));
         return;
       }
       advance();
@@ -198,21 +212,35 @@ function ReviewQueueInner() {
   if (!locationId) return <NoLocation />;
 
   if (queue === null) {
-    return <p className="text-sm text-gray-500">Loading review queue...</p>;
+    return <p className="text-sm text-gray-500">Loading…</p>;
   }
 
   if (!current) {
     const seconds = Math.round((Date.now() - startedAt) / 1000);
     return (
       <div className="max-w-2xl">
-        <h1 className="page-title mb-3">Review queue</h1>
-        <div className="card flex items-center gap-3 border-l-4 border-l-brand-400 px-4 py-4 text-sm text-gray-700">
-          <span aria-hidden className="grid h-8 w-8 place-items-center rounded-full bg-brand-100 text-brand-800">
-            ✓
-          </span>
-          {clearedCount > 0
-            ? `Cleared ${clearedCount} item${clearedCount === 1 ? "" : "s"} in ${seconds}s. Queue is empty.`
-            : "Queue is empty — nothing needs review."}
+        <PageHeading />
+        <div className="card border-l-4 border-l-brand-400 px-4 py-4 text-sm text-gray-700">
+          <div className="flex items-center gap-3">
+            <span aria-hidden className="grid h-8 w-8 flex-none place-items-center rounded-full bg-brand-100 text-brand-800">
+              ✓
+            </span>
+            <span>
+              {clearedCount > 0
+                ? `Done. You matched ${clearedCount} item${clearedCount === 1 ? "" : "s"} in ${seconds} seconds.`
+                : "Nothing to match right now."}
+              {skippedCount > 0 &&
+                ` ${skippedCount} skipped item${skippedCount === 1 ? " is" : "s are"} still waiting for next time.`}
+            </span>
+          </div>
+          <p className="mt-3 flex flex-wrap gap-2">
+            <a href="/insights" className="btn-secondary btn-sm">
+              See price alerts
+            </a>
+            <a href="/negotiation" className="btn-secondary btn-sm">
+              See savings
+            </a>
+          </p>
         </div>
       </div>
     );
@@ -223,11 +251,11 @@ function ReviewQueueInner() {
 
   return (
     <div className="max-w-2xl">
-      <div className="mb-2 flex items-baseline justify-between">
-        <h1 className="page-title">Review queue</h1>
-        <span className="num text-sm text-gray-500">
+      <div className="mb-2 flex flex-wrap items-end justify-between gap-x-4">
+        <PageHeading />
+        <span className="num mb-3 text-sm text-gray-500">
           <strong className="text-gray-900">{index + 1}</strong> of {queue.length} &middot;{" "}
-          <span className="font-semibold text-brand-700">{clearedCount} cleared</span>
+          <span className="font-semibold text-brand-700">{clearedCount} done</span>
         </span>
       </div>
       <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-gray-200" aria-hidden>
@@ -235,17 +263,22 @@ function ReviewQueueInner() {
       </div>
 
       <div className="card p-5" data-testid="review-item">
-        <div className="mb-1 text-sm text-gray-500">
-          {current.distributor_name ?? "Unknown distributor"} &middot; {current.invoice_date ?? "—"}
+        <div className="mb-1 flex flex-wrap justify-between gap-x-3 text-sm text-gray-500">
+          <span>
+            {current.distributor_name ?? "Distributor not known"} &middot; {current.invoice_date ?? "No date"}
+          </span>
+          <a href={`/invoices/${current.invoice_id}`} className="link">
+            See the invoice
+          </a>
         </div>
         <div className="mb-2 text-lg font-semibold" data-testid="review-description">
           {current.raw_description}
         </div>
         <div className="num mb-4 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
-          <span>SKU {current.raw_sku ?? "—"}</span>
-          <span>pack {current.raw_pack_size ?? "—"}</span>
+          <span>Item code {current.raw_sku ?? "—"}</span>
+          <span>Pack {current.raw_pack_size ?? "—"}</span>
           <span>
-            qty {quantity(current.quantity)} {current.uom}
+            Qty {quantity(current.quantity)} {current.uom}
           </span>
           <span className="font-semibold text-gray-900">{unitPrice(current.unit_price)}</span>
         </div>
@@ -253,22 +286,22 @@ function ReviewQueueInner() {
         {current.canonical_sku_id ? (
           <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-sm text-sky-950">
             <span>
-              Suggested match: <strong>{current.canonical_sku_name}</strong>
+              Looks like: <strong>{current.canonical_sku_name}</strong>
             </span>
             {confidence !== null && (
               <span className={`badge num ${confidenceBadge(confidence)}`}>{Math.round(confidence * 100)}% sure</span>
             )}
             <span className="basis-full text-xs text-sky-800">
-              Press <kbd className="rounded border border-sky-300 bg-white px-1">Enter</kbd> to confirm, or search below to
-              correct.
+              Press <kbd className="rounded border border-sky-300 bg-white px-1">Enter</kbd> if that&rsquo;s right. If
+              not, search for the right product below.
             </span>
             <button type="button" onClick={() => void confirm()} disabled={busy} className="btn-primary btn-sm">
-              ✓ Confirm match
+              ✓ That&rsquo;s right
             </button>
           </div>
         ) : (
           <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
-            No confident match — search below to assign the correct canonical SKU.
+            We couldn&rsquo;t tell which product this is. Search for it below.
           </div>
         )}
 
@@ -279,7 +312,8 @@ function ReviewQueueInner() {
           onChange={(e) => runSearch(e.target.value)}
           onKeyDown={onKeyDown}
           disabled={busy}
-          placeholder="Search canonical SKU to correct..."
+          aria-label="Search products"
+          placeholder="Search products, e.g. mozzarella"
           className="input w-full"
           autoFocus
         />
@@ -295,16 +329,35 @@ function ReviewQueueInner() {
                 <span className="font-medium">{r.name}</span>{" "}
                 <span className="text-gray-500">
                   {r.category}
-                  {r.subcategory ? ` / ${r.subcategory}` : ""} · {r.base_uom}
+                  {r.subcategory ? ` / ${r.subcategory}` : ""} · priced per {r.base_uom}
                 </span>
               </li>
             ))}
           </ul>
         )}
+        {query.trim() && answered === query && results.length === 0 && (
+          <p className="mt-2 text-sm text-gray-500">No products match &ldquo;{query.trim()}&rdquo;. Try a shorter word.</p>
+        )}
         {error && (
           <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
         )}
+        <div className="mt-4 flex justify-end">
+          <button type="button" onClick={skip} disabled={busy} className="btn-secondary btn-sm">
+            Skip for now
+          </button>
+        </div>
       </div>
+    </div>
+  );
+}
+
+function PageHeading() {
+  return (
+    <div className="mb-3">
+      <h1 className="page-title">Match items</h1>
+      <p className="mt-0.5 text-sm text-gray-500">
+        Say which product each invoice item is, so its price can be tracked.
+      </p>
     </div>
   );
 }

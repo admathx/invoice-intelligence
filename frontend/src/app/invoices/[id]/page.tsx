@@ -30,7 +30,8 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
     // confirm it exists. Worth a hint for someone with several locations.
     return (
       <p className="text-sm text-gray-600">
-        Invoice not found at this location. If it belongs to another of your locations, switch to it above.
+        We couldn&rsquo;t find that invoice here. If it belongs to another of your locations, switch to it at the top
+        of the page. <a href="/invoices" className="link">All invoices</a>
       </p>
     );
   }
@@ -40,7 +41,10 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
   const distributors = reviewable ? await getDistributors() : [];
   return (
     <>
-      <InvoiceReview initial={invoice} distributors={distributors} />
+      {/* Keyed by status: the form keeps its own copy of the invoice, so when
+          a refresh brings a new status (read at last, or confirmed) it starts
+          again from the server's, rather than showing the old one. */}
+      <InvoiceReview key={invoice.status} initial={invoice} distributors={distributors} />
       <section className="mt-8 max-w-4xl">
         <h2 className="section-title mb-2">History</h2>
         <ActivityList events={history} />

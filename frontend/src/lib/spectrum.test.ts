@@ -53,14 +53,14 @@ describe("priceVerdict", () => {
   });
 
   it("names the extremes instead of saying 'higher than 100%'", () => {
-    expect(priceVerdict(1, 12).headline).toBe("More expensive than all 12 comparable businesses");
-    expect(priceVerdict(0, 12).headline).toBe("Cheaper than all 12 comparable businesses");
+    expect(priceVerdict(1, 12).headline).toBe("More expensive than all 12 similar businesses");
+    expect(priceVerdict(0, 12).headline).toBe("Cheaper than all 12 similar businesses");
     expect(priceVerdict(0.91, 11).headline).toContain("91%");
   });
 
   it("says how many businesses stand behind the comparison", () => {
-    expect(priceVerdict(0.9, 12).headline).toContain("12 comparable businesses");
-    expect(priceVerdict(0.9, 1).headline).toContain("1 comparable business");
+    expect(priceVerdict(0.9, 12).headline).toContain("12 similar businesses");
+    expect(priceVerdict(0.9, 1).headline).toContain("1 similar business");
   });
 });
 

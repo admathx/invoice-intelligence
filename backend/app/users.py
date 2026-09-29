@@ -37,7 +37,7 @@ def generate_password() -> str:
 
 def check_new_password(password: str) -> None:
     if len(password) < MIN_PASSWORD_LENGTH:
-        raise UserError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
+        raise UserError(f"Passwords need at least {MIN_PASSWORD_LENGTH} characters.")
 
 
 def revoke_sessions(db: Session, user: User) -> None:
@@ -63,7 +63,7 @@ def _tenants(db: Session, tenant_ids: list[uuid.UUID]) -> list[Tenant]:
     tenants = list(db.scalars(select(Tenant).where(Tenant.id.in_(tenant_ids)))) if tenant_ids else []
     missing = set(tenant_ids) - {t.id for t in tenants}
     if missing:
-        raise UserError(f"no such location: {', '.join(sorted(map(str, missing)))}")
+        raise UserError("That location doesn't exist.")
     return tenants
 
 
@@ -83,12 +83,12 @@ def create_user(
     email = normalize_email(email)
     name = name.strip()
     if "@" not in email:
-        raise UserError("enter an email address")
+        raise UserError("Enter an email address.")
     if not name:
-        raise UserError("enter a name")
+        raise UserError("Enter a name.")
     check_new_password(password)
     if db.scalar(select(User.id).where(User.email == email)):
-        raise UserError(f"{email} already has a login", conflict=True)
+        raise UserError(f"{email} already has a login.", conflict=True)
     tenants = _tenants(db, list(tenant_ids))
 
     user = User(
@@ -147,11 +147,11 @@ def update_user(
     """Returns what changed. An operator can't demote or deactivate
     themselves: done by accident, there may be no operator left to undo it."""
     if actor is not None and actor.id == user.id and (is_operator is False or is_active is False):
-        raise UserError("you can't remove your own operator access or deactivate yourself; ask another operator")
+        raise UserError("You can't remove your own admin access or deactivate yourself. Ask another admin.")
     before = {"name": user.name, "is_operator": user.is_operator, "is_active": user.is_active}
     if name is not None:
         if not name.strip():
-            raise UserError("enter a name")
+            raise UserError("Enter a name.")
         user.name = name.strip()
     if is_operator is not None:
         user.is_operator = is_operator

@@ -151,7 +151,7 @@ def signed_in_user(request: Request, db: Session = Depends(get_db)) -> User:
     current_user."""
     user = user_for_token(db, request.cookies.get(SESSION_COOKIE))
     if user is None:
-        raise HTTPException(status_code=401, detail="sign in required")
+        raise HTTPException(status_code=401, detail="Please sign in.")
     return user
 
 
@@ -168,7 +168,7 @@ def current_user(user: User = Depends(signed_in_user)) -> User:
 
 def require_operator(user: User = Depends(current_user)) -> User:
     if not user.is_operator:
-        raise HTTPException(status_code=403, detail="operator access required")
+        raise HTTPException(status_code=403, detail="Only admins can do that.")
     return user
 
 
@@ -202,7 +202,7 @@ def get_db_for_tenant(
     request), so authorizing costs no second connection.
     """
     if not can_access_tenant(db, user, tenant_id):
-        raise HTTPException(status_code=404, detail="tenant not found")
+        raise HTTPException(status_code=404, detail="We couldn't find that location.")
     bind_tenant(db, tenant_id)
     return db
 

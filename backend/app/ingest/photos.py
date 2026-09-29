@@ -70,16 +70,16 @@ def _page(data: bytes, position: int) -> Image.Image:
         image.draft("RGB", (MAX_LONG_EDGE, MAX_LONG_EDGE))
         width, height = image.size
     except Image.DecompressionBombError as exc:  # Pillow's own ceiling, ~179 MP, checked on open
-        raise UnreadablePhotoError(f"photo {position} is too large") from exc
+        raise UnreadablePhotoError(f"Photo {position} is too big.") from exc
     except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
-        raise UnreadablePhotoError(f"photo {position} couldn't be read") from exc
+        raise UnreadablePhotoError(f"We couldn't open photo {position}.") from exc
     if width * height > MAX_PIXELS:
-        raise UnreadablePhotoError(f"photo {position} is too large ({width}x{height})")
+        raise UnreadablePhotoError(f"Photo {position} is too big.")
     try:
         image = ImageOps.exif_transpose(image)
         image.load()
     except (OSError, Image.DecompressionBombError, SyntaxError, ValueError) as exc:
-        raise UnreadablePhotoError(f"photo {position} couldn't be read") from exc
+        raise UnreadablePhotoError(f"We couldn't open photo {position}.") from exc
 
     if image.mode in ("RGBA", "LA", "PA", "P"):
         image = image.convert("RGBA")
@@ -96,9 +96,9 @@ def _page(data: bytes, position: int) -> Image.Image:
 def photos_to_pdf(photos: list[bytes]) -> bytes:
     """One PDF, a page per photo, in the order given."""
     if not photos:
-        raise UnreadablePhotoError("no photos")
+        raise UnreadablePhotoError("Choose a photo to upload.")
     if len(photos) > MAX_PHOTOS:
-        raise UnreadablePhotoError(f"at most {MAX_PHOTOS} photos make one invoice; this was {len(photos)}")
+        raise UnreadablePhotoError(f"One invoice can have up to {MAX_PHOTOS} photos.")
     # Each page saved on its own, at its own resolution, then joined: Pillow's
     # multi-page save applies the first page's resolution to every page, so a
     # second photo from a different camera came out a different paper size.

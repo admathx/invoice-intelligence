@@ -13,17 +13,17 @@ export default function NoLocation() {
         <a href="/accounts" className="link">
           Businesses
         </a>{" "}
-        page, then give people access to it on{" "}
+        page, then give people access to it on the{" "}
         <a href="/users" className="link">
-          Users
-        </a>
-        .
+          People
+        </a>{" "}
+        page.
       </p>
     );
   }
   return (
     <p className="text-sm text-gray-600">
-      Your account doesn&rsquo;t have access to any locations yet. Ask whoever set up your login to add you to one.
+      You don&rsquo;t have access to a location yet. Ask whoever set up your account to add you to one.
     </p>
   );
 }

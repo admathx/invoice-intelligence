@@ -37,6 +37,8 @@ class LocationOut(BaseModel):
     id: uuid.UUID
     name: str
     metro: str
+    # Where to forward this location's invoices (app/ingest/email_stub.py).
+    inbox_address: str | None = None
 
 
 class MeOut(BaseModel):

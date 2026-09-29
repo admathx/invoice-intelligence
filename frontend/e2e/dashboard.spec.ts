@@ -63,7 +63,7 @@ test.describe("signing in", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Password").fill("not the password");
     await page.getByRole("button", { name: "Sign in" }).click();
-    await expect(page.getByText("email or password is incorrect")).toBeVisible();
+    await expect(page.getByText("That email and password don't match.")).toBeVisible();
 
     await page.getByLabel("Password").fill(password);
     await page.getByRole("button", { name: "Sign in" }).click();
@@ -97,7 +97,7 @@ test.describe("ingest -> review -> negotiation sheet", () => {
     page,
   }) => {
     const fixture = runFixture("setup", TENANT_ID) as FixtureSetup;
-    const searchInput = () => page.getByPlaceholder("Search canonical SKU to correct...");
+    const searchInput = () => page.getByPlaceholder("Search products, e.g. mozzarella");
 
     await page.goto("/review");
 
@@ -147,7 +147,7 @@ test.describe("ingest -> review -> negotiation sheet", () => {
     // undercount, since pressing Enter on an item with no suggested match is
     // correctly a no-op.
     await page.goto(`/review?distributor_id=${bulk.distributor_id}`);
-    const searchInput = page.getByPlaceholder("Search canonical SKU to correct...");
+    const searchInput = page.getByPlaceholder("Search products, e.g. mozzarella");
     await expect(page.getByTestId("review-description")).toBeVisible({ timeout: 10_000 });
 
     const start = Date.now();
@@ -160,7 +160,7 @@ test.describe("ingest -> review -> negotiation sheet", () => {
       // works uniformly for every iteration, including the last one, where
       // the queue empties out and the "current item" locator disappears
       // entirely (a case a text-diff wait on that locator can't express).
-      await expect(page.getByText(new RegExp(`${i} cleared|Cleared ${i} items?\\b`))).toBeVisible({
+      await expect(page.getByText(new RegExp(`${i} done|You matched ${i} items?\\b`))).toBeVisible({
         timeout: 10_000,
       });
     }
@@ -172,9 +172,9 @@ test.describe("ingest -> review -> negotiation sheet", () => {
 
   test("negotiation sheet renders a ranked, printable table", async ({ page }) => {
     await page.goto("/negotiation");
-    await expect(page.getByRole("heading", { name: "Negotiation sheet" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Savings", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Print" })).toBeVisible();
-    await expect(page.getByRole("table").or(page.getByText("No overpriced SKUs"))).toBeVisible({
+    await expect(page.getByRole("table").or(page.getByText("Nothing to save on yet"))).toBeVisible({
       timeout: 10_000,
     });
   });
@@ -183,17 +183,17 @@ test.describe("ingest -> review -> negotiation sheet", () => {
     // The day-one path: no peer benchmark needed, so this basis must render a
     // sheet for a tenant whose metro has nobody else in it.
     await page.goto("/negotiation");
-    await page.getByRole("button", { name: "Your own history" }).click();
+    await page.getByRole("button", { name: "What you used to pay" }).click();
 
-    await expect(page.getByRole("table").or(page.getByText("No overpriced SKUs"))).toBeVisible({
+    await expect(page.getByRole("table").or(page.getByText("Nothing to save on yet"))).toBeVisible({
       timeout: 10_000,
     });
     const rows = page.getByRole("row");
     if ((await rows.count()) > 1) {
       // Every line says where its target came from — the sheet must never put
       // a peer claim and a history claim under one unqualified header.
-      await expect(page.getByText("your median").first()).toBeVisible();
-      await expect(page.getByText(/annualized at/)).toBeVisible();
+      await expect(page.getByText("your usual price").first()).toBeVisible();
+      await expect(page.getByText(/scaled up to a year/)).toBeVisible();
     }
   });
 
@@ -203,25 +203,25 @@ test.describe("ingest -> review -> negotiation sheet", () => {
     const fixture = runFixture("setup-needs-review", TENANT_ID) as { invoice_id: string; invoice_number: string };
 
     await page.goto(`/invoices/${fixture.invoice_id}`);
-    await expect(page.getByText("numbers don't add up")).toBeVisible();
+    await expect(page.getByText("Some numbers on this invoice don't add up")).toBeVisible();
     const confirm = page.getByRole("button", { name: "Confirm invoice" });
     await expect(confirm).toBeDisabled();
 
     await page.getByLabel("Line 1 unit price").fill("47.50");
     // The check on screen is of the SAVED numbers, so confirming must wait.
     await expect(confirm).toBeDisabled();
-    await page.getByRole("button", { name: "Save & re-check" }).click();
+    await page.getByRole("button", { name: "Save and check" }).click();
 
-    await expect(page.getByText("The numbers add up now")).toBeVisible();
+    await expect(page.getByText("Everything adds up now")).toBeVisible();
     await confirm.click();
 
-    await expect(page.getByText("Confirmed after review")).toBeVisible();
-    await expect(page.getByText("confirmed", { exact: true })).toBeVisible();
+    await expect(page.getByText("Confirmed. Its prices now count")).toBeVisible();
+    await expect(page.getByText("Confirmed", { exact: true })).toBeVisible();
 
     // The audit trail: who fixed which number, from what to what.
     const history = page.locator("section", { has: page.getByRole("heading", { name: "History" }) });
     await expect(history.getByText("E2E Reviewer confirmed the invoice")).toBeVisible();
-    await expect(history.getByText("line 1: unit price 74.50 → 47.50")).toBeVisible();
+    await expect(history.getByText("item 1: price each 74.50 → 47.50")).toBeVisible();
   });
 
   test("lines can be entered by hand when extraction found none, starting from a past purchase", async ({ page }) => {
@@ -231,10 +231,10 @@ test.describe("ingest -> review -> negotiation sheet", () => {
     const fixture = runFixture("setup-empty-invoice", TENANT_ID) as { invoice_id: string; search: string };
 
     await page.goto(`/invoices/${fixture.invoice_id}`);
-    await expect(page.getByText("No line items were detected")).toBeVisible();
-    await page.getByRole("button", { name: "+ Add line item" }).click();
+    await expect(page.getByText(/We didn.t find any items/)).toBeVisible();
+    await page.getByRole("button", { name: "+ Add item" }).click();
 
-    const dialog = page.getByRole("dialog", { name: "Add line item" });
+    const dialog = page.getByRole("dialog", { name: "Add an item" });
     await dialog.getByLabel("Search past purchases").fill(fixture.search.toLowerCase());
     await dialog.getByRole("button").filter({ hasText: new RegExp(fixture.search, "i") }).first().click();
 
@@ -242,22 +242,22 @@ test.describe("ingest -> review -> negotiation sheet", () => {
     // A prefilled price left untouched would record "no increase" and hide
     // exactly the creep the product exists to catch.
     await expect(dialog.getByLabel("Description")).not.toHaveValue("");
-    await expect(dialog.getByLabel("Unit price", { exact: true })).toHaveValue("");
+    await expect(dialog.getByLabel("Price each", { exact: true })).toHaveValue("");
     await expect(dialog.getByText(/Last paid/)).toBeVisible();
 
     await dialog.getByLabel("Quantity").fill("1");
-    await dialog.getByLabel("Unit price", { exact: true }).fill("612.00");
-    await dialog.getByLabel("Extended price").fill("612.00");
-    await dialog.getByRole("button", { name: "Add line" }).click();
+    await dialog.getByLabel("Price each", { exact: true }).fill("612.00");
+    await dialog.getByLabel("Line total").fill("612.00");
+    await dialog.getByRole("button", { name: "Add item" }).click();
     await expect(dialog).toBeHidden();
 
-    for (const [label, value] of [["subtotal", "612.00"], ["tax", "0.00"], ["total", "612.00"]]) {
+    for (const [label, value] of [["Subtotal", "612.00"], ["Tax", "0.00"], ["Total", "612.00"]]) {
       await page.getByLabel(label, { exact: true }).fill(value);
     }
-    await page.getByRole("button", { name: "Save & re-check" }).click();
+    await page.getByRole("button", { name: "Save and check" }).click();
     await page.getByRole("button", { name: "Confirm invoice" }).click();
 
-    await expect(page.getByText("Confirmed after review")).toBeVisible();
+    await expect(page.getByText("Confirmed. Its prices now count")).toBeVisible();
   });
 });
 
@@ -273,7 +273,7 @@ test.describe("managing users", () => {
     expect((await page.request.post("/api/auth/login", { data: operator, headers: CSRF })).ok()).toBeTruthy();
 
     await page.goto("/users");
-    await page.getByRole("button", { name: "Add user" }).click();
+    await page.getByRole("button", { name: "Add person" }).click();
     const email = `e2e-new-${Date.now()}@dev.test`;
     await page.getByLabel("Name").fill("E2E New Person");
     await page.getByLabel("Email").fill(email);
@@ -317,7 +317,7 @@ test.describe("managing users", () => {
 
     // All of it is in the operators' audit log, newest first.
     await page.goto("/audit");
-    await page.getByLabel("What").selectOption({ label: "Users and access" });
+    await page.getByLabel("What").selectOption({ label: "People and access" });
     await expect(page.getByText(`E2E Operator deactivated ${email}`)).toBeVisible();
     await expect(page.getByText(`E2E Operator created a login for ${email}`)).toBeVisible();
   });
@@ -339,7 +339,7 @@ test.describe("operators' screens", () => {
     const name = `E2E Location ${Date.now()}`;
     await page.goto("/accounts");
     await page.getByLabel("Location name").fill(name);
-    await page.getByLabel("Metro").fill("Austin, TX");
+    await page.getByLabel("Area").fill("Austin, TX");
     await page.getByLabel("Annual food spend").selectOption({ label: "$1M–$3M" });
     await page.getByRole("button", { name: "Add location" }).click();
 
@@ -375,11 +375,11 @@ test.describe("operators' screens", () => {
     await page.route("**/api/audit?*", (route) => route.continue({ url: route.request().url().replace("limit=100", "limit=2") }));
 
     await page.goto("/audit");
-    await page.getByLabel("What").selectOption({ label: "Users and access" });
+    await page.getByLabel("What").selectOption({ label: "People and access" });
     await page.getByLabel("Who").selectOption({ label: "E2E Operator" });
     const entries = page.locator("main ol > li");
     await expect(entries).toHaveCount(2);
-    const older = page.getByRole("button", { name: "Older" });
+    const older = page.getByRole("button", { name: "Show older" });
     while (await older.isVisible()) {
       const before = await entries.count();
       await older.click();
@@ -408,7 +408,7 @@ test.describe("reading times", () => {
 
     await page.goto(`/invoices/${fixture.invoice_id}`);
     await page.getByLabel("Line 1 unit price").fill("47.50");
-    await page.getByRole("button", { name: "Save & re-check" }).click();
+    await page.getByRole("button", { name: "Save and check" }).click();
 
     const history = page.locator("section", { has: page.getByRole("heading", { name: "History" }) });
     const stamp = history.locator("time[data-local]").first();
@@ -590,5 +590,44 @@ test.describe("price-increase emails", () => {
     await page.reload();
     await expect(page.getByLabel(/Price increases, as they happen/)).not.toBeChecked();
     await expect(page.getByLabel(/Weekly summary/)).toBeChecked();
+  });
+});
+
+test.describe("finding your way", () => {
+  test.skip(!TENANT_ID, "E2E_TENANT_ID not set in frontend/.env.local");
+
+  test("help is open to everyone, and every link on it leads somewhere", async ({ page }) => {
+    await page.goto("/login");
+    await page.getByRole("link", { name: "Help" }).click();
+    await expect(page).toHaveURL(/\/help$/);
+    await expect(page.getByRole("heading", { name: "Help", exact: true })).toBeVisible();
+
+    expect((await page.request.post("/api/auth/login", { data: e2eLogin(), headers: CSRF })).ok()).toBeTruthy();
+    await page.goto("/help");
+    const hrefs = await page.locator("main a[href]").evaluateAll((as) => as.map((a) => a.getAttribute("href")!));
+    for (const href of new Set(hrefs)) {
+      if (href.startsWith("#")) {
+        await expect(page.locator(href), `anchor ${href}`).toHaveCount(1);
+      } else {
+        expect((await page.request.get(href)).status(), href).toBe(200);
+      }
+    }
+    await page.getByRole("link", { name: "Match items" }).first().click();
+    await expect(page).toHaveURL(/\/review$/);
+  });
+
+  test("an item you can't match can be skipped", async ({ page }) => {
+    const fixture = runFixture("setup", TENANT_ID) as FixtureSetup;
+    expect((await page.request.post("/api/auth/login", { data: e2eLogin(), headers: CSRF })).ok()).toBeTruthy();
+    await page.goto(`/review?distributor_id=${fixture.distributor_id}`);
+    const first = await page.getByTestId("review-description").textContent();
+    await expect(page.getByText(/^1 of 2/)).toBeVisible();
+    await page.getByRole("button", { name: "Skip for now" }).click();
+    await expect(page.getByText(/^2 of 2/)).toBeVisible();
+    await expect(page.getByTestId("review-description")).not.toHaveText(first ?? "");
+    await page.getByRole("button", { name: "Skip for now" }).click();
+    await expect(page.getByText("2 skipped items are still waiting for next time.", { exact: false })).toBeVisible();
+    await expect(page.getByRole("link", { name: "See price alerts" })).toBeVisible();
+    runFixture("cleanup", TENANT_ID);
   });
 });

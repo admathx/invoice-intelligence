@@ -87,6 +87,12 @@ export default function LoginForm({ next }: { next: string }) {
         <a href="/forgot-password" className="link">
           Forgot your password?
         </a>
+        <span aria-hidden className="mx-2 text-gray-300">
+          ·
+        </span>
+        <a href="/help" className="link">
+          Help
+        </a>
       </p>
     </AuthShell>
   );

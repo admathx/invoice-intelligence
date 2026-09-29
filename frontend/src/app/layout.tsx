@@ -9,7 +9,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Invoice Intelligence",
-  description: "Price creep, benchmarking, and negotiation sheets for restaurant invoices.",
+  description: "See what you pay for every product, catch price increases, and know what to ask your rep for.",
 };
 
 
