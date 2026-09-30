@@ -30,6 +30,8 @@ type LineItem = {
   raw_pack_size: string | null;
   // A pack a person entered for this item, not printed on the page.
   pack_size_remembered: boolean;
+  // What the invoice printed, when an entered or remembered pack replaced it.
+  printed_pack_size: string | null;
   quantity: string;
   unit_price: string;
   extended_price: string;
@@ -557,8 +559,9 @@ export default function InvoiceReview({
                               {li.raw_sku ?? "no item code"} ·{" "}
                               {li.raw_pack_size ?? "no pack size"}
                               {li.pack_size_remembered && (
-                                <span title="Entered for this item before; not printed on this invoice"> (remembered)</span>
+                                <span title="Entered for this item before; not what this invoice printed"> (remembered)</span>
                               )}
+                              {li.printed_pack_size && <> &middot; invoice says &ldquo;{li.printed_pack_size}&rdquo;</>}
                             </div>
                             {li.normalized_unit_price === null &&
                               !held &&

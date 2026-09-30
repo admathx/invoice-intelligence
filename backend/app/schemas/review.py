@@ -46,6 +46,8 @@ class ReviewActionResponse(BaseModel):
 
 
 class AcceptSuggestions(BaseModel):
+    # The cards the person was shown the button for: not ones they skipped.
+    line_ids: list[uuid.UUID] = Field(max_length=2000)
     # Never below the floor at which a suggestion is shown at all.
     min_confidence: Decimal = Field(default=Decimal("0.85"), ge=Decimal("0.60"), le=Decimal("1"))
 
@@ -67,6 +69,11 @@ class PackSizeResponse(BaseModel):
     raw_pack_size: str
     uom: str
     review_status: str
+    # The line's product after re-pricing: a card showing the old
+    # suggestion would confirm something the person never saw.
+    canonical_sku_id: uuid.UUID | None
+    canonical_sku_name: str | None
+    match_confidence: Decimal | None
     normalized_unit_price: Decimal | None
     price_known: bool
     # Remembered for the item, and filled into this many of its other lines.

@@ -27,6 +27,9 @@ class RememberedPack(Base):
     # The item: "sku:<item code>", or "desc:<description>" when there's no code.
     item_key: Mapped[str] = mapped_column(String, nullable=False)
     pack_size: Mapped[str] = mapped_column(String, nullable=False)
+    # The item's description when the pack was entered: a reused item code
+    # for another product mustn't inherit it (app/packs.py).
+    raw_description: Mapped[str | None] = mapped_column(String, nullable=True)
     set_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

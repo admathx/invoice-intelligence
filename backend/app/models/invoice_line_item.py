@@ -50,3 +50,6 @@ class InvoiceLineItem(Base, TenantScoped):
     pack_size_remembered: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # What the invoice printed, when an entered or remembered pack replaced
+    # it in raw_pack_size (an unreadable "2-5LB AVG", say).
+    printed_pack_size: Mapped[str | None] = mapped_column(String, nullable=True)

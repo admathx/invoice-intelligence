@@ -18,6 +18,8 @@ class LineItemOut(BaseModel):
     raw_pack_size: str | None
     # The pack is one a person entered for this item, not from the page.
     pack_size_remembered: bool = False
+    # What the invoice printed, when an entered or remembered pack replaced it.
+    printed_pack_size: str | None = None
     quantity: Decimal
     unit_price: Decimal
     extended_price: Decimal

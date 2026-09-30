@@ -15,7 +15,7 @@ from app.main import app
 from app.models import Invoice, InvoiceLineItem, PriceObservation, RememberedPack
 from app.models.enums import InvoiceSource, InvoiceStatus, ReviewStatus
 from app.normalize.matcher import normalize_price
-from app.packs import item_key, remember
+from app.packs import remember
 from app.workers.tasks import process_invoice
 
 from test_copies_and_documents import _pdf
@@ -103,7 +103,10 @@ def test_accepting_suggestions_takes_only_the_confident_ones(db_session, tenant,
     sure = [_line(db_session, tenant, distributor, canonical_sku, week=w, code="777", confidence="0.91") for w in range(2)]
     unsure = _line(db_session, tenant, distributor, canonical_sku, week=3, code="888", description="CHS AMER", confidence="0.70")
 
-    resp = TestClient(app).post("/review/accept-suggestions", params={"tenant_id": str(tenant.id)}, json={"min_confidence": "0.85"})
+    shown = [i["id"] for i in _queue(tenant)]
+    resp = TestClient(app).post(
+        "/review/accept-suggestions", params={"tenant_id": str(tenant.id)}, json={"line_ids": shown, "min_confidence": "0.85"}
+    )
 
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"items": 1, "lines": 2}
@@ -114,7 +117,9 @@ def test_accepting_suggestions_takes_only_the_confident_ones(db_session, tenant,
 
 
 def test_accepting_suggestions_wont_go_below_the_suggestion_floor(tenant):
-    resp = TestClient(app).post("/review/accept-suggestions", params={"tenant_id": str(tenant.id)}, json={"min_confidence": "0.3"})
+    resp = TestClient(app).post(
+        "/review/accept-suggestions", params={"tenant_id": str(tenant.id)}, json={"line_ids": [], "min_confidence": "0.3"}
+    )
     assert resp.status_code == 422
 
 
@@ -163,7 +168,8 @@ def test_later_invoices_use_the_remembered_pack(db_session, tenant, monkeypatch,
     from app.models import Distributor
 
     sysco = db_session.scalar(select(Distributor).where(Distributor.slug == "sysco"))
-    remember(db_session, tenant.id, sysco.id, item_key("4001122", None), "4/5 LB", None)
+    entered = InvoiceLineItem(raw_sku="4001122", raw_description="MOZZ SHRD WHL MLK 4/5 LB", raw_pack_size="4/5 LB")
+    remember(db_session, tenant.id, sysco.id, entered, None)
     db_session.commit()
     no_pack = FAKE_PAYLOAD.model_copy(
         update={"line_items": [FAKE_PAYLOAD.line_items[0].model_copy(update={"raw_pack_size": None}), FAKE_PAYLOAD.line_items[1]]}
@@ -188,3 +194,94 @@ def test_the_setup_checklist_counts_items_not_lines(db_session, tenant, distribu
     _line(db_session, tenant, distributor, canonical_sku, week=4, code="999", description="BUTTER SOLID")
     setup = TestClient(app).get("/setup", params={"tenant_id": str(tenant.id)}).json()
     assert setup["waiting_to_match"] == 2
+
+
+# --- Found reviewing the above ---------------------------------------------------------------
+
+
+def test_a_reused_item_code_for_another_product_is_its_own_card_and_isnt_settled(db_session, tenant, distributor, canonical_sku):
+    """A distributor reusing a retired code: the description no longer looks
+    like the item, as a remembered match would also refuse."""
+    old = _line(db_session, tenant, distributor, canonical_sku, week=1, code="4400", description="CHEESE MOZZ SHRD")
+    new = _line(db_session, tenant, distributor, canonical_sku, week=2, code="4400", description="TOMATO ROMA 25#")
+    cards = {i["id"]: i for i in _queue(tenant)}
+    assert str(old.id) in cards and str(new.id) in cards
+
+    resp = TestClient(app).post(f"/review/{new.id}/confirm", params={"tenant_id": str(tenant.id)})
+    assert resp.json()["also_settled"] == 0
+    db_session.expire_all()
+    bind_tenant(db_session, tenant.id)
+    assert db_session.get(InvoiceLineItem, old.id).review_status == ReviewStatus.pending
+
+
+def test_accept_all_leaves_skipped_cards_and_ones_still_needing_a_pack(db_session, tenant, distributor, canonical_sku):
+    skipped = _line(db_session, tenant, distributor, canonical_sku, week=1, code="S1", description="BUTTER SOLID", confidence="0.95")
+    unpriced = _line(db_session, tenant, distributor, canonical_sku, week=2, code="S2", description="SOUR CREAM", pack=None, confidence="0.95")
+    shown = _line(db_session, tenant, distributor, canonical_sku, week=3, code="S3", description="BACON SLCD", confidence="0.95")
+
+    resp = TestClient(app).post(
+        "/review/accept-suggestions",
+        params={"tenant_id": str(tenant.id)},
+        json={"line_ids": [str(unpriced.id), str(shown.id)], "min_confidence": "0.85"},
+    )
+
+    assert resp.json() == {"items": 1, "lines": 1}
+    db_session.expire_all()
+    bind_tenant(db_session, tenant.id)
+    assert db_session.get(InvoiceLineItem, skipped.id).review_status == ReviewStatus.pending
+    assert db_session.get(InvoiceLineItem, unpriced.id).review_status == ReviewStatus.pending
+
+
+def test_a_repeat_whose_pack_cant_be_priced_as_the_choice_is_left_waiting(db_session, tenant, distributor):
+    from app.models import CanonicalSku
+    from app.models.enums import BaseUom
+
+    per_gallon = CanonicalSku(name=f"First Week Oil {uuid.uuid4().hex[:8]}", category="test", base_uom=BaseUom.gal)
+    db_session.add(per_gallon)
+    db_session.commit()
+    db_session.info["_created"]["skus"].append(per_gallon.id)
+    no_pack = _line(db_session, tenant, distributor, None, week=1, pack=None, code="OIL1", description="OIL FRY")
+    jug = _line(db_session, tenant, distributor, None, week=2, pack="35 LB", code="OIL1", description="OIL FRY")
+
+    resp = TestClient(app).post(
+        f"/review/{no_pack.id}/correct", params={"tenant_id": str(tenant.id)}, json={"canonical_sku_id": str(per_gallon.id)}
+    )
+    assert resp.status_code == 200, resp.text
+    db_session.expire_all()
+    bind_tenant(db_session, tenant.id)
+    left = db_session.get(InvoiceLineItem, jug.id)
+    assert left.review_status == ReviewStatus.pending and left.canonical_sku_id is None
+
+
+def test_entering_a_pack_keeps_a_persons_correction(db_session, tenant, distributor, canonical_sku, forget_packs):
+    """A correction with no price stays waiting; entering its pack used to
+    re-match it from scratch and could replace the person's product."""
+    line = _line(db_session, tenant, distributor, canonical_sku, week=1, pack=None, code=None, description="CHS CHED BLK", confidence="1.0")
+
+    resp = TestClient(app).post(f"/review/{line.id}/pack", params={"tenant_id": str(tenant.id)}, json={"pack_size": "4/10 LB"})
+
+    body = resp.json()
+    assert body["canonical_sku_id"] == str(canonical_sku.id)
+    assert body["review_status"] == "auto" and body["price_known"] is True
+    assert body["canonical_sku_name"] == canonical_sku.name
+
+
+def test_the_printed_pack_is_kept_when_an_entered_one_replaces_it(db_session, tenant, distributor, canonical_sku, forget_packs):
+    lines = [
+        _line(db_session, tenant, distributor, canonical_sku, week=w, status=ReviewStatus.confirmed, pack="2-5LB AVG", code="BR1", description="BEEF BRSKT")
+        for w in range(2)
+    ]  # fmt: skip
+    TestClient(app).post(f"/review/{lines[0].id}/pack", params={"tenant_id": str(tenant.id)}, json={"pack_size": "1/12 LB"})
+    db_session.expire_all()
+    bind_tenant(db_session, tenant.id)
+    for li in lines:
+        stored = db_session.get(InvoiceLineItem, li.id)
+        assert (stored.raw_pack_size, stored.printed_pack_size) == ("1/12 LB", "2-5LB AVG")
+
+
+def test_a_reused_code_doesnt_inherit_a_remembered_pack():
+    from app.packs import remembered_pack_for
+
+    packs = {"sku:4400": ("4/5 LB", "CHEESE MOZZ SHRD")}
+    assert remembered_pack_for(packs, "4400", "CHEESE MOZZ SHRD WHL MLK") == "4/5 LB"
+    assert remembered_pack_for(packs, "4400", "TOMATO ROMA 25#") is None

@@ -34,9 +34,9 @@ from app.models.enums import BaseUom, ReviewStatus
 from app.models.tenant import account_key_column
 from app.normalize.matcher import _exact_match_result, apply_match, match_line_item
 from app.normalize.pack_size import PackSizeParseError, pack_for_line
-from app.packs import apply_to_item, item_key, needs_pack, remember, reprice, same_item
+from app.packs import apply_to_item, lock_invoices, needs_pack, remember, reprice, set_pack
 from app.duplicates import BEING_READ
-from app.matching_queue import waiting_to_match
+from app.matching_queue import group_repeats, is_repeat, waiting_rows, waiting_to_match
 from app.schemas.review import (
     AcceptSuggestions,
     AcceptSuggestionsResponse,
@@ -197,35 +197,45 @@ def _settle_repeats(db: Session, line: InvoiceLineItem, invoice: Invoice, tenant
     invoices, so a new location matched the same item once per invoice it
     was on: on the test set, 1,265 waiting lines for about 150 items.
 
+    Only true repeats (app/matching_queue.py is_repeat): a reused item code
+    whose description no longer looks like the item is left for its own
+    decision, as a remembered match would leave it. So is a repeat whose
+    pack can't be priced as the chosen product (the check the decided line
+    itself passed), and one whose invoice another request holds right now.
+
     Each repeat is priced from its own pack and numbers. One the app can
     price is settled like a remembered match (auto); one it can't takes the
     same status as `line`. A charge marks its repeats as charges.
     Returns (lines settled, whether any price entry was written)."""
     if invoice.distributor_id is None:
         return 0, False
-    rows = db.execute(
-        select(InvoiceLineItem, Invoice)
-        .join(Invoice, Invoice.id == InvoiceLineItem.invoice_id)
-        .join(Distributor, Distributor.id == Invoice.distributor_id)
-        .where(
-            InvoiceLineItem.tenant_id == tenant.id,
-            InvoiceLineItem.id != line.id,
-            Invoice.distributor_id == invoice.distributor_id,
-            same_item(item_key(line.raw_sku, line.raw_description)),
-            *waiting_to_match(),
-        )
-        .with_for_update(of=InvoiceLineItem)
-    ).all()
-    priced = False
-    for repeat, repeat_invoice in rows:
+    candidates = [
+        (repeat, repeat_invoice)
+        for repeat, repeat_invoice in waiting_rows(db, tenant.id)
+        if repeat.id != line.id and repeat_invoice.distributor_id == invoice.distributor_id and is_repeat(line, repeat)
+    ]
+    if not candidates:
+        return 0, False
+    locked = lock_invoices(db, [i.id for _, i in candidates if i.id != invoice.id]) | {invoice.id}
+    sku = db.get(CanonicalSku, line.canonical_sku_id) if line.canonical_sku_id is not None else None
+    settled, priced = 0, False
+    for repeat, repeat_invoice in candidates:
+        if repeat_invoice.id not in locked:
+            continue
+        db.refresh(repeat)  # as it is under the lock
+        if repeat.review_status != ReviewStatus.pending:
+            continue
         if line.review_status == ReviewStatus.not_product:
             repeat.review_status = ReviewStatus.not_product
             repeat.canonical_sku_id = repeat.match_confidence = repeat.base_uom = None
             repeat.normalized_qty_base = repeat.normalized_unit_price = None
+            settled += 1
+            continue
+        if sku is None or _units_problem(repeat, sku):
             continue
         result = _exact_match_result(
             db,
-            line.canonical_sku_id,
+            sku.id,
             "repeat",
             repeat.raw_pack_size,
             repeat.quantity,
@@ -233,15 +243,16 @@ def _settle_repeats(db: Session, line: InvoiceLineItem, invoice: Invoice, tenant
             repeat.uom,
             repeat.raw_description,
         )
-        repeat.canonical_sku_id = line.canonical_sku_id
+        repeat.canonical_sku_id = sku.id
         repeat.match_confidence = Decimal("1.0")
         repeat.normalized_qty_base = result.normalized_qty_base
         repeat.normalized_unit_price = result.normalized_unit_price
         repeat.base_uom = result.base_uom
         repeat.review_status = ReviewStatus.auto if result.normalized_unit_price is not None else line.review_status
+        settled += 1
         if repeat.review_status != ReviewStatus.pending:
             priced = _write_observation(db, repeat, repeat_invoice, tenant) or priced
-    return len(rows), priced
+    return settled, priced
 
 
 @router.get("/queue", response_model=list[ReviewQueueItem])
@@ -270,10 +281,7 @@ def get_review_queue(
     # One card per item: the same item waiting on several invoices is matched
     # once (_settle_repeats). Shown as its latest line, in order of the
     # earliest invoice it's waiting on.
-    groups: dict[tuple, list] = {}
-    for row in rows:
-        line, invoice = row[0], row[1]
-        groups.setdefault((invoice.distributor_id, item_key(line.raw_sku, line.raw_description)), []).append(row)
+    groups = group_repeats(rows, lambda row: row[0], lambda row: row[1].distributor_id)
 
     return [
         ReviewQueueItem(
@@ -293,7 +301,7 @@ def get_review_queue(
             price_known=line.normalized_unit_price is not None,
             count=len(group),
         )
-        for group in groups.values()
+        for group in groups
         for line, invoice, distributor, sku in [group[-1]]
     ]
 
@@ -333,30 +341,32 @@ _PRICED_PER = {
 _PACKED_IN = {"lb": "pounds", "oz": "ounces", "gal": "gallons", "dz": "dozens", "ea": "pieces"}
 
 
+def _units_problem(line: InvoiceLineItem, sku: CanonicalSku) -> str | None:
+    """Why this line's pack can't be priced as `sku`, or None if it can (or
+    there's no readable printed pack to judge by)."""
+    try:
+        pack = pack_for_line(line.raw_pack_size, line.uom, line.raw_description)
+    except PackSizeParseError:
+        return None
+    if pack.from_description or pack.base_units_per_pack_unit(sku.base_uom, sku.lb_per_gal) is not None:
+        return None
+    return (
+        f"{sku.name} is priced per {_PRICED_PER[sku.base_uom]}, and this item comes in "
+        f"{_PACKED_IN[pack.unit]} ({line.raw_pack_size}), so their prices can't be compared. "
+        "Choose another product, or skip it."
+    )
+
+
 def _require_comparable_units(line: InvoiceLineItem, sku: CanonicalSku) -> None:
     """A product priced per gallon can't take a pack in pounds: the price per
     gallon would be a price per pound under the wrong label, and it would sit
     in that product's history and benchmarks beside real ones. Refused with
     the reason, rather than kept with no price and sent back here every week.
     An unreadable pack isn't this check's concern; that line gets no price
-    whatever product it is, and fixing the pack on the invoice prices it."""
-    try:
-        pack = pack_for_line(line.raw_pack_size, line.uom, line.raw_description)
-    except PackSizeParseError:
-        return
-    if pack.from_description:
-        # Only a guess from the item's name: it prices the line if it fits
-        # the product, and mustn't stand in the way of the person's choice.
-        return
-    if pack.base_units_per_pack_unit(sku.base_uom, sku.lb_per_gal) is None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"{sku.name} is priced per {_PRICED_PER[sku.base_uom]}, and this item comes in "
-                f"{_PACKED_IN[pack.unit]} ({line.raw_pack_size}), so their prices can't be compared. "
-                "Choose another product, or skip it."
-            ),
-        )
+    whatever product it is, and entering its pack size prices it."""
+    problem = _units_problem(line, sku)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
 
 
 @router.post("/{line_item_id}/correct", response_model=ReviewActionResponse)
@@ -418,15 +428,26 @@ def accept_suggestions(
     db: Session = Depends(get_db_for_tenant),
     user: User = Depends(current_user),
 ) -> AcceptSuggestionsResponse:
-    """"That's right" on every waiting item whose suggestion is at least this
-    sure, and their repeats: a new location's first pass through Match items
-    in one step, leaving the doubtful ones for a person. Each is recorded as
-    that person's confirmation, as if pressed one by one."""
+    """"That's right" on the cards the person was shown (body.line_ids: not
+    ones they skipped as unsure) whose suggestion is at least this sure and
+    whose price can be worked out, and their repeats: a new location's first
+    pass through Match items in one step, leaving the doubtful ones for a
+    person. Each is recorded as that person's confirmation, as if pressed
+    one by one."""
     tenant = get_tenant_or_404(db, tenant_id)
+    shown = set(body.line_ids)
     items = lines = 0
     wrote_any = False
     for item in get_review_queue(tenant_id, None, db):
-        if item.canonical_sku_id is None or item.match_confidence is None or item.match_confidence < body.min_confidence:
+        if (
+            item.id not in shown
+            or item.canonical_sku_id is None
+            or item.match_confidence is None
+            or item.match_confidence < body.min_confidence
+            # Still needs a pack size: accepting would take it off the one
+            # page that asks for one.
+            or not item.price_known
+        ):
             continue
         try:
             line, invoice = _lock_line_for_action(db, item.id, pending=True)
@@ -494,15 +515,15 @@ def set_pack_size(
 
     had_usable_pack = not (line.pack_size_remembered or needs_pack(line.raw_pack_size, line.uom, line.raw_description))
     before = {"pack_size": line.raw_pack_size, "uom": line.uom}
-    line.raw_pack_size, line.uom, line.pack_size_remembered = pack_size, uom, False
+    set_pack(line, pack_size, remembered=False)
+    line.uom = uom
     priced = reprice(db, line, invoice, tenant)
 
     applied, remembered_it = 0, False
     distributor = db.get(Distributor, invoice.distributor_id) if invoice.distributor_id else None
     if not had_usable_pack and distributor is not None and distributor.slug != UNRECOGNIZED_SLUG:
-        key = item_key(line.raw_sku, line.raw_description)
-        remember(db, tenant.id, distributor.id, key, pack_size, user.id)
-        applied, priced_others = apply_to_item(db, tenant, distributor.id, key, pack_size, except_line_id=line.id)
+        remember(db, tenant.id, distributor.id, line, user.id)
+        applied, priced_others = apply_to_item(db, tenant, line, distributor.id)
         priced = priced or priced_others
         remembered_it = True
     audit.record(
@@ -526,11 +547,15 @@ def set_pack_size(
             upsert_creep_alerts(db, tenant.id)
         except Exception:
             db.rollback()
+    sku = db.get(CanonicalSku, line.canonical_sku_id) if line.canonical_sku_id else None
     return PackSizeResponse(
         id=line.id,
         raw_pack_size=line.raw_pack_size,
         uom=line.uom,
         review_status=line.review_status.value,
+        canonical_sku_id=line.canonical_sku_id,
+        canonical_sku_name=sku.name if sku else None,
+        match_confidence=line.match_confidence,
         normalized_unit_price=line.normalized_unit_price,
         price_known=line.normalized_unit_price is not None,
         remembered=remembered_it,

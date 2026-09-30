@@ -74,6 +74,9 @@ function ReviewQueueInner() {
   const [answered, setAnswered] = useState("");
   const [selected, setSelected] = useState(0);
   const [busy, setBusy] = useState(false);
+  // Said once an action finishes and the card has moved on (a pack that
+  // settled its item); cleared by the next action.
+  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [startedAt] = useState(() => Date.now());
   const inputRef = useRef<HTMLInputElement>(null);
@@ -162,6 +165,7 @@ function ReviewQueueInner() {
 
   /** Leave this one for later: it stays waiting, and comes back next time. */
   function skip() {
+    setNotice(null);
     setSkippedCount((c) => c + 1);
     setIndex((i) => i + 1);
   }
@@ -170,6 +174,7 @@ function ReviewQueueInner() {
     if (!current || !current.canonical_sku_id || busy) return;
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const res = await api(`/review/${current.id}/confirm?tenant_id=${locationId}`, { method: "POST" });
       if (!res.ok) {
@@ -184,15 +189,19 @@ function ReviewQueueInner() {
 
   /** "That's right" on every suggestion at least ACCEPT_ALL_AT sure, and
    *  their repeats, leaving the doubtful ones. */
-  async function acceptAll(n: number) {
+  async function acceptAll(items: QueueItem[]) {
     if (busy) return;
+    const n = items.length;
     if (!window.confirm(`Accept all ${n} suggestions we're at least ${Math.round(ACCEPT_ALL_AT * 100)}% sure of?`)) return;
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
+      // Only these: not cards skipped as unsure, nor ones still needing a
+      // pack size (accepting would take them off the page that asks).
       const res = await api(
         `/review/accept-suggestions?tenant_id=${locationId}`,
-        jsonInit("POST", { min_confidence: String(ACCEPT_ALL_AT) }),
+        jsonInit("POST", { line_ids: items.map((q) => q.id), min_confidence: String(ACCEPT_ALL_AT) }),
       );
       const data = await res.json().catch(() => null);
       if (!res.ok) {
@@ -213,6 +222,7 @@ function ReviewQueueInner() {
     if (!current || busy) return;
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const res = await api(`/review/${current.id}/not-product?tenant_id=${locationId}`, { method: "POST" });
       if (!res.ok) {
@@ -229,6 +239,7 @@ function ReviewQueueInner() {
     if (!current || busy) return;
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const res = await api(
         `/review/${current.id}/correct?tenant_id=${locationId}`,
@@ -325,7 +336,9 @@ function ReviewQueueInner() {
   const progress = queue.length ? (index / queue.length) * 100 : 0;
   const confident = queue
     .slice(index)
-    .filter((q) => q.canonical_sku_id && q.match_confidence !== null && Number(q.match_confidence) >= ACCEPT_ALL_AT);
+    .filter(
+      (q) => q.canonical_sku_id && q.price_known && q.match_confidence !== null && Number(q.match_confidence) >= ACCEPT_ALL_AT,
+    );
 
   return (
     <div className="max-w-2xl">
@@ -341,10 +354,15 @@ function ReviewQueueInner() {
           <span>
             {confident.length} suggestions are at least {Math.round(ACCEPT_ALL_AT * 100)}% sure.
           </span>
-          <button type="button" onClick={() => void acceptAll(confident.length)} disabled={busy} className="btn-secondary btn-sm">
+          <button type="button" onClick={() => void acceptAll(confident)} disabled={busy} className="btn-secondary btn-sm">
             Accept all {confident.length}
           </button>
         </div>
+      )}
+      {notice && (
+        <p role="status" className="mb-3 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-sm font-medium text-brand-900">
+          {notice}
+        </p>
       )}
       <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-gray-200" aria-hidden>
         <div className="h-full rounded-full bg-brand-400 transition-all" style={{ width: `${progress}%` }} />
@@ -383,9 +401,15 @@ function ReviewQueueInner() {
             key={current.id}
             item={current}
             locationId={locationId}
-            onSaved={(update) =>
-              setQueue((q) => q && q.map((item, i) => (i === index ? { ...item, ...update } : item)))
-            }
+            onSaved={(update, settledMessage) => {
+              if (settledMessage) {
+                // Matched with its new price: nothing left to do here.
+                advance();
+                setNotice(settledMessage);
+                return;
+              }
+              setQueue((q) => q && q.map((item, i) => (i === index ? { ...item, ...update } : item)));
+            }}
           />
         )}
 
@@ -487,7 +511,7 @@ function PackSizeForm({
 }: {
   item: QueueItem;
   locationId: string | null;
-  onSaved: (update: Partial<QueueItem>) => void;
+  onSaved: (update: Partial<QueueItem>, settledMessage?: string) => void;
 }) {
   // What the invoice said, for the note, whatever is saved over it.
   const [printed] = useState({ pack: item.raw_pack_size, uom: item.uom });
@@ -510,16 +534,27 @@ function PackSizeForm({
         return;
       }
       const others = data.applied_to ? ` and filled it in on ${data.applied_to} earlier invoice${data.applied_to === 1 ? "" : "s"}` : "";
-      setMessage(
-        data.price_known
-          ? data.remembered
-            ? `Saved. We'll use ${data.raw_pack_size} for this item from now on${others}.`
-            : "Saved."
-          : "Saved, but we still can't work out its price. Check the unit: CS if the price is for the whole case.",
-      );
-      // Not price_known: that would take this form, and its message, off the
-      // card before it's read. The card moves on when the item is matched.
-      onSaved({ raw_pack_size: data.raw_pack_size, uom: data.uom });
+      const saved = data.price_known
+        ? data.remembered
+          ? `Saved. We'll use ${data.raw_pack_size} for this item from now on${others}.`
+          : "Saved."
+        : "Saved, but we still can't work out its price. Check the unit: CS if the price is for the whole case.";
+      if (data.review_status !== "pending") {
+        // With a price, a match whose identity was certain settled itself.
+        onSaved({}, `${saved} ${item.raw_description} is now matched to ${data.canonical_sku_name}.`);
+        return;
+      }
+      setMessage(saved);
+      // The suggestion as it is now, so Enter confirms what's on screen. Not
+      // price_known: that would take this form, and its message, off the card
+      // before it's read. The card moves on when the item is matched.
+      onSaved({
+        raw_pack_size: data.raw_pack_size,
+        uom: data.uom,
+        canonical_sku_id: data.canonical_sku_id,
+        canonical_sku_name: data.canonical_sku_name,
+        match_confidence: data.match_confidence,
+      });
     } catch {
       setError("Couldn't reach the server. Nothing was saved.");
     } finally {

@@ -2587,3 +2587,29 @@ Backend 497; matching and creep gates unchanged.
   marked "remembered". A readable printed pack is never overridden.
 
 Backend 507; frontend 56; gates unchanged.
+
+### Review fixes (nine findings, all fixed)
+
+- **One definition of "the same item"** (app/matching_queue.py): same
+  distributor, same code (or description when there's none), and a
+  description that still looks like the item, as remembered matches require.
+  Used by the cards, the counts, settling repeats and pack memory. A reused
+  item code for another product is its own card, isn't settled by the old
+  product's decision, and doesn't inherit its remembered pack (packs now
+  store the description they were entered for; migration 0023).
+- **Accept all** takes only the cards shown (not ones skipped as unsure) and
+  leaves items still needing a pack size on the page that asks for one.
+- **After a pack is saved** the card shows the suggestion as it now is; if
+  the item settled itself, the card moves on and says so.
+- **Entering a pack keeps a line's product** (a person's correction with no
+  price used to be re-matched from scratch); a certain match now priced
+  settles itself.
+- **Repeats must pass the unit check** the decided line passed, or stay
+  waiting.
+- **The printed pack is kept** (`printed_pack_size`) when an entered or
+  remembered one replaces it, and shown on the invoice page.
+- **Settling repeats and filling packs lock the invoices they touch**,
+  skipping any another request holds.
+
+Replay: 774 waiting lines -> 227 cards (was 224: three reused or divergent
+codes now kept apart); 581 -> 49 unchanged. Backend 513; gates unchanged.

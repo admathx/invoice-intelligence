@@ -179,10 +179,10 @@ def process_invoice(invoice_id: str) -> None:
             unit_price = parse_amount(line.unit_price) or Decimal(0)
             extended_price = parse_amount(line.extended_price) or Decimal(0)
             uom = billing_unit(line.uom, line.raw_pack_size, quantity)
-            raw_pack_size, pack_remembered = line.raw_pack_size, False
-            remembered_pack = remembered_packs.get(packs.item_key(line.raw_sku, line.raw_description))
+            raw_pack_size, pack_remembered, printed_pack = line.raw_pack_size, False, None
+            remembered_pack = packs.remembered_pack_for(remembered_packs, line.raw_sku, line.raw_description)
             if remembered_pack and packs.needs_pack(line.raw_pack_size, uom, line.raw_description):
-                raw_pack_size, pack_remembered = remembered_pack, True
+                raw_pack_size, pack_remembered, printed_pack = remembered_pack, True, line.raw_pack_size
             line_item = InvoiceLineItem(
                 id=uuid.uuid4(),
                 tenant_id=invoice.tenant_id,
@@ -192,6 +192,7 @@ def process_invoice(invoice_id: str) -> None:
                 raw_sku=line.raw_sku,
                 raw_pack_size=raw_pack_size,
                 pack_size_remembered=pack_remembered,
+                printed_pack_size=printed_pack,
                 quantity=quantity,
                 unit_price=unit_price,
                 extended_price=extended_price,

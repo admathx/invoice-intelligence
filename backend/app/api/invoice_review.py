@@ -34,7 +34,7 @@ from app.api.deps import get_tenant_or_404
 from app.auth import current_user, get_db_for_tenant
 from app.duplicates import BEING_READ, find_original
 from app.extract.charges import is_charge
-from app.packs import apply_to_item, item_key, needs_pack, remember
+from app.packs import apply_to_item, needs_pack, remember
 from app.extract.confidence import check_arithmetic
 from app.storage import forget_original, get_storage, page_names, renders_prefix
 from app.models.distributor import UNRECOGNIZED_SLUG
@@ -298,6 +298,10 @@ def _apply_line_edit(db: Session, invoice: Invoice, line: InvoiceLineItem, edit:
     identity_changed = (line.raw_sku, line.raw_description) != before[:2]
     unit_changed = (line.raw_pack_size, line.uom) != before[2:]
     if line.raw_pack_size != before[2]:
+        # Typed over what the invoice printed: keep that, as for any pack a
+        # person enters (app/packs.py set_pack).
+        if before[2] and line.printed_pack_size is None and not line.pack_size_remembered:
+            line.printed_pack_size = before[2]
         line.pack_size_remembered = False
     filled_pack = (
         line.raw_pack_size != before[2]
@@ -432,9 +436,8 @@ def edit_invoice(
     if filled_packs and distributor is not None and distributor.slug != UNRECOGNIZED_SLUG:
         tenant = db.get(Tenant, tenant_id)
         for line in filled_packs:
-            key = item_key(line.raw_sku, line.raw_description)
-            remember(db, tenant_id, distributor.id, key, line.raw_pack_size, user.id)
-            _, priced = apply_to_item(db, tenant, distributor.id, key, line.raw_pack_size, except_line_id=line.id)
+            remember(db, tenant_id, distributor.id, line, user.id)
+            _, priced = apply_to_item(db, tenant, line, distributor.id)
             priced_elsewhere = priced_elsewhere or priced
 
     _take_under_review(invoice)
