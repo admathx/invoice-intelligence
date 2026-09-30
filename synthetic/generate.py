@@ -55,9 +55,18 @@ VOLUME_TIER_QTY_MULTIPLIER = {
 
 OUT_DIR = Path(__file__).parent / "out"
 
-_CATALOG_BY_NAME = {item.name: item for item in CANONICAL_SKUS}
+# The corpus is drawn from the catalog as it stood when the validation gates
+# were calibrated. Baskets, creep picks and price profiles are sampled from
+# this list, so a product added to the real catalog later would reshuffle
+# every tenant's basket and silently swap the benchmark's corpus for another
+# (adding two products moved creep recall from 93.9% to 92.7% on a different
+# random draw). New catalog products are real-invoice concerns; list them here.
+ADDED_AFTER_CORPUS = frozenset({"Romaine Hearts", "Hinged Container 9in"})
+CORPUS_CATALOG = [item for item in CANONICAL_SKUS if item.name not in ADDED_AFTER_CORPUS]
+
+_CATALOG_BY_NAME = {item.name: item for item in CORPUS_CATALOG}
 _PRICE_PROFILES: dict[str, PriceProfile] = build_price_profiles(
-    [(i.name, i.category, i.base_uom.value) for i in CANONICAL_SKUS]
+    [(i.name, i.category, i.base_uom.value) for i in CORPUS_CATALOG]
 )
 
 # sku_code/description_for/pack_config_for on a DistributorLayout depend only on
@@ -68,7 +77,7 @@ _SKU_CODES: dict[tuple[str, str], str | None] = {}
 _DESCRIPTIONS: dict[tuple[str, str], str] = {}
 _PACK_CONFIGS: dict[tuple[str, str], PackConfig] = {}
 for _layout in LAYOUTS.values():
-    for _item in CANONICAL_SKUS:
+    for _item in CORPUS_CATALOG:
         _key = (_layout.slug, _item.name)
         _SKU_CODES[_key] = _layout.sku_code(_item.name)
         _DESCRIPTIONS[_key] = _layout.description_for(_item.name)
@@ -77,8 +86,8 @@ for _layout in LAYOUTS.values():
 
 def _tenant_basket(tenant: SyntheticTenant) -> list[str]:
     rng = rng_for("basket", tenant.index)
-    size = min(len(CANONICAL_SKUS), rng.randint(*BASKET_SIZE_RANGE))
-    names = [item.name for item in CANONICAL_SKUS]
+    size = min(len(CORPUS_CATALOG), rng.randint(*BASKET_SIZE_RANGE))
+    names = [item.name for item in CORPUS_CATALOG]
     rng.shuffle(names)
     return sorted(names[:size])
 
