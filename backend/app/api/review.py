@@ -34,8 +34,18 @@ from app.models.enums import BaseUom, ReviewStatus
 from app.models.tenant import account_key_column
 from app.normalize.matcher import _exact_match_result, apply_match, match_line_item
 from app.normalize.pack_size import PackSizeParseError, pack_for_line
+from app.packs import apply_to_item, item_key, needs_pack, remember, reprice, same_item
+from app.duplicates import BEING_READ
 from app.matching_queue import waiting_to_match
-from app.schemas.review import CorrectRequest, ReviewActionResponse, ReviewQueueItem
+from app.schemas.review import (
+    AcceptSuggestions,
+    AcceptSuggestionsResponse,
+    CorrectRequest,
+    PackSizeRequest,
+    PackSizeResponse,
+    ReviewActionResponse,
+    ReviewQueueItem,
+)
 
 router = APIRouter(prefix="/review", tags=["review"])
 
@@ -126,14 +136,17 @@ def _finalize(
     action: str,
     previous_sku_id: uuid.UUID | None,
     suggested_confidence: Decimal | None,
+    refresh_alerts: bool = True,
 ) -> ReviewActionResponse:
     """Shared by confirm and correct: both write an alias and (when
-    resolvable) an observation, commit, and refresh the same response shape
-    — the only thing that differs between the two endpoints is how `line`
-    got mutated before this runs.
+    resolvable) an observation, settle the item's other waiting lines, commit,
+    and refresh the same response shape — the only thing that differs between
+    the two endpoints is how `line` got mutated before this runs.
     """
     wrote_alias = _write_alias(db, line, invoice, line.canonical_sku_id, user)
     wrote_observation = _write_observation(db, line, invoice, tenant)
+    also_settled, settled_priced = _settle_repeats(db, line, invoice, tenant)
+    wrote_observation = wrote_observation or settled_priced
     audit.record(
         db,
         user,
@@ -154,11 +167,12 @@ def _finalize(
         # the calibration report has to leave out rather than guess at.
         suggested_confidence=suggested_confidence if suggested_confidence is not None else "none",
         review_status=line.review_status,
+        also_settled=also_settled or None,
     )
     db.commit()
     db.refresh(line)
 
-    if wrote_observation:
+    if wrote_observation and refresh_alerts:
         # Refresh this tenant's creep alerts right after new price data
         # actually lands, not on every GET /insights — the previous design
         # made a nominally-safe read into a required write on every page
@@ -173,7 +187,61 @@ def _finalize(
         normalized_unit_price=line.normalized_unit_price,
         wrote_alias=wrote_alias,
         wrote_price_observation=wrote_observation,
+        also_settled=also_settled,
     )
+
+
+def _settle_repeats(db: Session, line: InvoiceLineItem, invoice: Invoice, tenant: Tenant) -> tuple[int, bool]:
+    """The same item waiting on this location's other invoices, settled by
+    the decision just made on `line`. A match used to help only later
+    invoices, so a new location matched the same item once per invoice it
+    was on: on the test set, 1,265 waiting lines for about 150 items.
+
+    Each repeat is priced from its own pack and numbers. One the app can
+    price is settled like a remembered match (auto); one it can't takes the
+    same status as `line`. A charge marks its repeats as charges.
+    Returns (lines settled, whether any price entry was written)."""
+    if invoice.distributor_id is None:
+        return 0, False
+    rows = db.execute(
+        select(InvoiceLineItem, Invoice)
+        .join(Invoice, Invoice.id == InvoiceLineItem.invoice_id)
+        .join(Distributor, Distributor.id == Invoice.distributor_id)
+        .where(
+            InvoiceLineItem.tenant_id == tenant.id,
+            InvoiceLineItem.id != line.id,
+            Invoice.distributor_id == invoice.distributor_id,
+            same_item(item_key(line.raw_sku, line.raw_description)),
+            *waiting_to_match(),
+        )
+        .with_for_update(of=InvoiceLineItem)
+    ).all()
+    priced = False
+    for repeat, repeat_invoice in rows:
+        if line.review_status == ReviewStatus.not_product:
+            repeat.review_status = ReviewStatus.not_product
+            repeat.canonical_sku_id = repeat.match_confidence = repeat.base_uom = None
+            repeat.normalized_qty_base = repeat.normalized_unit_price = None
+            continue
+        result = _exact_match_result(
+            db,
+            line.canonical_sku_id,
+            "repeat",
+            repeat.raw_pack_size,
+            repeat.quantity,
+            repeat.unit_price,
+            repeat.uom,
+            repeat.raw_description,
+        )
+        repeat.canonical_sku_id = line.canonical_sku_id
+        repeat.match_confidence = Decimal("1.0")
+        repeat.normalized_qty_base = result.normalized_qty_base
+        repeat.normalized_unit_price = result.normalized_unit_price
+        repeat.base_uom = result.base_uom
+        repeat.review_status = ReviewStatus.auto if result.normalized_unit_price is not None else line.review_status
+        if repeat.review_status != ReviewStatus.pending:
+            priced = _write_observation(db, repeat, repeat_invoice, tenant) or priced
+    return len(rows), priced
 
 
 @router.get("/queue", response_model=list[ReviewQueueItem])
@@ -199,6 +267,14 @@ def get_review_queue(
         .order_by(Invoice.invoice_date, InvoiceLineItem.line_number)
     ).all()
 
+    # One card per item: the same item waiting on several invoices is matched
+    # once (_settle_repeats). Shown as its latest line, in order of the
+    # earliest invoice it's waiting on.
+    groups: dict[tuple, list] = {}
+    for row in rows:
+        line, invoice = row[0], row[1]
+        groups.setdefault((invoice.distributor_id, item_key(line.raw_sku, line.raw_description)), []).append(row)
+
     return [
         ReviewQueueItem(
             id=line.id,
@@ -215,8 +291,10 @@ def get_review_queue(
             canonical_sku_name=sku.name if sku else None,
             match_confidence=line.match_confidence,
             price_known=line.normalized_unit_price is not None,
+            count=len(group),
         )
-        for line, invoice, distributor, sku in rows
+        for group in groups.values()
+        for line, invoice, distributor, sku in [group[-1]]
     ]
 
 
@@ -333,6 +411,133 @@ def correct_line_item(
     )
 
 
+@router.post("/accept-suggestions", response_model=AcceptSuggestionsResponse)
+def accept_suggestions(
+    tenant_id: uuid.UUID,
+    body: AcceptSuggestions,
+    db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
+) -> AcceptSuggestionsResponse:
+    """"That's right" on every waiting item whose suggestion is at least this
+    sure, and their repeats: a new location's first pass through Match items
+    in one step, leaving the doubtful ones for a person. Each is recorded as
+    that person's confirmation, as if pressed one by one."""
+    tenant = get_tenant_or_404(db, tenant_id)
+    items = lines = 0
+    wrote_any = False
+    for item in get_review_queue(tenant_id, None, db):
+        if item.canonical_sku_id is None or item.match_confidence is None or item.match_confidence < body.min_confidence:
+            continue
+        try:
+            line, invoice = _lock_line_for_action(db, item.id, pending=True)
+        except HTTPException:
+            db.rollback()  # settled meanwhile (a repeat of one just accepted, or another person)
+            continue
+        line.review_status = ReviewStatus.confirmed
+        result = _finalize(
+            db,
+            line,
+            invoice,
+            tenant,
+            user,
+            "invoice_line.match_confirmed",
+            line.canonical_sku_id,
+            line.match_confidence,
+            refresh_alerts=False,
+        )
+        items += 1
+        lines += 1 + result.also_settled
+        wrote_any = wrote_any or result.wrote_price_observation
+    if wrote_any:
+        upsert_creep_alerts(db, tenant.id)
+    return AcceptSuggestionsResponse(items=items, lines=lines)
+
+
+@router.post("/{line_item_id}/pack", response_model=PackSizeResponse)
+def set_pack_size(
+    line_item_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    body: PackSizeRequest,
+    db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
+) -> PackSizeResponse:
+    """Enter the pack size for an item whose invoice prints none (or one that
+    can't be read), from Match items or the invoice page, on any invoice that
+    isn't held: it only changes the price per unit, never the invoice's own
+    numbers. It prices this line, is remembered for the item, and fills in
+    the item's other lines here that have none (app/packs.py). Correcting a
+    readable printed pack fixes this line only."""
+    tenant = get_tenant_or_404(db, tenant_id)
+    line = db.get(InvoiceLineItem, line_item_id)
+    if line is None:
+        raise HTTPException(status_code=404, detail="We couldn't find that item.")
+    invoice = db.get(Invoice, line.invoice_id, with_for_update=True, populate_existing=True)
+    db.refresh(line)
+    if invoice.status in BEING_READ:
+        raise HTTPException(status_code=409, detail="It's still being read. Try again in a minute.")
+    if invoice.duplicate_of_id is not None or invoice.document_type is not None:
+        raise HTTPException(status_code=409, detail="This invoice is on hold. Deal with that on the invoice first.")
+    if line.review_status == ReviewStatus.not_product:
+        raise HTTPException(status_code=409, detail="That's marked as a fee or charge, which has no pack size.")
+
+    pack_size = " ".join(body.pack_size.split()).upper()
+    uom = (body.uom or line.uom).strip().upper()
+    try:
+        parsed = pack_for_line(pack_size, uom)
+    except PackSizeParseError:
+        parsed = None
+    if parsed is None or parsed.from_description:
+        raise HTTPException(
+            status_code=422,
+            detail="We can't read that pack size. Write it the way invoices do, like 4/5 LB, 6/1 GAL, 50 LB or 1000 CT.",
+        )
+
+    had_usable_pack = not (line.pack_size_remembered or needs_pack(line.raw_pack_size, line.uom, line.raw_description))
+    before = {"pack_size": line.raw_pack_size, "uom": line.uom}
+    line.raw_pack_size, line.uom, line.pack_size_remembered = pack_size, uom, False
+    priced = reprice(db, line, invoice, tenant)
+
+    applied, remembered_it = 0, False
+    distributor = db.get(Distributor, invoice.distributor_id) if invoice.distributor_id else None
+    if not had_usable_pack and distributor is not None and distributor.slug != UNRECOGNIZED_SLUG:
+        key = item_key(line.raw_sku, line.raw_description)
+        remember(db, tenant.id, distributor.id, key, pack_size, user.id)
+        applied, priced_others = apply_to_item(db, tenant, distributor.id, key, pack_size, except_line_id=line.id)
+        priced = priced or priced_others
+        remembered_it = True
+    audit.record(
+        db,
+        user,
+        "invoice_line.pack_set",
+        "invoice_line_item",
+        line.id,
+        tenant.id,
+        invoice_id=invoice.id,
+        line_number=line.line_number,
+        raw_description=line.raw_description,
+        changes=audit.changes(before, {"pack_size": line.raw_pack_size, "uom": line.uom}),
+        remembered=remembered_it or None,
+        applied_to=applied or None,
+    )
+    db.commit()
+    db.refresh(line)
+    if priced:
+        try:
+            upsert_creep_alerts(db, tenant.id)
+        except Exception:
+            db.rollback()
+    return PackSizeResponse(
+        id=line.id,
+        raw_pack_size=line.raw_pack_size,
+        uom=line.uom,
+        review_status=line.review_status.value,
+        normalized_unit_price=line.normalized_unit_price,
+        price_known=line.normalized_unit_price is not None,
+        remembered=remembered_it,
+        applied_to=applied,
+    )
+
+
 @router.post("/{line_item_id}/not-product", response_model=ReviewActionResponse)
 def mark_not_a_product(
     line_item_id: uuid.UUID,
@@ -349,6 +554,7 @@ def mark_not_a_product(
     line.review_status = ReviewStatus.not_product
     line.canonical_sku_id = line.match_confidence = line.base_uom = None
     line.normalized_qty_base = line.normalized_unit_price = None
+    also_settled, _ = _settle_repeats(db, line, invoice, tenant)
     audit.record(
         db,
         user,
@@ -360,6 +566,7 @@ def mark_not_a_product(
         line_number=line.line_number,
         raw_description=line.raw_description,
         suggested=previous_sku_id,
+        also_settled=also_settled or None,
     )
     db.commit()
     return ReviewActionResponse(
@@ -369,6 +576,7 @@ def mark_not_a_product(
         normalized_unit_price=None,
         wrote_alias=False,
         wrote_price_observation=False,
+        also_settled=also_settled,
     )
 
 

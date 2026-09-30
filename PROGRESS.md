@@ -2562,3 +2562,28 @@ did (matching 98.8% / 0 false, creep 93.9% / 0 false).
   and "&" read the same.
 
 Backend 497; matching and creep gates unchanged.
+
+## A new location's first week: repeats, accept all, pack sizes
+
+- **One card per item on Match items.** The same item waiting on several
+  invoices (by distributor and item code, or description when there's no
+  code) is one card, "On 6 invoices", and one decision (confirm, correct,
+  not a product) settles every waiting line of it. A match used to help
+  only later invoices. On the test set with nobody matching as invoices
+  arrived: 581 waiting lines became 49 cards (the weekly series), 774
+  became 224 (the general location). The setup checklist and weekly email
+  count items, not lines.
+- **Accept all.** "Accept all N" takes every suggestion at least 85% sure
+  (never below the 0.60 floor), recorded as the person's confirmations, and
+  leaves the doubtful ones: 12 of 49 cards (133 lines) and 49 of 224.
+- **Pack sizes remembered.** Where a price per unit can't be worked out
+  (no pack printed, or one that can't be read), a person enters it once, on
+  Match items or the invoice page ("Add pack size to track its price"),
+  including on "Ready" invoices, which can't otherwise be edited (the old
+  note sent people there to do what the page didn't allow). It prices the
+  line, is remembered per business, distributor and item (migration 0022),
+  fills in the item's other lines at the location (priced, and their price
+  history written), and is used by the worker on every later invoice,
+  marked "remembered". A readable printed pack is never overridden.
+
+Backend 507; frontend 56; gates unchanged.

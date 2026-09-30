@@ -1,7 +1,7 @@
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import Enum, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Boolean, Enum, ForeignKey, Integer, Numeric, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,4 +44,9 @@ class InvoiceLineItem(Base, TenantScoped):
     match_confidence: Mapped[Decimal | None] = mapped_column(Numeric(4, 3), nullable=True)
     review_status: Mapped[ReviewStatus] = mapped_column(
         Enum(ReviewStatus, name="review_status"), nullable=False, default=ReviewStatus.pending
+    )
+    # raw_pack_size came from a pack a person entered for this item
+    # (app/packs.py), not from the page.
+    pack_size_remembered: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
     )

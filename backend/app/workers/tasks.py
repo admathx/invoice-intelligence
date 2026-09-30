@@ -8,7 +8,7 @@ from pathlib import Path
 
 from sqlalchemy import delete, select
 
-from app import audit, business_distributors, ops
+from app import audit, business_distributors, ops, packs
 from app.analytics.price_creep import upsert_creep_alerts
 from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS, SessionLocal, bind_tenant
@@ -166,6 +166,9 @@ def process_invoice(invoice_id: str) -> None:
         # observation this invoice produces (see below).
         tenant = db.get(Tenant, invoice.tenant_id)
         wrote_any_observation = False
+        # Packs a person entered for this distributor's items that print none
+        # (app/packs.py), filled in below.
+        remembered_packs = packs.remembered(db, invoice.tenant_id, distributor.id) if distributor_known else {}
 
         for line in extracted.line_items:
             # A line's numbers can't be stored empty; an unreadable one is
@@ -176,6 +179,10 @@ def process_invoice(invoice_id: str) -> None:
             unit_price = parse_amount(line.unit_price) or Decimal(0)
             extended_price = parse_amount(line.extended_price) or Decimal(0)
             uom = billing_unit(line.uom, line.raw_pack_size, quantity)
+            raw_pack_size, pack_remembered = line.raw_pack_size, False
+            remembered_pack = remembered_packs.get(packs.item_key(line.raw_sku, line.raw_description))
+            if remembered_pack and packs.needs_pack(line.raw_pack_size, uom, line.raw_description):
+                raw_pack_size, pack_remembered = remembered_pack, True
             line_item = InvoiceLineItem(
                 id=uuid.uuid4(),
                 tenant_id=invoice.tenant_id,
@@ -183,7 +190,8 @@ def process_invoice(invoice_id: str) -> None:
                 line_number=line.line_number,
                 raw_description=line.raw_description,
                 raw_sku=line.raw_sku,
-                raw_pack_size=line.raw_pack_size,
+                raw_pack_size=raw_pack_size,
+                pack_size_remembered=pack_remembered,
                 quantity=quantity,
                 unit_price=unit_price,
                 extended_price=extended_price,
@@ -209,7 +217,7 @@ def process_invoice(invoice_id: str) -> None:
                     distributor_id=invoice.distributor_id,
                     raw_sku=line.raw_sku,
                     raw_description=line.raw_description,
-                    raw_pack_size=line.raw_pack_size,
+                    raw_pack_size=raw_pack_size,
                     quantity=quantity,
                     unit_price=unit_price,
                     uom=uom,

@@ -32,13 +32,12 @@ from app import mail
 from app.analytics.negotiation import NegotiationBasis, build_negotiation_sheet
 from app.config import settings
 from app.db import bind_tenant
-from app.matching_queue import waiting_to_match
+from app.matching_queue import waiting_item_count
 from app.models import (
     CanonicalSku,
     DigestSend,
     Distributor,
     Invoice,
-    InvoiceLineItem,
     PriceAlert,
     Tenant,
     TenantMembership,
@@ -151,12 +150,7 @@ def location_week(db: Session, tenant: Tenant, now: datetime) -> LocationWeek:
 
     # Counted exactly as the review queue lists them (app/api/review.py):
     # lines on invoices with no recognized distributor aren't in it yet.
-    week.pending_lines = db.scalar(
-        select(func.count(InvoiceLineItem.id))
-        .join(Invoice, Invoice.id == InvoiceLineItem.invoice_id)
-        .join(Distributor, Distributor.id == Invoice.distributor_id)
-        .where(InvoiceLineItem.tenant_id == tenant.id, *waiting_to_match())
-    )
+    week.pending_lines = waiting_item_count(db, tenant.id)
 
     week.received_count, total = db.execute(
         select(func.count(Invoice.id), func.coalesce(func.sum(Invoice.total), 0)).where(

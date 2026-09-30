@@ -85,6 +85,10 @@ export function describeEvent(event: AuditEvent): string {
       return `skipped ${show(d.filename)} from an email: that file was already added`;
     case "distributor.added":
       return `added the distributor ${show(d.name)}`;
+    case "invoice_line.pack_set":
+      return `set the pack size of ${show(d.raw_description)}${
+        d.applied_to ? `, filled in on ${show(d.applied_to)} other invoice${d.applied_to === 1 ? "" : "s"}` : ""
+      }${d.remembered ? " (remembered for this item)" : ""}`;
     case "invoice_line.not_a_product":
       return `marked ${show(d.raw_description)} as a fee or charge, not a product`;
     case "email.rejected":

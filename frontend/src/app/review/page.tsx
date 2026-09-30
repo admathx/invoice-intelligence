@@ -31,7 +31,13 @@ type QueueItem = {
   canonical_sku_name: string | null;
   match_confidence: string | null;
   price_known: boolean;
+  // The same item waiting on this many invoices; matching it here matches
+  // them all.
+  count: number;
 };
+
+/** Suggestions at least this sure can be accepted together. */
+const ACCEPT_ALL_AT = 0.85;
 
 type SearchResult = {
   id: string;
@@ -176,6 +182,32 @@ function ReviewQueueInner() {
     }
   }
 
+  /** "That's right" on every suggestion at least ACCEPT_ALL_AT sure, and
+   *  their repeats, leaving the doubtful ones. */
+  async function acceptAll(n: number) {
+    if (busy) return;
+    if (!window.confirm(`Accept all ${n} suggestions we're at least ${Math.round(ACCEPT_ALL_AT * 100)}% sure of?`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api(
+        `/review/accept-suggestions?tenant_id=${locationId}`,
+        jsonInit("POST", { min_confidence: String(ACCEPT_ALL_AT) }),
+      );
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setError(formatApiError(data?.detail, "Couldn't accept them. Try again."));
+        return;
+      }
+      setClearedCount((c) => c + data.items);
+      setAttempt((a) => a + 1); // reload what's left
+    } catch {
+      setError("Couldn't reach the server. Nothing was changed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   /** A fee, deposit or discount: nothing to match, so it leaves the list. */
   async function notAProduct() {
     if (!current || busy) return;
@@ -291,6 +323,9 @@ function ReviewQueueInner() {
 
   const confidence = current.match_confidence === null ? null : Number(current.match_confidence);
   const progress = queue.length ? (index / queue.length) * 100 : 0;
+  const confident = queue
+    .slice(index)
+    .filter((q) => q.canonical_sku_id && q.match_confidence !== null && Number(q.match_confidence) >= ACCEPT_ALL_AT);
 
   return (
     <div className="max-w-2xl">
@@ -301,6 +336,16 @@ function ReviewQueueInner() {
           <span className="font-semibold text-brand-700">{clearedCount} done</span>
         </span>
       </div>
+      {confident.length >= 2 && (
+        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-950">
+          <span>
+            {confident.length} suggestions are at least {Math.round(ACCEPT_ALL_AT * 100)}% sure.
+          </span>
+          <button type="button" onClick={() => void acceptAll(confident.length)} disabled={busy} className="btn-secondary btn-sm">
+            Accept all {confident.length}
+          </button>
+        </div>
+      )}
       <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-gray-200" aria-hidden>
         <div className="h-full rounded-full bg-brand-400 transition-all" style={{ width: `${progress}%` }} />
       </div>
@@ -314,8 +359,15 @@ function ReviewQueueInner() {
             See the invoice
           </a>
         </div>
-        <div className="mb-2 text-lg font-semibold" data-testid="review-description">
-          {current.raw_description}
+        <div className="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <span className="text-lg font-semibold" data-testid="review-description">
+            {current.raw_description}
+          </span>
+          {current.count > 1 && (
+            <span className="badge bg-sky-100 text-sky-800" title="Matching it here matches it on all of them">
+              On {current.count} invoices
+            </span>
+          )}
         </div>
         <div className="num mb-4 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
           <span>Item code {current.raw_sku ?? "—"}</span>
@@ -327,28 +379,14 @@ function ReviewQueueInner() {
         </div>
 
         {!current.price_known && (
-          <p className="mb-3 text-sm text-gray-600" data-testid="price-unknown">
-            Its price can&rsquo;t be tracked yet:{" "}
-            {current.uom === "CS" ? (
-              <>
-                we can&rsquo;t work out a price per unit from its pack size (
-                {current.raw_pack_size ?? "none printed"}). If that was misread, correct it on{" "}
-                <a href={`/invoices/${current.invoice_id}`} className="link">
-                  the invoice
-                </a>
-                .
-              </>
-            ) : (
-              <>
-                a pack of {current.raw_pack_size ?? "unknown size"} billed per {current.uom} doesn&rsquo;t say what the
-                price covers. If it&rsquo;s for the whole case, set the unit to CS on{" "}
-                <a href={`/invoices/${current.invoice_id}`} className="link">
-                  the invoice
-                </a>
-                .
-              </>
-            )}
-          </p>
+          <PackSizeForm
+            key={current.id}
+            item={current}
+            locationId={locationId}
+            onSaved={(update) =>
+              setQueue((q) => q && q.map((item, i) => (i === index ? { ...item, ...update } : item)))
+            }
+          />
         )}
 
         {current.canonical_sku_id ? (
@@ -436,5 +474,88 @@ function PageHeading() {
         Say which product each invoice item is, so its price can be tracked.
       </p>
     </div>
+  );
+}
+
+/** Where a price per unit can't be worked out: enter the pack size (or the
+ *  unit, when "EA" is really the case) once, and it's remembered for the item
+ *  and filled into its other invoices. */
+function PackSizeForm({
+  item,
+  locationId,
+  onSaved,
+}: {
+  item: QueueItem;
+  locationId: string | null;
+  onSaved: (update: Partial<QueueItem>) => void;
+}) {
+  // What the invoice said, for the note, whatever is saved over it.
+  const [printed] = useState({ pack: item.raw_pack_size, uom: item.uom });
+  const [pack, setPack] = useState(item.raw_pack_size ?? "");
+  const [uom, setUom] = useState(item.uom);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pack.trim() || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await api(`/review/${item.id}/pack?tenant_id=${locationId}`, jsonInit("POST", { pack_size: pack, uom }));
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setError(formatApiError(data?.detail, "Couldn't save that. Try again."));
+        return;
+      }
+      const others = data.applied_to ? ` and filled it in on ${data.applied_to} earlier invoice${data.applied_to === 1 ? "" : "s"}` : "";
+      setMessage(
+        data.price_known
+          ? data.remembered
+            ? `Saved. We'll use ${data.raw_pack_size} for this item from now on${others}.`
+            : "Saved."
+          : "Saved, but we still can't work out its price. Check the unit: CS if the price is for the whole case.",
+      );
+      // Not price_known: that would take this form, and its message, off the
+      // card before it's read. The card moves on when the item is matched.
+      onSaved({ raw_pack_size: data.raw_pack_size, uom: data.uom });
+    } catch {
+      setError("Couldn't reach the server. Nothing was saved.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="mb-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-700" data-testid="price-unknown">
+      <p>
+        Its price can&rsquo;t be tracked yet:{" "}
+        {printed.uom === "CS"
+          ? `the invoice ${printed.pack ? `says “${printed.pack}”, which we can't read` : "doesn't say the pack size"}. Enter it, and we'll remember it for this item.`
+          : `a pack of ${printed.pack ?? "unknown size"} billed per ${printed.uom} doesn't say what the price covers. If it's for the whole case, change the unit to CS.`}
+      </p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1.5">
+          Pack
+          <input
+            value={pack}
+            onChange={(e) => setPack(e.target.value)}
+            placeholder="4/5 LB"
+            aria-label="Pack size"
+            className="input w-28 py-1"
+          />
+        </label>
+        <label className="flex items-center gap-1.5">
+          Unit
+          <input value={uom} onChange={(e) => setUom(e.target.value.toUpperCase())} aria-label="Unit" className="input w-16 py-1" />
+        </label>
+        <button type="submit" disabled={saving || !pack.trim()} className="btn-secondary btn-sm">
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+      {message && <p className="mt-2 font-medium text-brand-800">{message}</p>}
+      {error && <p className="mt-2 text-red-700">{error}</p>}
+    </form>
   );
 }

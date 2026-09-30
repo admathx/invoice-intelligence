@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_tenant_or_404
 from app.auth import get_db_for_tenant
-from app.matching_queue import waiting_to_match
-from app.models import Distributor, Invoice, InvoiceLineItem, TenantMembership
+from app.matching_queue import waiting_item_count
+from app.models import Invoice, TenantMembership
 from app.models.enums import InvoiceSource
 
 router = APIRouter(prefix="/setup", tags=["setup"])
@@ -38,12 +38,7 @@ def setup_steps(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)) 
         select(exists().where(Invoice.tenant_id == tenant_id, Invoice.source == InvoiceSource.email))
     )
     # Counted as the Match items page lists them (app/api/review.py).
-    waiting = db.scalar(
-        select(func.count(InvoiceLineItem.id))
-        .join(Invoice, Invoice.id == InvoiceLineItem.invoice_id)
-        .join(Distributor, Distributor.id == Invoice.distributor_id)
-        .where(InvoiceLineItem.tenant_id == tenant_id, *waiting_to_match())
-    )
+    waiting = waiting_item_count(db, tenant_id)
     members = db.scalar(select(func.count(TenantMembership.id)).where(TenantMembership.tenant_id == tenant_id))
     return SetupOut(
         first_invoice=first_invoice,

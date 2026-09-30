@@ -34,6 +34,7 @@ from app.api.deps import get_tenant_or_404
 from app.auth import current_user, get_db_for_tenant
 from app.duplicates import BEING_READ, find_original
 from app.extract.charges import is_charge
+from app.packs import apply_to_item, item_key, needs_pack, remember
 from app.extract.confidence import check_arithmetic
 from app.storage import forget_original, get_storage, page_names, renders_prefix
 from app.models.distributor import UNRECOGNIZED_SLUG
@@ -265,7 +266,7 @@ def _match(db: Session, invoice: Invoice, line: InvoiceLineItem) -> None:
     apply_match(line, match)
 
 
-def _apply_line_edit(db: Session, invoice: Invoice, line: InvoiceLineItem, edit: LineItemEdit) -> None:
+def _apply_line_edit(db: Session, invoice: Invoice, line: InvoiceLineItem, edit: LineItemEdit) -> bool:
     """Apply one line's corrections, then redo only what they invalidate.
 
     - Item code or description changed: the line may be a different product.
@@ -276,9 +277,13 @@ def _apply_line_edit(db: Session, invoice: Invoice, line: InvoiceLineItem, edit:
       Keep the match (including one a person confirmed) and re-derive the
       price; if it can no longer be derived, send the line back to review.
     - Only numbers changed: re-derive the price from the corrected ones.
+
+    Returns whether this filled in a pack the line had none of (none
+    printed, or unreadable): that is remembered for the item (edit_invoice).
     """
     sent = edit.model_fields_set
     before = (line.raw_sku, line.raw_description, line.raw_pack_size, line.uom)
+    lacked_pack = line.pack_size_remembered or needs_pack(line.raw_pack_size, line.uom, line.raw_description)
 
     for name in ("quantity", "unit_price", "extended_price", "raw_description"):
         value = getattr(edit, name)
@@ -292,6 +297,13 @@ def _apply_line_edit(db: Session, invoice: Invoice, line: InvoiceLineItem, edit:
 
     identity_changed = (line.raw_sku, line.raw_description) != before[:2]
     unit_changed = (line.raw_pack_size, line.uom) != before[2:]
+    if line.raw_pack_size != before[2]:
+        line.pack_size_remembered = False
+    filled_pack = (
+        line.raw_pack_size != before[2]
+        and lacked_pack
+        and not needs_pack(line.raw_pack_size, line.uom, None)
+    )
 
     if identity_changed:
         db.execute(delete(SkuAlias).where(SkuAlias.source_invoice_line_item_id == line.id))
@@ -322,6 +334,7 @@ def _apply_line_edit(db: Session, invoice: Invoice, line: InvoiceLineItem, edit:
         line.normalized_qty_base, line.normalized_unit_price = normalize_price(
             line.raw_pack_size, line.quantity, line.unit_price, line.uom, product, line.raw_description
         )
+    return filled_pack
 
 
 def _get_reviewable_invoice(db: Session, invoice_id: uuid.UUID, *, editing: bool) -> Invoice:
@@ -391,8 +404,7 @@ def edit_invoice(
         if name in sent and getattr(body, name) is not None:
             setattr(invoice, name, getattr(body, name))
 
-    for edit in body.line_items:
-        _apply_line_edit(db, invoice, lines[edit.id], edit)
+    filled_packs = [lines[edit.id] for edit in body.line_items if _apply_line_edit(db, invoice, lines[edit.id], edit)]
 
     if distributor_changed:
         # Corrections reviewers made on this invoice's lines were recorded as
@@ -412,6 +424,18 @@ def edit_invoice(
         # read against the wrong catalog.
         for line in lines.values():
             _match(db, invoice, line)
+
+    # A pack filled in for an item that has none printed is remembered, and
+    # fills in the item's other lines here (app/packs.py), as from Match items.
+    priced_elsewhere = False
+    distributor = _distributor(db, invoice)
+    if filled_packs and distributor is not None and distributor.slug != UNRECOGNIZED_SLUG:
+        tenant = db.get(Tenant, tenant_id)
+        for line in filled_packs:
+            key = item_key(line.raw_sku, line.raw_description)
+            remember(db, tenant_id, distributor.id, key, line.raw_pack_size, user.id)
+            _, priced = apply_to_item(db, tenant, distributor.id, key, line.raw_pack_size, except_line_id=line.id)
+            priced_elsewhere = priced_elsewhere or priced
 
     _take_under_review(invoice)
     line_changes = {
@@ -433,6 +457,12 @@ def edit_invoice(
             status={"from": status_before, "to": invoice.status} if invoice.status != status_before else None,
         )
     db.commit()
+    if priced_elsewhere:
+        try:
+            upsert_creep_alerts(db, tenant_id)
+        except Exception:
+            db.rollback()
+            logger.exception("creep alert refresh failed after editing invoice %s", invoice_id)
     return build_invoice_detail(db, invoice)
 
 

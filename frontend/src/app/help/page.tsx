@@ -178,7 +178,17 @@ export default async function HelpPage() {
               <Go href="/spending">Spending</Go>.)
             </li>
           </ul>
-          <p className="mt-2">Once you&rsquo;ve matched an item, the same item on later invoices is matched for you.</p>
+          <p className="mt-2">
+            Each item appears once, however many invoices it&rsquo;s on (&ldquo;On 7 invoices&rdquo;): matching it
+            matches it on all of them, and on later invoices too. When lots of our guesses are very likely right,{" "}
+            <em>Accept all</em> takes them in one go and leaves the doubtful ones for you.
+          </p>
+          <p className="mt-2">
+            Some invoices don&rsquo;t print a pack size, so we can&rsquo;t work out a price per pound or gallon. Where
+            that happens, type the pack size in (like 4/5 LB) and press <em>Save</em>. We remember it for that item,
+            fill it in on its earlier invoices, and use it on every new one. You can also add it from the invoice
+            page (<em>Add pack size to track its price</em>).
+          </p>
           <p className="mt-2">
             Spot an item matched to the wrong product (on an invoice, or in a product&rsquo;s history)? Press{" "}
             <em>Wrong product?</em> next to it and it goes back to <Go href="/review">Match items</Go>.

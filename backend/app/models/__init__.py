@@ -5,6 +5,7 @@ from app.models.invoice import Invoice
 from app.models.invoice_line_item import InvoiceLineItem
 from app.models.price_alert import PriceAlert
 from app.models.price_observation import PriceObservation, build_price_observation
+from app.models.remembered_pack import RememberedPack
 from app.models.sku_alias import SkuAlias
 from app.models.tenant import Tenant
 from app.models.user import (
@@ -26,6 +27,7 @@ __all__ = [
     "PriceAlert",
     "PriceObservation",
     "build_price_observation",
+    "RememberedPack",
     "SkuAlias",
     "Tenant",
     "User",

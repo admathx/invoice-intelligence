@@ -16,6 +16,8 @@ class LineItemOut(BaseModel):
     raw_description: str
     raw_sku: str | None
     raw_pack_size: str | None
+    # The pack is one a person entered for this item, not from the page.
+    pack_size_remembered: bool = False
     quantity: Decimal
     unit_price: Decimal
     extended_price: Decimal

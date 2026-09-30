@@ -28,6 +28,8 @@ type LineItem = {
   raw_description: string;
   raw_sku: string | null;
   raw_pack_size: string | null;
+  // A pack a person entered for this item, not printed on the page.
+  pack_size_remembered: boolean;
   quantity: string;
   unit_price: string;
   extended_price: string;
@@ -554,7 +556,15 @@ export default function InvoiceReview({
                             <div className="text-xs text-gray-400">
                               {li.raw_sku ?? "no item code"} ·{" "}
                               {li.raw_pack_size ?? "no pack size"}
+                              {li.pack_size_remembered && (
+                                <span title="Entered for this item before; not printed on this invoice"> (remembered)</span>
+                              )}
                             </div>
+                            {li.normalized_unit_price === null &&
+                              !held &&
+                              !reading &&
+                              li.review_status !== "not_product" &&
+                              li.review_status !== "pending" && <AddPackSize line={li} locationId={locationId} />}
                           </>
                         )}
                         {flagged && (
@@ -781,5 +791,66 @@ export function StatusBadge({ status }: { status: string }) {
     <span className={`badge ${STATUS_BADGE[status] ?? "bg-gray-100 text-gray-700"}`}>
       {STATUS_LABEL[status] ?? status.replace("_", " ")}
     </span>
+  );
+}
+
+/** A settled line whose price per unit can't be worked out: enter its pack
+ *  size once; it's remembered for the item and filled in elsewhere. */
+function AddPackSize({ line, locationId }: { line: LineItem; locationId: string | null }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [pack, setPack] = useState(line.raw_pack_size ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pack.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api(`/review/${line.id}/pack?tenant_id=${locationId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pack_size: pack }),
+      });
+      if (!res.ok) {
+        setError(formatApiError((await res.json().catch(() => null))?.detail, "Couldn't save that."));
+        return;
+      }
+      setOpen(false);
+      router.refresh();
+    } catch {
+      setError("Couldn't reach the server. Nothing was saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} className="mt-0.5 text-xs font-medium text-brand-700 hover:underline">
+        Add pack size to track its price
+      </button>
+    );
+  }
+  return (
+    <form onSubmit={save} className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
+      <input
+        value={pack}
+        onChange={(e) => setPack(e.target.value)}
+        placeholder="4/5 LB"
+        aria-label={`Pack size for line ${line.line_number}`}
+        className="input w-24 px-1.5 py-0.5"
+        autoFocus
+      />
+      <button type="submit" disabled={busy || !pack.trim()} className="btn-secondary btn-sm">
+        Save
+      </button>
+      <button type="button" onClick={() => setOpen(false)} className="text-gray-600 hover:underline">
+        Cancel
+      </button>
+      {error && <span className="basis-full text-red-700">{error}</span>}
+    </form>
   );
 }
