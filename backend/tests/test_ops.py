@@ -93,12 +93,12 @@ def test_an_unexpected_error_gets_a_plain_answer_and_an_alert(calls):
 
     app.dependency_overrides[get_db] = broken
     try:
-        resp = TestClient(app, raise_server_exceptions=False).get("/distributors")
+        resp = TestClient(app, raise_server_exceptions=False).get("/skus?q=milk")
     finally:
         app.dependency_overrides.pop(get_db, None)
     assert resp.status_code == 500
     assert resp.json() == {"detail": "Something went wrong on our side. Try again in a moment."}
-    assert calls == [("api:GET /distributors:RuntimeError", "Error in GET /distributors: RuntimeError")]
+    assert calls == [("api:GET /skus:RuntimeError", "Error in GET /skus: RuntimeError")]
 
 
 def test_the_health_check_says_whether_the_parts_answer():

@@ -114,6 +114,8 @@ CANONICAL_SKUS: list[CatalogItem] = [
     CatalogItem("Tomato Cherry", "produce", "vegetables", _lb),
     CatalogItem("Lettuce Iceberg", "produce", "vegetables", _lb),
     CatalogItem("Lettuce Romaine", "produce", "vegetables", _lb),
+    # Sold by the heart ("6/3 PK": six packs of three), not by weight.
+    CatalogItem("Romaine Hearts", "produce", "vegetables", _each),
     CatalogItem("Onion Yellow", "produce", "vegetables", _lb),
     CatalogItem("Onion Red", "produce", "vegetables", _lb),
     CatalogItem("Onion White", "produce", "vegetables", _lb),
@@ -207,6 +209,7 @@ CANONICAL_SKUS: list[CatalogItem] = [
     CatalogItem("To-Go Container 8oz", "paper", "containers", _each),
     CatalogItem("To-Go Container 16oz", "paper", "containers", _each),
     CatalogItem("To-Go Container 32oz", "paper", "containers", _each),
+    CatalogItem("Hinged Container 9in", "paper", "containers", _each),
     CatalogItem("Foil Wrap", "paper", "wrap", _each),
     CatalogItem("Plastic Wrap", "paper", "wrap", _each),
     CatalogItem("Deli Paper Sheets", "paper", "wrap", _each),

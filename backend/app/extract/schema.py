@@ -1,6 +1,10 @@
 from pydantic import BaseModel
 
 DISTRIBUTOR_VALUES = ("sysco", "us_foods", "gordon", "pfg", "other")
+# What was sent. Only invoices and credit memos are read into prices; the
+# rest are held (app/workers/tasks.py).
+DOCUMENT_TYPES = ("invoice", "credit_memo", "statement", "price_list", "other")
+PRICED_DOCUMENT_TYPES = ("invoice", "credit_memo")
 
 
 class ExtractedLineItem(BaseModel):
@@ -17,6 +21,9 @@ class ExtractedLineItem(BaseModel):
 
 class ExtractedInvoice(BaseModel):
     distributor: str
+    # Defaults keep extractions stored before these existed readable.
+    distributor_name: str | None = None
+    document_type: str = "invoice"
     invoice_number: str
     invoice_date: str
     delivery_date: str | None = None

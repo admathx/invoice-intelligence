@@ -38,6 +38,9 @@ class ReviewStatus(str, enum.Enum):
     pending = "pending"
     confirmed = "confirmed"
     corrected = "corrected"
+    # A fee, surcharge, deposit or discount: a charge, not something bought,
+    # so there's no product to match and no price to track.
+    not_product = "not_product"
 
 
 class AlertType(str, enum.Enum):

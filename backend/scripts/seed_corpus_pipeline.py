@@ -160,7 +160,7 @@ def main() -> None:
                     # Same pack string as the cache-priming call, so this can't
                     # raise where the cached call didn't — recomputed (not
                     # reused) because qty/price vary per line.
-                    pack = pack_for_line(line["raw_pack_size"], line["uom"])
+                    pack = pack_for_line(line["raw_pack_size"], line["uom"], line["raw_description"])
                     product = db.get(CanonicalSku, cached.canonical_sku_id) if cached.canonical_sku_id else None
                     qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, line["uom"], product)
                 else:

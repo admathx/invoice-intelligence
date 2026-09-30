@@ -35,6 +35,7 @@ from app import audit
 from app.config import settings
 from app.db import bind_tenant
 from app.ingest.photos import MAX_PHOTOS, image_kind
+from app.duplicates import file_hash
 from app.ingest.upload import (
     InvalidInvoiceFileError,
     invoice_pdf_from_upload,
@@ -380,12 +381,33 @@ def record_invoices(db: Session, routed: _Routed) -> list[uuid.UUID] | None:
 
 def _add_invoices(db: Session, routed: _Routed, invoice_ids: list[uuid.UUID]) -> None:
     tenant, parsed = routed.tenant, routed.parsed
+    seen: set[str] = set()
     for attachment in routed.pdfs:
+        # A file this location already has (uploaded, or forwarded before) is
+        # skipped, as an upload of it is refused: it would be counted twice.
+        digest = file_hash(attachment.content)
+        already = None if digest in seen else db.scalar(
+            select(Invoice.id).where(Invoice.tenant_id == tenant.id, Invoice.file_sha256 == digest).limit(1)
+        )
+        if digest in seen or already is not None:
+            audit.record(
+                db,
+                None,
+                "invoice.duplicate_file_skipped",
+                "invoice",
+                already,
+                tenant.id,
+                filename=attachment.filename,
+                message_id=parsed.message_id,
+            )
+            continue
+        seen.add(digest)
         # One invoice per PDF: a distributor mailing a week's invoices as
         # several attachments is a single email but several invoices.
         invoice = Invoice(
             id=uuid.uuid4(),
             tenant_id=tenant.id,
+            file_sha256=digest,
             source=InvoiceSource.email,
             source_message_id=routed.dedupe_key,
             status=InvoiceStatus.received,
@@ -405,6 +427,12 @@ def _add_invoices(db: Session, routed: _Routed, invoice_ids: list[uuid.UUID]) ->
             photos=routed.photo_names,
             message_id=parsed.message_id,
         )
+
+
+def _duplicate_reason(invoice_ids: list[uuid.UUID] | None, dedupe_key: str, context: str) -> str:
+    if invoice_ids is None:
+        return f"already ingested (message-id {dedupe_key}){context}"
+    return f"every attachment is a file this location already has{context}"
 
 
 def enqueue_invoices(invoice_ids: list[uuid.UUID]) -> str | None:
@@ -433,11 +461,11 @@ def ingest_email_bytes(db: Session, raw: bytes, source_name: str) -> IngestResul
             tenant_id=routed.tenant.id if routed.tenant else None,
         )
     invoice_ids = record_invoices(db, routed)
-    if invoice_ids is None:
+    if not invoice_ids:
         return IngestResult(
             source_name=source_name,
             status="duplicate",
-            reason=f"already ingested (message-id {routed.dedupe_key}){routed.context}",
+            reason=_duplicate_reason(invoice_ids, routed.dedupe_key, routed.context),
             tenant_id=routed.tenant.id,
         )
     return IngestResult(
@@ -496,11 +524,11 @@ def ingest_email_file(db: Session, path: Path, inbox_dir: Path | None = None) ->
     except Exception as exc:
         db.rollback()
         return _quarantine(claimed, inbox_dir, f"could not record invoices: {exc}{context}", source_name=source_name)
-    if invoice_ids is None:  # another delivery of the same message won the race
+    if not invoice_ids:  # another delivery of the same message won the race, or nothing new in it
         return IngestResult(
             source_name=source_name,
             status="duplicate",
-            reason=f"already ingested (message-id {routed.dedupe_key}){context}",
+            reason=_duplicate_reason(invoice_ids, routed.dedupe_key, context),
             tenant_id=tenant.id,
             destination=claimed,
         )

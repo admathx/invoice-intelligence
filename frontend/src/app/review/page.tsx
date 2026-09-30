@@ -176,6 +176,23 @@ function ReviewQueueInner() {
     }
   }
 
+  /** A fee, deposit or discount: nothing to match, so it leaves the list. */
+  async function notAProduct() {
+    if (!current || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api(`/review/${current.id}/not-product?tenant_id=${locationId}`, { method: "POST" });
+      if (!res.ok) {
+        setError(formatApiError((await res.json().catch(() => null))?.detail, "Couldn't save that. Try again."));
+        return;
+      }
+      advance();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function correct(skuId: string) {
     if (!current || busy) return;
     setBusy(true);
@@ -392,7 +409,16 @@ function ReviewQueueInner() {
         {error && (
           <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
         )}
-        <div className="mt-4 flex justify-end">
+        <div className="mt-4 flex flex-wrap items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={() => void notAProduct()}
+            disabled={busy}
+            className="text-xs font-medium text-gray-600 hover:text-gray-900 hover:underline disabled:opacity-50"
+            title="A fee, deposit, surcharge or discount: nothing to match"
+          >
+            Not a product
+          </button>
           <button type="button" onClick={skip} disabled={busy} className="btn-secondary btn-sm">
             Skip for now
           </button>

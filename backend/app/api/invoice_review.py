@@ -28,12 +28,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
-from app import audit
+from app import audit, business_distributors
 from app.analytics.price_creep import upsert_creep_alerts
 from app.api.deps import get_tenant_or_404
 from app.auth import current_user, get_db_for_tenant
+from app.extract.charges import is_charge
 from app.extract.confidence import check_arithmetic
-from app.storage import page_names
+from app.storage import forget_original, get_storage, page_names, renders_prefix
 from app.models.distributor import UNRECOGNIZED_SLUG
 from app.models import (
     CanonicalSku,
@@ -86,10 +87,22 @@ class InvoiceCheck:
     missing_distributor: bool = False
     missing_invoice_date: bool = False
     no_line_items: bool = False
+    # Held whatever the numbers say: likely a copy of another invoice, or not
+    # an invoice at all. Each has to be settled (delete it, or say otherwise)
+    # before it can be confirmed.
+    copy_of: str | None = None
+    not_an_invoice: str | None = None
 
     @property
     def reasons(self) -> list[str]:
         out = []
+        if self.copy_of:
+            out.append(f"It looks like a copy of {self.copy_of}. Delete it, or tell us it's a different invoice.")
+        if self.not_an_invoice:
+            out.append(
+                f"This looks like {self.not_an_invoice}, not an invoice, so nothing on it is used. "
+                "Delete it, or tell us it is an invoice."
+            )
         if self.no_line_items:
             out.append("There are no items yet.")
         if self.failed_line_numbers:
@@ -121,8 +134,17 @@ def _line_mismatch(line_numbers: list[int]) -> str:
     return f"On {which}, qty × price each doesn't equal the line total."
 
 
+_DOCUMENT_LABEL = {"statement": "a statement", "price_list": "a price list or order guide"}
+
+
+def invoice_label(invoice: Invoice) -> str:
+    """How the screen names an invoice: "invoice 88214 from 2026-04-03"."""
+    number = f"invoice {invoice.invoice_number}" if invoice.invoice_number else "an invoice"
+    return f"{number} from {invoice.invoice_date}" if invoice.invoice_date else f"{number} you already added"
+
+
 def check_stored_invoice(
-    invoice: Invoice, lines: list[InvoiceLineItem], distributor: Distributor | None
+    invoice: Invoice, lines: list[InvoiceLineItem], distributor: Distributor | None, original: Invoice | None = None
 ) -> InvoiceCheck:
     """The worker's arithmetic rules (check_arithmetic), applied to the stored,
     possibly human-corrected numbers.
@@ -151,11 +173,19 @@ def check_stored_invoice(
         missing_distributor=distributor is None or distributor.slug == UNRECOGNIZED_SLUG,
         missing_invoice_date=invoice.invoice_date is None,
         no_line_items=not lines,
+        copy_of=invoice_label(original) if original is not None else None,
+        not_an_invoice=(
+            _DOCUMENT_LABEL.get(invoice.document_type, "something else") if invoice.document_type else None
+        ),
     )
 
 
 def _distributor(db: Session, invoice: Invoice) -> Distributor | None:
     return db.get(Distributor, invoice.distributor_id) if invoice.distributor_id else None
+
+
+def _original(db: Session, invoice: Invoice) -> Invoice | None:
+    return db.get(Invoice, invoice.duplicate_of_id) if invoice.duplicate_of_id else None
 
 
 def _lines(db: Session, invoice_id: uuid.UUID) -> list[InvoiceLineItem]:
@@ -173,7 +203,8 @@ def build_invoice_detail(db: Session, invoice: Invoice) -> InvoiceDetailOut:
     always gets back the same shape, including the re-run check."""
     lines = _lines(db, invoice.id)
     distributor = _distributor(db, invoice)
-    check = check_stored_invoice(invoice, lines, distributor)
+    original = _original(db, invoice)
+    check = check_stored_invoice(invoice, lines, distributor, original)
 
     page_image_urls = [
         f"/invoices/{invoice.id}/pages/{name}?tenant_id={invoice.tenant_id}" for name in page_names(invoice.id)
@@ -187,6 +218,7 @@ def build_invoice_detail(db: Session, invoice: Invoice) -> InvoiceDetailOut:
     return InvoiceDetailOut(
         **InvoiceOut.model_validate(invoice).model_dump(),
         distributor_name=distributor.name if distributor else None,
+        duplicate_of_label=invoice_label(original) if original is not None else None,
         line_items=[
             LineItemOut.model_validate(line).model_copy(update={"canonical_sku_name": product.get(line.canonical_sku_id)})
             for line in lines
@@ -204,11 +236,17 @@ def _match(db: Session, invoice: Invoice, line: InvoiceLineItem) -> None:
     special treatment. Without a recognized distributor there is no catalog to
     match against; the line waits as pending until one is chosen, and choosing
     one re-matches every line (edit_invoice)."""
+    if is_charge(line.raw_description, line.raw_pack_size):
+        # A fee or discount: nothing to match (app/extract/charges.py).
+        line.canonical_sku_id = line.match_confidence = line.base_uom = None
+        line.normalized_qty_base = line.normalized_unit_price = None
+        line.review_status = ReviewStatus.not_product
+        return
     distributor = _distributor(db, invoice)
     if distributor is None or distributor.slug == UNRECOGNIZED_SLUG:
         line.canonical_sku_id = line.match_confidence = line.base_uom = None
         line.normalized_qty_base, line.normalized_unit_price = normalize_price(
-            line.raw_pack_size, line.quantity, line.unit_price, line.uom
+            line.raw_pack_size, line.quantity, line.unit_price, line.uom, raw_description=line.raw_description
         )
         line.review_status = ReviewStatus.pending
         return
@@ -259,7 +297,14 @@ def _apply_line_edit(db: Session, invoice: Invoice, line: InvoiceLineItem, edit:
         _match(db, invoice, line)
     elif unit_changed and line.canonical_sku_id is not None:
         result = _exact_match_result(
-            db, line.canonical_sku_id, "repriced", line.raw_pack_size, line.quantity, line.unit_price, line.uom
+            db,
+            line.canonical_sku_id,
+            "repriced",
+            line.raw_pack_size,
+            line.quantity,
+            line.unit_price,
+            line.uom,
+            line.raw_description,
         )
         line.normalized_qty_base = result.normalized_qty_base
         line.normalized_unit_price = result.normalized_unit_price
@@ -274,7 +319,7 @@ def _apply_line_edit(db: Session, invoice: Invoice, line: InvoiceLineItem, edit:
         # number and has to be redone from the corrected one.
         product = db.get(CanonicalSku, line.canonical_sku_id) if line.canonical_sku_id else None
         line.normalized_qty_base, line.normalized_unit_price = normalize_price(
-            line.raw_pack_size, line.quantity, line.unit_price, line.uom, product
+            line.raw_pack_size, line.quantity, line.unit_price, line.uom, product, line.raw_description
         )
 
 
@@ -334,7 +379,7 @@ def edit_invoice(
     )
     if distributor_changed:
         chosen = db.get(Distributor, body.distributor_id)
-        if chosen is None or chosen.slug == UNRECOGNIZED_SLUG:
+        if chosen is None or chosen.slug == UNRECOGNIZED_SLUG or not business_distributors.usable_by(db, tenant_id, chosen):
             raise HTTPException(status_code=422, detail="Choose a distributor from the list.")
 
     invoice_before = _snapshot(invoice, _INVOICE_AUDITED)
@@ -401,7 +446,7 @@ def confirm_invoice(
     invoice = _get_reviewable_invoice(db, invoice_id, editing=False)
     lines = _lines(db, invoice.id)
 
-    check = check_stored_invoice(invoice, lines, _distributor(db, invoice))
+    check = check_stored_invoice(invoice, lines, _distributor(db, invoice), _original(db, invoice))
     if not check.passes:
         # The same rules the worker enforced: confirming is a claim that the
         # numbers are now right, so it can't be granted while they still
@@ -448,6 +493,96 @@ def confirm_invoice(
             logger.exception("creep alert refresh failed after confirming invoice %s", invoice_id)
 
     return build_invoice_detail(db, invoice)
+
+
+@router.post("/{invoice_id}/keep", response_model=InvoiceDetailOut)
+def keep_invoice(
+    invoice_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
+) -> InvoiceDetailOut:
+    """"It's a different invoice" / "It is an invoice": stop holding it as a
+    likely copy or as not an invoice. Its lines, which were kept off Match
+    items while it was held, are matched now; the invoice still needs
+    confirming like any other held one."""
+    get_tenant_or_404(db, tenant_id)
+    invoice = _get_reviewable_invoice(db, invoice_id, editing=True)
+    if invoice.duplicate_of_id is None and invoice.document_type is None:
+        raise HTTPException(status_code=409, detail="This invoice isn't being held as a copy or as not an invoice.")
+    held_as = {"copy_of": invoice.duplicate_of_id, "document_type": invoice.document_type}
+    invoice.duplicate_of_id = None
+    invoice.document_type = None
+    for line in _lines(db, invoice.id):
+        if line.review_status == ReviewStatus.pending and line.canonical_sku_id is None:
+            _match(db, invoice, line)
+    _take_under_review(invoice)
+    audit.record(db, user, "invoice.kept", "invoice", invoice.id, tenant_id, **held_as)
+    db.commit()
+    return build_invoice_detail(db, invoice)
+
+
+# Still being read: the worker holds these and would write lines after.
+_BEING_READ = {InvoiceStatus.received, InvoiceStatus.rendering, InvoiceStatus.extracting}
+
+
+@router.delete("/{invoice_id}", status_code=204)
+def delete_invoice(
+    invoice_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
+) -> None:
+    """Delete an invoice: a copy of one already added, something that isn't
+    an invoice, or one added by mistake. Its prices come out of price
+    history, alerts and savings with it; the audit trail keeps a record."""
+    get_tenant_or_404(db, tenant_id)
+    invoice = db.get(Invoice, invoice_id, with_for_update=True)  # tenant-scoped: another location's isn't found
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="We couldn't find that invoice.")
+    if invoice.status in _BEING_READ:
+        raise HTTPException(status_code=409, detail="It's still being read. Delete it once it's done.")
+    line_ids = list(db.scalars(select(InvoiceLineItem.id).where(InvoiceLineItem.invoice_id == invoice.id)))
+    had_prices = bool(
+        line_ids
+        and db.scalar(select(func.count(PriceObservation.id)).where(PriceObservation.invoice_line_item_id.in_(line_ids)))
+    )
+    distributor = _distributor(db, invoice)
+    audit.record(
+        db,
+        user,
+        "invoice.deleted",
+        "invoice",
+        invoice.id,
+        tenant_id,
+        invoice_number=invoice.invoice_number,
+        invoice_date=invoice.invoice_date,
+        distributor=distributor.name if distributor else None,
+        total=invoice.total,
+        status=invoice.status,
+    )
+    if line_ids:
+        db.execute(delete(PriceObservation).where(PriceObservation.invoice_line_item_id.in_(line_ids)))
+        # Matches people made on its lines stay: "this item code is that
+        # product" is as true after a copy is deleted. Their link to the
+        # line clears itself (ON DELETE SET NULL).
+        db.execute(delete(InvoiceLineItem).where(InvoiceLineItem.id.in_(line_ids)))
+    db.delete(invoice)
+    db.commit()
+
+    # The stored file and page images; a failure here leaves only orphaned
+    # files, never a half-deleted invoice.
+    try:
+        forget_original(invoice_id)
+        get_storage().delete_prefix(renders_prefix(invoice_id))
+    except Exception:
+        logger.exception("couldn't remove the files of deleted invoice %s", invoice_id)
+    if had_prices:
+        try:
+            upsert_creep_alerts(db, tenant_id)
+        except Exception:
+            db.rollback()
+            logger.exception("creep alert refresh failed after deleting invoice %s", invoice_id)
 
 
 @router.post("/{invoice_id}/line-items", response_model=InvoiceDetailOut, status_code=201)

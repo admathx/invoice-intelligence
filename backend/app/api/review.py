@@ -32,8 +32,9 @@ from app.models import (
 from app.models.distributor import UNRECOGNIZED_SLUG
 from app.models.enums import BaseUom, ReviewStatus
 from app.models.tenant import account_key_column
-from app.normalize.matcher import _exact_match_result
+from app.normalize.matcher import _exact_match_result, apply_match, match_line_item
 from app.normalize.pack_size import PackSizeParseError, pack_for_line
+from app.matching_queue import waiting_to_match
 from app.schemas.review import CorrectRequest, ReviewActionResponse, ReviewQueueItem
 
 router = APIRouter(prefix="/review", tags=["review"])
@@ -185,7 +186,7 @@ def get_review_queue(
     # there's no catalog to resolve an item code against, and whatever a
     # reviewer did here would be overwritten when the distributor is chosen
     # on the invoice screen. Those lines appear once it has been.
-    conditions = [InvoiceLineItem.review_status == ReviewStatus.pending, Distributor.slug != UNRECOGNIZED_SLUG]
+    conditions = list(waiting_to_match())
     if distributor_id is not None:
         conditions.append(Invoice.distributor_id == distributor_id)
 
@@ -262,8 +263,12 @@ def _require_comparable_units(line: InvoiceLineItem, sku: CanonicalSku) -> None:
     An unreadable pack isn't this check's concern; that line gets no price
     whatever product it is, and fixing the pack on the invoice prices it."""
     try:
-        pack = pack_for_line(line.raw_pack_size, line.uom)
+        pack = pack_for_line(line.raw_pack_size, line.uom, line.raw_description)
     except PackSizeParseError:
+        return
+    if pack.from_description:
+        # Only a guess from the item's name: it prices the line if it fits
+        # the product, and mustn't stand in the way of the person's choice.
         return
     if pack.base_units_per_pack_unit(sku.base_uom, sku.lb_per_gal) is None:
         raise HTTPException(
@@ -306,6 +311,7 @@ def correct_line_item(
         quantity=line.quantity,
         unit_price=line.unit_price,
         uom=line.uom,
+        raw_description=line.raw_description,
     )
     line.canonical_sku_id = result.canonical_sku_id
     line.normalized_qty_base = result.normalized_qty_base
@@ -324,6 +330,45 @@ def correct_line_item(
 
     return _finalize(
         db, line, invoice, tenant, user, "invoice_line.match_corrected", previous_sku_id, suggested_confidence
+    )
+
+
+@router.post("/{line_item_id}/not-product", response_model=ReviewActionResponse)
+def mark_not_a_product(
+    line_item_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
+) -> ReviewActionResponse:
+    """A fee, deposit or discount the wording check didn't recognize
+    (app/extract/charges.py): nothing to match, so it leaves Match items.
+    No alias is written; "Wrong product?" (reopen) brings it back."""
+    tenant = get_tenant_or_404(db, tenant_id)
+    line, invoice = _lock_line_for_action(db, line_item_id, pending=True)
+    previous_sku_id = line.canonical_sku_id
+    line.review_status = ReviewStatus.not_product
+    line.canonical_sku_id = line.match_confidence = line.base_uom = None
+    line.normalized_qty_base = line.normalized_unit_price = None
+    audit.record(
+        db,
+        user,
+        "invoice_line.not_a_product",
+        "invoice_line_item",
+        line.id,
+        tenant.id,
+        invoice_id=invoice.id,
+        line_number=line.line_number,
+        raw_description=line.raw_description,
+        suggested=previous_sku_id,
+    )
+    db.commit()
+    return ReviewActionResponse(
+        id=line.id,
+        review_status=line.review_status.value,
+        canonical_sku_id=None,
+        normalized_unit_price=None,
+        wrote_alias=False,
+        wrote_price_observation=False,
     )
 
 
@@ -392,6 +437,25 @@ def reopen_line_item(
         match_confidence=line.match_confidence,
         review_status={"from": line.review_status, "to": ReviewStatus.pending},
     )
+    if line.review_status == ReviewStatus.not_product:
+        # "It's a product after all": find it a suggestion, as for any new
+        # line, so Match items doesn't start from a blank search.
+        distributor = db.get(Distributor, invoice.distributor_id) if invoice.distributor_id else None
+        if distributor is not None and distributor.slug != UNRECOGNIZED_SLUG:
+            apply_match(
+                line,
+                match_line_item(
+                    db,
+                    distributor_id=distributor.id,
+                    raw_sku=line.raw_sku,
+                    raw_description=line.raw_description,
+                    raw_pack_size=line.raw_pack_size,
+                    quantity=line.quantity,
+                    unit_price=line.unit_price,
+                    uom=line.uom,
+                    tenant_id=line.tenant_id,
+                ),
+            )
     line.review_status = ReviewStatus.pending
     db.commit()
     db.refresh(line)

@@ -11,6 +11,8 @@ from app.api.deps import get_tenant_or_404
 from app.api.invoice_review import build_invoice_detail
 from app.auth import current_user, get_db_for_tenant
 from app.config import settings
+from app.api.invoice_review import invoice_label
+from app.duplicates import file_hash
 from app.ingest.upload import InvalidInvoiceFileError, invoice_pdf_from_upload, save_invoice_bytes
 from app.models import Invoice, User
 from app.models.enums import InvoiceSource, InvoiceStatus
@@ -49,8 +51,19 @@ def upload_invoice(
     except InvalidInvoiceFileError as exc:
         raise HTTPException(status_code=413 if exc.too_large else 415, detail=str(exc)) from exc
 
+    # The very same file again: refused before it's stored or paid for. A
+    # rescan is a different file, and is caught once read (app/duplicates.py).
+    digest = file_hash(pdf)
+    already = db.scalar(
+        select(Invoice).where(Invoice.tenant_id == tenant_id, Invoice.file_sha256 == digest).order_by(Invoice.created_at)
+    )
+    if already is not None:
+        which = "It's being read now." if already.invoice_number is None else f"It's {invoice_label(already)}."
+        raise HTTPException(status_code=409, detail=f"You've already added this file. {which}")
+
     invoice = Invoice(
         tenant_id=tenant_id,
+        file_sha256=digest,
         source=InvoiceSource.photo if from_photos else InvoiceSource.upload,
         status=InvoiceStatus.received,
         original_file_uri="",

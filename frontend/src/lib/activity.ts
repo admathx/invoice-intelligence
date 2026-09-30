@@ -53,6 +53,8 @@ export function actorLabel(event: AuditEvent): string {
   return event.action === "auth.login_failed" || event.action === "auth.password_reset_requested" ? "Someone" : "System";
 }
 
+const DOCUMENT_LABEL: Record<string, string> = { statement: "a statement", price_list: "a price list" };
+
 const LINE = (d: Record<string, unknown>) => (d.line_number ? `item ${d.line_number}` : "an item");
 
 /** One-line summary. Details beyond it (per-field changes) are rendered by
@@ -69,9 +71,22 @@ export function describeEvent(event: AuditEvent): string {
     case "invoice.received_by_email":
       return d.photos ? `received photos of an invoice by email (${show(d.photos)})` : `received ${show(d.filename)} by email`;
     case "invoice.extracted":
+      if (d.duplicate_of) return `read ${show(d.line_count)} items; it looks like a copy of an invoice already added`;
+      if (d.document_type)
+        return `read it; it looks like ${DOCUMENT_LABEL[String(d.document_type)] ?? "something other than an invoice"}, not an invoice`;
       return d.status === "extracted"
         ? `read ${show(d.line_count)} items; everything added up`
         : `read ${show(d.line_count)} items; some numbers need a look`;
+    case "invoice.deleted":
+      return `deleted ${d.invoice_number ? `invoice ${show(d.invoice_number)}` : "an invoice"}${d.distributor ? ` from ${show(d.distributor)}` : ""}${d.total ? ` (total ${show(d.total)})` : ""}`;
+    case "invoice.kept":
+      return d.copy_of ? "said the invoice isn't a copy" : "said it is an invoice";
+    case "invoice.duplicate_file_skipped":
+      return `skipped ${show(d.filename)} from an email: that file was already added`;
+    case "distributor.added":
+      return `added the distributor ${show(d.name)}`;
+    case "invoice_line.not_a_product":
+      return `marked ${show(d.raw_description)} as a fee or charge, not a product`;
     case "email.rejected":
       return `couldn't use an emailed invoice: ${show(d.reason)}`;
     case "invoice.extraction_failed":
@@ -172,6 +187,8 @@ export function eventDetailLines(event: AuditEvent): string[] {
 
 /** Where an event is about an invoice, the invoice to link to. */
 export function eventInvoiceId(event: AuditEvent): string | null {
+  // Nothing to open once it's gone.
+  if (event.action === "invoice.deleted") return null;
   if (event.entity_type === "invoice") return event.entity_id;
   return typeof event.details.invoice_id === "string" ? event.details.invoice_id : null;
 }

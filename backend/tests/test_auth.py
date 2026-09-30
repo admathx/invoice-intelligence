@@ -158,7 +158,7 @@ def test_everything_but_health_and_login_requires_signing_in(db):
     tenant = _tenant(db, "Anon")
     client = TestClient(app)
     assert client.get("/health").status_code == 200
-    for path in ("/auth/me", f"/invoices?tenant_id={tenant.id}", "/distributors", "/skus?q=milk", "/accounts", "/tenants"):
+    for path in ("/auth/me", f"/invoices?tenant_id={tenant.id}", f"/distributors?tenant_id={tenant.id}", "/skus?q=milk", "/accounts", "/tenants"):
         assert client.get(path).status_code == 401, path
 
 

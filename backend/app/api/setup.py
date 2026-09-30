@@ -14,9 +14,9 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_tenant_or_404
 from app.auth import get_db_for_tenant
+from app.matching_queue import waiting_to_match
 from app.models import Distributor, Invoice, InvoiceLineItem, TenantMembership
-from app.models.distributor import UNRECOGNIZED_SLUG
-from app.models.enums import InvoiceSource, ReviewStatus
+from app.models.enums import InvoiceSource
 
 router = APIRouter(prefix="/setup", tags=["setup"])
 
@@ -42,11 +42,7 @@ def setup_steps(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant)) 
         select(func.count(InvoiceLineItem.id))
         .join(Invoice, Invoice.id == InvoiceLineItem.invoice_id)
         .join(Distributor, Distributor.id == Invoice.distributor_id)
-        .where(
-            InvoiceLineItem.tenant_id == tenant_id,
-            InvoiceLineItem.review_status == ReviewStatus.pending,
-            Distributor.slug != UNRECOGNIZED_SLUG,
-        )
+        .where(InvoiceLineItem.tenant_id == tenant_id, *waiting_to_match())
     )
     members = db.scalar(select(func.count(TenantMembership.id)).where(TenantMembership.tenant_id == tenant_id))
     return SetupOut(

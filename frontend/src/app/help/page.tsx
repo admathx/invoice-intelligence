@@ -114,6 +114,15 @@ export default async function HelpPage() {
           <p className="mt-2">
             Reading an invoice takes about a minute. The page updates by itself when it&rsquo;s done.
           </p>
+          <p className="mt-2">
+            Added the same invoice twice? We won&rsquo;t take the same file again, and a second copy (a rescan, or one
+            that was also emailed) is held so it isn&rsquo;t counted twice. Open it and press <em>Delete it</em>, or{" "}
+            <em>It&rsquo;s a different invoice</em> if it isn&rsquo;t a copy. Statements and price lists are held the
+            same way: they aren&rsquo;t invoices, so nothing on them is used.
+          </p>
+          <p className="mt-2">
+            PDFs with a password can&rsquo;t be read. Open the file, save a copy without the password, and add that.
+          </p>
         </Section>
 
         <Section topic={topic("needs-a-look")}>
@@ -129,6 +138,11 @@ export default async function HelpPage() {
               When everything adds up, press <em>Confirm invoice</em>.
             </li>
           </ol>
+          <p className="mt-2">
+            If it asks you to choose the distributor and yours isn&rsquo;t in the list (a local produce or seafood
+            company, say), choose <em>+ Add a distributor</em> and type their name. Their next invoices are recognized
+            by name.
+          </p>
           <p className="mt-2">
             If an invoice is marked <Label>Couldn&rsquo;t read</Label>, type its items in from the picture with{" "}
             <em>+ Add item</em>. Start typing an item you&rsquo;ve bought before and we&rsquo;ll fill it in.
@@ -157,6 +171,11 @@ export default async function HelpPage() {
             <li>If it&rsquo;s wrong, type the right product&rsquo;s name and pick it from the list.</li>
             <li>
               Not sure? Press <em>Skip for now</em>. It&rsquo;ll be there next time.
+            </li>
+            <li>
+              A fee, deposit or discount rather than something you bought? Press <em>Not a product</em>. (We spot most
+              of these ourselves; they show as <Label>Fee or charge</Label> on the invoice and in{" "}
+              <Go href="/spending">Spending</Go>.)
             </li>
           </ul>
           <p className="mt-2">Once you&rsquo;ve matched an item, the same item on later invoices is matched for you.</p>

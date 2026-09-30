@@ -14,7 +14,7 @@ BaseUom values it could mean, and the caller (matcher.py) narrows using the
 candidate canonical SKU's own declared base_uom.
 """
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 from app.models.enums import BaseUom
@@ -101,6 +101,23 @@ class ProductUnitMismatchError(PackSizeParseError):
     reason as BilledUnitMismatchError: no price rather than a wrong one."""
 
 
+# A pack's pieces: "6/3 PK" is six packs of three, 18 pieces. Lengths count
+# rolls: "1/500 FT" is one roll, which is how the catalog prices foil and
+# film. Only in a pack size; as a billing unit, a PK is one whole pack.
+_PACK_COUNT_UNITS = {"PK": "ea", "PACK": "ea", "FT": "ea", "FEET": "ea", "IN": "ea", "INCH": "ea", "YD": "ea"}
+_LENGTHS = {"FT", "FEET", "IN", "INCH", "YD"}
+
+# Billing units that are the whole case whatever the pack.
+CASE_UNITS = {"CS", "CASE", "CA", "CTN", "CARTON"}
+# Billing units naming one container: the whole pack when the pack is a
+# single container ("50 LB" billed BG is one 50 lb bag), but ambiguous
+# against a pack of several ("4/5 LB" billed BG: one bag, or the case?).
+CONTAINER_UNITS = {
+    "BG", "BAG", "BX", "BOX", "PK", "PKG", "PAIL", "PL", "JG", "JUG", "TB", "TUB",
+    "BKT", "BUCKET", "CN", "CAN", "BTL", "BOTTLE", "SK", "SACK", "RL", "ROLL",
+}  # fmt: skip
+
+
 def billed_unit_token(uom: str) -> str | None:
     """The physical unit a line's billing UOM names, or None if it names none
     (a container such as BG, BX or PK, whose size the invoice doesn't state)."""
@@ -114,6 +131,16 @@ class ParsedPackSize:
     # Can codes give net weight ("#10" is 110 oz of product, not of liquid),
     # so a can's ounces are never read as fluid ounces.
     net_weight: bool = False
+    # How many containers the case holds ("4/5 LB": 4); None for a bare
+    # size ("50 LB"), which is one.
+    count: Decimal | None = None
+    # Read from the item's description, not a printed pack (pack_for_line):
+    # used to price a line only when it converts to the matched product.
+    from_description: bool = False
+
+    @property
+    def is_single_container(self) -> bool:
+        return self.count is None or self.count == 1
 
     @property
     def compatible_base_uoms(self) -> set[BaseUom]:
@@ -169,6 +196,12 @@ def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
     if not raw_pack_size:
         raise PackSizeParseError(f"empty or missing pack size: {raw_pack_size!r}")
     text = raw_pack_size.strip().upper()
+    # "50#" and "4/5#" are pounds. But "6/10#" is as likely six #10 cans (the
+    # usual can) as six 10 lb bags, so that stays unreadable.
+    counted_can = re.match(r"^\d+\s*/\s*(10)\s*#$", text)
+    if counted_can:
+        raise PackSizeParseError(f"{raw_pack_size!r} could be #{counted_can.group(1)} cans or pounds")
+    text = re.sub(r"(\d)\s*#$", r"\1 LB", text)
 
     m = _CAN_PATTERN.match(text)
     if m:
@@ -176,21 +209,30 @@ def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
         if can_code not in CAN_SIZE_OZ:
             raise PackSizeParseError(f"unknown can size #{can_code} in {raw_pack_size!r}")
         return _positive(
-            ParsedPackSize(unit="oz", base_units_per_case=Decimal(count) * CAN_SIZE_OZ[can_code], net_weight=True), raw_pack_size
+            ParsedPackSize(
+                unit="oz", base_units_per_case=Decimal(count) * CAN_SIZE_OZ[can_code], net_weight=True, count=Decimal(count)
+            ),
+            raw_pack_size,
         )
 
     m = _CASE_PATTERN.match(text)
     if m:
         count, size, unit_raw = m.groups()
-        unit = _UNIT_TO_TOKEN.get(unit_raw)
+        if unit_raw in _LENGTHS:
+            return _positive(ParsedPackSize(unit="ea", base_units_per_case=Decimal(count), count=Decimal(count)), raw_pack_size)
+        unit = _UNIT_TO_TOKEN.get(unit_raw) or _PACK_COUNT_UNITS.get(unit_raw)
         if unit is None:
             raise PackSizeParseError(f"unknown unit {unit_raw!r} in {raw_pack_size!r}")
-        return _positive(ParsedPackSize(unit=unit, base_units_per_case=Decimal(count) * Decimal(size)), raw_pack_size)
+        return _positive(
+            ParsedPackSize(unit=unit, base_units_per_case=Decimal(count) * Decimal(size), count=Decimal(count)), raw_pack_size
+        )
 
     m = _BARE_PATTERN.match(text)
     if m:
         size, unit_raw = m.groups()
-        unit = _UNIT_TO_TOKEN.get(unit_raw)
+        if unit_raw in _LENGTHS:
+            return ParsedPackSize(unit="ea", base_units_per_case=Decimal(1))
+        unit = _UNIT_TO_TOKEN.get(unit_raw) or _PACK_COUNT_UNITS.get(unit_raw)
         if unit is None:
             raise PackSizeParseError(f"unknown unit {unit_raw!r} in {raw_pack_size!r}")
         return _positive(ParsedPackSize(unit=unit, base_units_per_case=Decimal(size)), raw_pack_size)
@@ -198,17 +240,47 @@ def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
     raise PackSizeParseError(f"unrecognized pack size format: {raw_pack_size!r}")
 
 
-def pack_for_line(raw_pack_size: str | None, uom: str) -> ParsedPackSize:
-    """The pack a line's price is for. As printed, or, when no pack is
-    printed and the line is billed by weight or volume ("LB", "GAL"), one of
-    that unit: salmon at $9.70 billed LB is $9.70 a pound, and treating the
-    missing pack as unreadable left such lines with no price and no
-    suggestion. A count ("EA") or a case ("CS") with no pack still says
-    nothing about the amount, so those stay unreadable."""
+# A pack written into an item's description, on invoices with no pack
+# column: "BBQ SAUCE ORIGINAL 4/1 GAL", "FLOUR ALL PURPOSE 50 LB",
+# "EGG LARGE 15DZ", "POTATO RUSSET 50#". Deliberately narrow: a count of two
+# or more, or a bare weight, volume or dozen. Never a bare OZ ("CHICKEN BREAST
+# 6OZ" is a portion, "CUPS 16 OZ" a cup size) or a count ("120CT" slices),
+# and never "6/10#", which is as likely six #10 cans as six 10 lb bags.
+_DESCRIBED_CASE = re.compile(r"(?<![\d/.])([2-9]|[1-9]\d+)\s*/\s*(\d+(?:\.\d+)?)\s*(LBS?|GAL|DZ|DOZ|OZ)(?![A-Z0-9])")
+_DESCRIBED_BARE = re.compile(r"(?<![\d/.])(\d+(?:\.\d+)?)\s*(LBS?|#|GAL|DZ|DOZ)(?![A-Z0-9])")
+
+
+def pack_from_description(description: str | None) -> ParsedPackSize | None:
+    text = (description or "").upper()
+    m = _DESCRIBED_CASE.search(text)
+    raw = f"{m.group(1)}/{m.group(2)} {m.group(3)}" if m else None
+    if raw is None:
+        m = _DESCRIBED_BARE.search(text)
+        raw = f"{m.group(1)} {'LB' if m.group(2) == '#' else m.group(2)}" if m else None
+    if raw is None:
+        return None
+    try:
+        return replace(parse_pack_size(raw), from_description=True)
+    except PackSizeParseError:
+        return None
+
+
+def pack_for_line(raw_pack_size: str | None, uom: str, description: str | None = None) -> ParsedPackSize:
+    """The pack a line's price is for. As printed; or, when none is printed:
+    - billed by weight or volume ("LB", "GAL"), one of that unit: salmon at
+      $9.70 billed LB is $9.70 a pound;
+    - otherwise, a pack written into the description, if there's one
+      (pack_from_description), for pricing only against a product it
+      converts to.
+    A count or a case with neither still says nothing about the amount, so
+    that stays unreadable."""
     if not (raw_pack_size or "").strip():
         unit = billed_unit_token(uom)
         if unit in ("lb", "oz", "gal"):
             return ParsedPackSize(unit=unit, base_units_per_case=Decimal(1))
+        described = pack_from_description(description)
+        if described is not None:
+            return described
     return parse_pack_size(raw_pack_size)
 
 

@@ -52,6 +52,18 @@ export type InvoiceDetail = {
   line_items: LineItem[];
   page_image_urls: string[];
   check: { passes: boolean; reasons: string[]; failed_line_numbers: number[] };
+  // Held whatever the numbers say: a likely copy of another invoice, or not
+  // an invoice at all (a statement, a price list).
+  duplicate_of_id: string | null;
+  duplicate_of_label: string | null;
+  document_type: string | null;
+  // The distributor's name as printed, offered when adding one.
+  printed_distributor: string | null;
+};
+
+const DOCUMENT_LABEL: Record<string, string> = {
+  statement: "a statement",
+  price_list: "a price list or order guide",
 };
 
 export type Distributor = { id: string; name: string; slug: string };
@@ -123,9 +135,16 @@ export default function InvoiceReview({
   const editable =
     invoice.status === "needs_review" || invoice.status === "failed";
   const [adding, setAdding] = useState(false);
+  // Plus any added here, so a new one can be chosen straight away.
+  const [distributorList, setDistributorList] = useState(distributors);
+  useEffect(() => setDistributorList(distributors), [distributors]);
+  const [addingDistributor, setAddingDistributor] = useState(false);
+  const [newDistributor, setNewDistributor] = useState(initial.printed_distributor ?? "");
   // Extraction's "other" is stored as a real distributor row but isn't in the
   // picker (it isn't a choice), so it reads as unrecognized here, same as NULL.
-  const recognized = distributors.some((d) => d.id === invoice.distributor_id);
+  const recognized = distributorList.some((d) => d.id === invoice.distributor_id);
+  const held = invoice.duplicate_of_id ? "copy" : invoice.document_type ? "document" : null;
+  const reading = READING_STATUSES.has(invoice.status);
 
   // Only values that actually differ from what the server holds count as
   // edits. Confirming is disabled while any exist: the check on screen is the
@@ -233,6 +252,57 @@ export default function InvoiceReview({
     }
   }
 
+  async function addDistributor() {
+    const name = newDistributor.trim();
+    if (!name) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api(`/distributors?tenant_id=${locationId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setError(formatApiError(data?.detail, "Couldn't add that distributor."));
+        return;
+      }
+      setDistributorList((list) =>
+        list.some((d) => d.id === data.id)
+          ? list
+          : [...list, data].sort((a, b) => a.name.localeCompare(b.name)),
+      );
+      setHeaderDrafts((d) => ({ ...d, distributor_id: data.id }));
+      setAddingDistributor(false);
+    } catch {
+      setError("Couldn't reach the server. Nothing was added.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteInvoice() {
+    const what = held === "copy" ? "this copy" : "this invoice";
+    if (!window.confirm(`Delete ${what}? Its prices come out of your price history too. This can't be undone.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api(`/invoices/${invoice.id}?tenant_id=${locationId}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        setError(formatApiError(data?.detail, "Couldn't delete it."));
+        return;
+      }
+      router.push("/invoices");
+      router.refresh();
+    } catch {
+      setError("Couldn't reach the server. Nothing was deleted.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function save() {
     const body: Record<string, unknown> = { line_items: edits.lines };
     for (const f of edits.header) body[f] = headerDrafts[f];
@@ -273,7 +343,7 @@ export default function InvoiceReview({
         {invoice.invoice_date ?? "No date"}
       </p>
 
-      {READING_STATUSES.has(invoice.status) && (
+      {reading && (
         <p role="status" className="mb-4 rounded-lg border border-sky-200 border-l-4 border-l-sky-400 bg-sky-50 px-4 py-2.5 text-sm font-medium text-sky-900">
           We&rsquo;re still reading this invoice. This page updates by itself when it&rsquo;s done.
           <RefreshWhileReading reading />
@@ -289,13 +359,27 @@ export default function InvoiceReview({
           }`}
         >
           <p className={`font-medium ${invoice.check.passes ? "text-brand-900" : "text-amber-900"}`}>
-            {invoice.status === "failed"
-              ? "We couldn't read this invoice. Type in its items from the picture, then save."
-              : invoice.check.passes
-                ? "Everything adds up now. Confirm the invoice to start using its prices."
-                : "Some numbers on this invoice don't add up, so its prices aren't being used yet."}
+            {held === "copy"
+              ? `This looks like a copy of ${invoice.duplicate_of_label ?? "an invoice you already added"}, so nothing on it is used.`
+              : held === "document"
+                ? `This looks like ${DOCUMENT_LABEL[invoice.document_type ?? ""] ?? "something other than an invoice"}, so nothing on it is used.`
+                : invoice.status === "failed"
+                  ? "We couldn't read this invoice. Type in its items from the picture, then save."
+                  : invoice.check.passes
+                    ? "Everything adds up now. Confirm the invoice to start using its prices."
+                    : "Some numbers on this invoice don't add up, so its prices aren't being used yet."}
           </p>
-          {!invoice.check.passes && (
+          {held && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button type="button" onClick={() => void deleteInvoice()} disabled={busy} className="btn-primary btn-sm">
+                Delete it
+              </button>
+              <button type="button" onClick={() => void send("POST", "/keep")} disabled={busy} className="btn-secondary btn-sm">
+                {held === "copy" ? "It's a different invoice" : "It is an invoice"}
+              </button>
+            </div>
+          )}
+          {!held && !invoice.check.passes && (
             <>
               <ul className="mt-1 list-disc pl-5 text-amber-800">
                 {invoice.check.reasons.map((reason) => (
@@ -347,24 +431,52 @@ export default function InvoiceReview({
                     headerDrafts.distributor_id ??
                     (recognized ? (invoice.distributor_id ?? "") : "")
                   }
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    if (e.target.value === "__add__") {
+                      setAddingDistributor(true);
+                      return;
+                    }
                     setHeaderDrafts((d) => ({
                       ...d,
                       distributor_id: e.target.value,
-                    }))
-                  }
+                    }));
+                  }}
                   className="input py-1.5"
                 >
-                  {!recognized && (
+                  {!recognized && !headerDrafts.distributor_id && (
                     <option value="">Choose the distributor</option>
                   )}
-                  {distributors.map((d) => (
+                  {distributorList.map((d) => (
                     <option key={d.id} value={d.id}>
                       {d.name}
                     </option>
                   ))}
+                  <option value="__add__">+ Add a distributor…</option>
                 </select>
               </label>
+              {addingDistributor && (
+                <span className="flex flex-wrap items-center gap-2">
+                  <input
+                    aria-label="New distributor's name"
+                    value={newDistributor}
+                    onChange={(e) => setNewDistributor(e.target.value)}
+                    placeholder="Their name, as on the invoice"
+                    className="input py-1.5"
+                    autoFocus
+                  />
+                  <button type="button" onClick={() => void addDistributor()} disabled={busy || !newDistributor.trim()} className="btn-secondary btn-sm">
+                    Add
+                  </button>
+                  <button type="button" onClick={() => setAddingDistributor(false)} className="text-xs font-medium text-gray-600 hover:underline">
+                    Cancel
+                  </button>
+                </span>
+              )}
+              {!recognized && !addingDistributor && invoice.printed_distributor && (
+                <span className="self-center text-xs text-gray-500">
+                  The invoice says &ldquo;{invoice.printed_distributor}&rdquo;.
+                </span>
+              )}
               <label className="flex items-center gap-2">
                 Invoice date
                 <input
@@ -519,10 +631,20 @@ export default function InvoiceReview({
                         <span className={`badge ${REVIEW_BADGE[li.review_status] ?? "bg-gray-100 text-gray-700"}`}>
                           {MATCH_LABEL[li.review_status] ?? li.review_status}
                         </span>
-                        {li.review_status === "pending" ? (
+                        {li.review_status === "pending" && !held ? (
                           <a href="/review" className="link ml-1 whitespace-nowrap text-xs">
                             Match it
                           </a>
+                        ) : li.review_status === "not_product" ? (
+                          !editable && (
+                            <div className="mt-0.5">
+                              <ActionButton
+                                label="It's a product"
+                                question={`Is “${li.raw_description}” something you bought? It goes to Match items to be matched.`}
+                                path={`/review/${li.id}/reopen?tenant_id=${locationId}`}
+                              />
+                            </div>
+                          )
                         ) : (
                           !editable &&
                           li.canonical_sku_name && (
@@ -625,6 +747,14 @@ export default function InvoiceReview({
           )}
           {error && (
             <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+          )}
+          {!reading && !held && (
+            <p className="mt-6 border-t border-gray-100 pt-3 text-xs text-gray-500">
+              Added twice, or not an invoice?{" "}
+              <button type="button" onClick={() => void deleteInvoice()} disabled={busy} className="font-medium text-red-600 hover:underline disabled:opacity-50">
+                Delete this invoice
+              </button>
+            </p>
           )}
         </div>
       </div>

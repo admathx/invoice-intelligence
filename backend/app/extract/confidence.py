@@ -92,7 +92,10 @@ def check_arithmetic(
     return ArithmeticCheck(failed_line_numbers, lines_sum_to_subtotal, totals_reconcile)
 
 
-def assess_extraction(extracted: ExtractedInvoice) -> ExtractionAssessment:
+def assess_extraction(extracted: ExtractedInvoice, distributor_known: bool | None = None) -> ExtractionAssessment:
+    """`distributor_known` overrides what extraction said about the
+    distributor: an invoice from a vendor the business added itself reads as
+    'other' but has been recognized by name (app/business_distributors.py)."""
     arithmetic = check_arithmetic(
         [
             (
@@ -114,7 +117,9 @@ def assess_extraction(extracted: ExtractedInvoice) -> ExtractionAssessment:
         line.line_number for line in extracted.line_items if line.confidence < LOW_CONFIDENCE_THRESHOLD
     ]
 
-    distributor_is_other = extracted.distributor == "other"
+    distributor_is_other = (
+        extracted.distributor == "other" if distributor_known is None else not distributor_known
+    )
 
     # Checked explicitly, because every arithmetic check above passes
     # *vacuously* on an empty invoice: the per-line loop never runs,

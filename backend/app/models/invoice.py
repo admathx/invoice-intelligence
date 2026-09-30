@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, Enum, ForeignKey, Numeric, String
+from sqlalchemy import Date, Enum, ForeignKey, Index, Numeric, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -13,6 +13,8 @@ from app.models.enums import InvoiceSource, InvoiceStatus
 
 class Invoice(Base, TenantScoped):
     __tablename__ = "invoices"
+    # An identical file is looked up by hash at upload (migration 0020).
+    __table_args__ = (Index("ix_invoices_tenant_file_sha256", "tenant_id", "file_sha256"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # tenant_id comes from the TenantScoped mixin.
@@ -37,6 +39,20 @@ class Invoice(Base, TenantScoped):
     # feeds. NULL for uploads, which are a deliberate human action each time.
     source_message_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     original_file_uri: Mapped[str] = mapped_column(String, nullable=False)
+    # SHA-256 of the stored file: an identical file is refused at upload.
+    file_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Another invoice from the same distributor with the same number: this is
+    # likely a copy (a rescan, or forwarded twice). Held until a person
+    # deletes it or says it's a different invoice.
+    duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invoices.id", ondelete="SET NULL"), nullable=True
+    )
+    # Set when what was sent isn't an invoice ("statement", "price_list",
+    # "other"): held, and nothing on it is used. Null for invoices and
+    # credit memos.
+    document_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The distributor's name as printed, whatever it matched to.
+    printed_distributor: Mapped[str | None] = mapped_column(String, nullable=True)
 
     status: Mapped[InvoiceStatus] = mapped_column(
         Enum(InvoiceStatus, name="invoice_status"), nullable=False, default=InvoiceStatus.received

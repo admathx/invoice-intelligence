@@ -49,6 +49,11 @@ class InvoiceOut(BaseModel):
     extraction_cost_usd: Decimal | None
     extracted_at: datetime | None
     created_at: datetime
+    # Held for a person: likely a copy of another invoice, or not an invoice
+    # at all (app/workers/tasks.py).
+    duplicate_of_id: uuid.UUID | None = None
+    document_type: str | None = None
+    printed_distributor: str | None = None
 
 
 class InvoiceCheckOut(BaseModel):
@@ -65,6 +70,8 @@ class InvoiceCheckOut(BaseModel):
 
 class InvoiceDetailOut(InvoiceOut):
     distributor_name: str | None = None
+    # The invoice this looks like a copy of, as the screen names it.
+    duplicate_of_label: str | None = None
     line_items: list[LineItemOut] = []
     page_image_urls: list[str] = []
     check: InvoiceCheckOut

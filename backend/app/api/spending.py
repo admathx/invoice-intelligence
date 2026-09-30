@@ -14,19 +14,23 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_tenant_or_404
 from app.auth import get_db_for_tenant
 from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem
 from app.models.distributor import UNRECOGNIZED_SLUG
-from app.models.enums import InvoiceStatus
+from app.models.enums import InvoiceStatus, ReviewStatus
 
 router = APIRouter(prefix="/spending", tags=["spending"])
 
 MAX_MONTHS = 12
 UNMATCHED = "Not matched yet"
+# Fees, surcharges, deposits and discounts (ReviewStatus.not_product): real
+# money on the invoice, but not "not matched yet": there's nothing to match.
+FEES = "Fees and charges"
+_FEES_KEY = "__fees__"
 _COUNTED = (InvoiceStatus.extracted, InvoiceStatus.confirmed)
 
 
@@ -62,6 +66,8 @@ def _as_date(value) -> date:
 
 
 def _category_label(category: str | None) -> str:
+    if category == _FEES_KEY:
+        return FEES
     return category.capitalize() if category else UNMATCHED
 
 
@@ -72,6 +78,7 @@ def spending(tenant_id: uuid.UUID, today: date | None = None, db: Session = Depe
     earliest_allowed = _add_months(current, -(MAX_MONTHS - 1))
 
     month = func.date_trunc("month", Invoice.invoice_date)
+    category = case((InvoiceLineItem.review_status == ReviewStatus.not_product, _FEES_KEY), else_=CanonicalSku.category)
     counted = (
         Invoice.tenant_id == tenant_id,
         Invoice.status.in_(_COUNTED),
@@ -81,7 +88,7 @@ def spending(tenant_id: uuid.UUID, today: date | None = None, db: Session = Depe
     rows = db.execute(
         select(
             month,
-            CanonicalSku.category,
+            category,
             Distributor.name,
             Distributor.slug,
             func.sum(InvoiceLineItem.extended_price),
@@ -90,7 +97,7 @@ def spending(tenant_id: uuid.UUID, today: date | None = None, db: Session = Depe
         .outerjoin(CanonicalSku, CanonicalSku.id == InvoiceLineItem.canonical_sku_id)
         .outerjoin(Distributor, Distributor.id == Invoice.distributor_id)
         .where(*counted)
-        .group_by(month, CanonicalSku.category, Distributor.name, Distributor.slug)
+        .group_by(month, category, Distributor.name, Distributor.slug)
     ).all()
     invoice_counts = {
         _as_date(m): n for m, n in db.execute(select(month, func.count(Invoice.id)).where(*counted).group_by(month))

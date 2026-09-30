@@ -81,6 +81,7 @@ export const REVIEW_BADGE: Record<string, string> = {
   confirmed: "bg-brand-100 text-brand-800",
   corrected: "bg-sky-100 text-sky-800",
   pending: "bg-amber-100 text-amber-800",
+  not_product: "bg-gray-100 text-gray-700",
 };
 
 /** Invoice statuses in plain words. The three steps of reading an invoice
@@ -104,6 +105,7 @@ export const MATCH_LABEL: Record<string, string> = {
   pending: "To match",
   confirmed: "Confirmed",
   corrected: "Fixed",
+  not_product: "Fee or charge",
 };
 
 /** How an invoice arrived. */

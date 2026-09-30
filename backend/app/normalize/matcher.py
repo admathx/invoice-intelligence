@@ -24,6 +24,8 @@ from app.normalize.pack_size import (
     BilledUnitMismatchError,
     PackSizeParseError,
     ParsedPackSize,
+    CASE_UNITS,
+    CONTAINER_UNITS,
     ProductUnitMismatchError,
     billed_unit_token,
     pack_for_line,
@@ -191,7 +193,7 @@ def match_by_gtin(db: Session, gtin: str | None) -> uuid.UUID | None:
 
 
 def match_by_embedding(
-    db: Session, raw_description: str, compatible_uoms: set[BaseUom], density_uoms: set[BaseUom] = frozenset()
+    db: Session, raw_description: str, compatible_uoms: set[BaseUom] | None, density_uoms: set[BaseUom] = frozenset()
 ) -> tuple[CanonicalSku | None, Decimal | None]:
     """SPEC.md §6 step 4: category/UOM-restricted cosine similarity.
 
@@ -214,7 +216,9 @@ def match_by_embedding(
     distance = CanonicalSku.description_embedding.cosine_distance(query_vec)
     # Plus, in density_uoms, products that carry a weight per gallon: a
     # 35 lb jug of fry oil is Canola Oil, priced per gallon.
-    in_units = CanonicalSku.base_uom.in_(compatible_uoms)
+    # None: any unit. For a pack guessed from the description, which mustn't
+    # narrow the search (app/normalize/pack_size.py pack_from_description).
+    in_units = CanonicalSku.base_uom.is_not(None) if compatible_uoms is None else CanonicalSku.base_uom.in_(compatible_uoms)
     if density_uoms:
         in_units = or_(in_units, and_(CanonicalSku.lb_per_gal.is_not(None), CanonicalSku.base_uom.in_(density_uoms)))
     row = db.execute(
@@ -248,7 +252,12 @@ def _apply_pack_size(
     # handle, and a distributor billing directly by the base unit (e.g.
     # UOM="LB") already prices per base unit, so dividing by the pack size
     # again would silently understate normalized_unit_price by that factor.
-    if uom.strip().upper() != "CS":
+    billed = uom.strip().upper()
+    # The whole case, or one bag/tub/pail when that is the whole pack ("50
+    # LB" billed BG). These used to count as a mismatch, leaving every bag of
+    # flour and beans unpriced.
+    whole_pack = billed in CASE_UNITS or (billed in CONTAINER_UNITS and pack.is_single_container)
+    if not whole_pack:
         # But only when the billed unit IS the pack's base unit. This used to
         # pass any non-case line straight through, which is right for "LB"
         # against a "4/5 LB" pack and wrong for a broken case: one 5 lb bag
@@ -301,7 +310,12 @@ def apply_match(line, match: MatchResult) -> None:
 
 
 def normalize_price(
-    raw_pack_size: str | None, quantity: Decimal, unit_price: Decimal, uom: str, product: CanonicalSku | None = None
+    raw_pack_size: str | None,
+    quantity: Decimal,
+    unit_price: Decimal,
+    uom: str,
+    product: CanonicalSku | None = None,
+    raw_description: str | None = None,
 ) -> tuple[Decimal | None, Decimal | None]:
     """(qty_base, price_per_base_unit) for a line, or (None, None) when that
     can't be computed without guessing (unparseable pack, or billed in a unit
@@ -310,7 +324,7 @@ def normalize_price(
     matched product so the price stays in its unit.
     """
     try:
-        return _apply_pack_size(pack_for_line(raw_pack_size, uom), quantity, unit_price, uom, product)
+        return _apply_pack_size(pack_for_line(raw_pack_size, uom, raw_description), quantity, unit_price, uom, product)
     except PackSizeParseError:
         return None, None
 
@@ -323,6 +337,7 @@ def _exact_match_result(
     quantity: Decimal,
     unit_price: Decimal,
     uom: str,
+    raw_description: str | None = None,
 ) -> MatchResult:
     """Shared by the alias and GTIN paths: both are a confirmed exact match on
     identity, differing only in how canonical_sku_id was found — everything
@@ -333,7 +348,7 @@ def _exact_match_result(
     # history and benchmarks are kept in.
     product = db.get(CanonicalSku, canonical_sku_id)
     try:
-        pack = pack_for_line(raw_pack_size, uom)
+        pack = pack_for_line(raw_pack_size, uom, raw_description)
         qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom, product)
         base_uom = product.base_uom
         review_status = ReviewStatus.auto
@@ -369,14 +384,14 @@ def match_line_item(
 ) -> MatchResult:
     alias_match = match_by_alias(db, distributor_id, raw_sku, raw_description, tenant_id)
     if alias_match is not None:
-        return _exact_match_result(db, alias_match, "alias", raw_pack_size, quantity, unit_price, uom)
+        return _exact_match_result(db, alias_match, "alias", raw_pack_size, quantity, unit_price, uom, raw_description)
 
     gtin_match = match_by_gtin(db, gtin)
     if gtin_match is not None:
-        return _exact_match_result(db, gtin_match, "gtin", raw_pack_size, quantity, unit_price, uom)
+        return _exact_match_result(db, gtin_match, "gtin", raw_pack_size, quantity, unit_price, uom, raw_description)
 
     try:
-        pack = pack_for_line(raw_pack_size, uom)
+        pack = pack_for_line(raw_pack_size, uom, raw_description)
     except PackSizeParseError:
         # SPEC.md §6: a pack-size error produces a confidently wrong benchmark,
         # worse than no benchmark — never guess forward from here. No embedding
@@ -395,13 +410,18 @@ def match_line_item(
     # Products priced in any unit the pack converts to exactly, not only its
     # own: "12 DZ" bar towels are Bar Mop Towel, priced each.
     candidate, similarity = match_by_embedding(
-        db, raw_description, pack.convertible_base_uoms, pack.base_uoms_by_density
+        db,
+        raw_description,
+        None if pack.from_description else pack.convertible_base_uoms,
+        frozenset() if pack.from_description else pack.base_uoms_by_density,
     )
     suggested = candidate is not None and similarity is not None and similarity >= REVIEW_QUEUE_CONFIDENCE_LOW
     candidate_base_uom = candidate.base_uom if suggested else _unit_without_a_product(pack, candidate)
     try:
         qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom, candidate if suggested else None)
-    except BilledUnitMismatchError:
+    except PackSizeParseError:
+        # BilledUnitMismatchError, or, for a pack read from the description,
+        # a product in a unit it doesn't convert to.
         # The item can still be identified (the pack parsed, so the unit
         # family is known and the embedding search above is valid); only its
         # price per base unit can't be. Keep the suggestion for the reviewer,

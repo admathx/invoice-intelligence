@@ -294,6 +294,7 @@ def app_run(work_dir: Path, accept_suggestions: bool = True) -> None:
     from sqlalchemy import func, select
 
     from app.db import SessionLocal, bind_tenant
+    from app.duplicates import file_hash
     from app.ingest.upload import save_invoice_bytes
     from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceAlert, PriceObservation
     from app.models.enums import AlertStatus, InvoiceSource, InvoiceStatus
@@ -315,6 +316,10 @@ def app_run(work_dir: Path, accept_suggestions: bool = True) -> None:
     client = TestClient(app, headers={CSRF_HEADER: CSRF_HEADER_VALUE})
     general = _location(db, f"{TEST_LOCATION_PREFIX}Kitchen", "Charlotte, NC")
     series = _location(db, f"{TEST_LOCATION_PREFIX}Harbor & Pine", "Charlotte, NC")
+    # Set E are scans, faxes and photos OF invoices in sets A-C, with the same
+    # numbers: in one location they're rightly held as copies. Their own
+    # location tests how well each is read.
+    scans = _location(db, f"{TEST_LOCATION_PREFIX}Scans", "Charlotte, NC")
     results: dict[str, dict] = {}
     for name, entry in sorted(gate.items()):
         result = {**entry, "app_outcome": entry["outcome"]}
@@ -326,14 +331,25 @@ def app_run(work_dir: Path, accept_suggestions: bool = True) -> None:
             result["app_outcome"] = "not extracted yet"
             continue
         replay.next = json.loads(extracted.read_text())
-        tenant = series if entry["set"] == "H" else general
-        invoice = Invoice(
-            id=uuid.uuid4(), tenant_id=tenant.id, source=InvoiceSource.upload, status=InvoiceStatus.received, original_file_uri=""
-        )
+        tenant = {"H": series, "E": scans}.get(entry["set"], general)
+        data = (work_dir / f"{name}.pdf").read_bytes()
         bind_tenant(db, tenant.id)
+        # As the upload endpoint does: the very same file is refused.
+        digest = file_hash(data)
+        if db.scalar(select(Invoice.id).where(Invoice.tenant_id == tenant.id, Invoice.file_sha256 == digest)):
+            result["app_outcome"] = "Refused: already added"
+            continue
+        invoice = Invoice(
+            id=uuid.uuid4(),
+            tenant_id=tenant.id,
+            source=InvoiceSource.upload,
+            status=InvoiceStatus.received,
+            original_file_uri="",
+            file_sha256=digest,
+        )
         db.add(invoice)
         db.flush()
-        invoice.original_file_uri = save_invoice_bytes(invoice.id, f"{name}.pdf", (work_dir / f"{name}.pdf").read_bytes())
+        invoice.original_file_uri = save_invoice_bytes(invoice.id, f"{name}.pdf", data)
         db.commit()
         invoice_id = invoice.id
         try:
@@ -351,8 +367,29 @@ def app_run(work_dir: Path, accept_suggestions: bool = True) -> None:
         result["matched"] = sum(1 for li in lines if li.canonical_sku_id is not None)
         result["auto_matched"] = sum(1 for li in lines if li.review_status.value == "auto")
         result["priced"] = sum(1 for li in lines if li.normalized_unit_price is not None)
-        if accept_suggestions:
-            result["accepted"] = _accept_suggestions(client, db, tenant.id, invoice_id)
+        result["fees"] = sum(1 for li in lines if li.review_status.value == "not_product")
+        distributor = db.get(Distributor, invoice.distributor_id) if invoice.distributor_id else None
+        result["distributor_name"] = distributor.name if distributor else None
+        if not accept_suggestions:
+            continue
+        # What a person on the invoice page does with a held one: delete a
+        # copy or something that isn't an invoice ...
+        if invoice.duplicate_of_id or invoice.document_type:
+            result["held_as"] = "copy" if invoice.duplicate_of_id else invoice.document_type
+            resp = client.delete(f"/invoices/{invoice_id}", params={"tenant_id": str(tenant.id)})
+            result["deleted"] = resp.status_code == 204
+            continue
+        # ... and add a local distributor the app doesn't know yet, by the
+        # name printed on the invoice.
+        if distributor is not None and distributor.slug == "other" and invoice.printed_distributor:
+            added = client.post(
+                "/distributors", params={"tenant_id": str(tenant.id)}, json={"name": invoice.printed_distributor}
+            ).json()
+            client.patch(f"/invoices/{invoice_id}", params={"tenant_id": str(tenant.id)}, json={"distributor_id": added["id"]})
+            result["distributor_added"] = added["name"]
+            db.expire_all()
+            bind_tenant(db, tenant.id)
+        result["accepted"] = _accept_suggestions(client, db, tenant.id, invoice_id)
 
     # Set H: which products opened alerts, against what the plan says should.
     bind_tenant(db, series.id)
@@ -395,6 +432,22 @@ def _summarize(results: dict, series: dict) -> None:
         f"{sum(r.get('auto_matched', 0) for r in results.values())}, suggestions accepted "
         f"{sum(r.get('accepted', 0) for r in results.values())}"
     )
+    held = {k: r["held_as"] for k, r in results.items() if r.get("held_as")}
+    refused = [k for k, r in results.items() if r["app_outcome"].startswith("Refused")]
+    added = {k: r["distributor_added"] for k, r in results.items() if r.get("distributor_added")}
+    recognized = {
+        k: r["distributor_name"]
+        for k, r in results.items()
+        if r.get("distributor_name") not in (None, "Other")
+        and r["distributor"] == "other"
+        and not r.get("distributor_added")
+        and not r.get("held_as")
+    }
+    print(f"refused as the same file: {refused}")
+    print(f"held, then deleted: {held}")
+    print(f"local distributors added: {added}")
+    print(f"recognized by name on a later invoice: {recognized}")
+    print(f"fee lines kept off Match items: {sum(r.get('fees', 0) for r in results.values())}")
     print(f"Set H: {series.get('observations')} prices recorded; price alerts: {len(series['alerts'])}")
     for a in series["alerts"]:
         print(f"  {a['product']} from {a['distributor']}: {a['from']} -> {a['to']} ({float(a['pct_change']):+.1%})")
@@ -405,7 +458,17 @@ def cleanup() -> None:
     from sqlalchemy import delete, select
 
     from app.db import SessionLocal, bind_tenant
-    from app.models import AuditEvent, Invoice, InvoiceLineItem, PriceAlert, PriceObservation, SkuAlias, Tenant, User
+    from app.models import (
+        AuditEvent,
+        Distributor,
+        Invoice,
+        InvoiceLineItem,
+        PriceAlert,
+        PriceObservation,
+        SkuAlias,
+        Tenant,
+        User,
+    )
     from app.storage import forget_original, get_storage, renders_prefix
 
     db = SessionLocal()
@@ -421,6 +484,7 @@ def cleanup() -> None:
         db.execute(delete(InvoiceLineItem).where(InvoiceLineItem.tenant_id == tenant_id))
         db.execute(delete(Invoice).where(Invoice.tenant_id == tenant_id))
         db.execute(delete(AuditEvent).where(AuditEvent.tenant_id == tenant_id))
+        db.execute(delete(Distributor).where(Distributor.account_key == tenant_id))
         db.execute(delete(Tenant).where(Tenant.id == tenant_id))
         db.commit()
         for invoice_id in invoice_ids:

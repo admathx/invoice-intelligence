@@ -26,12 +26,13 @@ export default function ExportPanel() {
   const [distributors, setDistributors] = useState<Distributor[]>([]);
 
   useEffect(() => {
-    if (!open || distributors.length) return;
-    api("/distributors")
+    if (!open || distributors.length || !locationId) return;
+    // This location's list: the shared distributors and any it added.
+    api(`/distributors?tenant_id=${locationId}`)
       .then((res) => (res.ok ? res.json() : []))
       .then(setDistributors)
       .catch(() => setDistributors([]));
-  }, [open, distributors.length]);
+  }, [open, distributors.length, locationId]);
 
   // Computed when opened, on the viewer's own calendar.
   const range = useMemo<Range>(

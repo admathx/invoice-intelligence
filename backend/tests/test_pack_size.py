@@ -282,3 +282,78 @@ def test_gallons_are_priced_per_pound_for_a_weight_product_with_a_density():
 def test_without_a_density_weight_and_volume_still_dont_compare():
     with pytest.raises(ProductUnitMismatchError):
         _apply_pack_size(parse_pack_size("35 LB"), Decimal("1"), Decimal("40.67"), "CS", _product(BaseUom.gal))
+
+
+# --- rolls, packs of packs, pounds written "#", bags ------------------------
+
+from app.normalize.pack_size import pack_from_description  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "raw, unit, amount",
+    [
+        ("1/500 FT", "ea", "1"),  # one roll of foil
+        ("6/3 PK", "ea", "18"),  # six packs of three romaine hearts
+        ("50#", "lb", "50"),
+        ("4/5#", "lb", "20"),
+    ],
+)
+def test_rolls_packs_and_pound_signs_parse(raw, unit, amount):
+    parsed = parse_pack_size(raw)
+    assert (parsed.unit, parsed.base_units_per_case) == (unit, Decimal(amount))
+
+
+def test_six_ten_pound_sign_is_left_unreadable():
+    """"6/10#" is as likely six #10 cans as six 10 lb bags."""
+    with pytest.raises(PackSizeParseError):
+        parse_pack_size("6/10#")
+
+
+def test_a_bag_of_a_single_bag_pack_is_the_whole_pack():
+    """Flour "50 LB" billed BG: every bag of flour and beans went unpriced."""
+    _, price = _apply_pack_size(parse_pack_size("50 LB"), Decimal("1"), Decimal("24.50"), "BG", _product(BaseUom.lb))
+    assert price == Decimal("0.4900")
+
+
+def test_a_bag_of_a_pack_of_several_bags_is_refused():
+    """"4/5 LB" billed BG: one 5 lb bag, or the whole case?"""
+    with pytest.raises(BilledUnitMismatchError):
+        _apply_pack_size(parse_pack_size("4/5 LB"), Decimal("1"), Decimal("12.50"), "BG", _product(BaseUom.lb))
+
+
+@pytest.mark.parametrize(
+    "description, unit, amount",
+    [
+        ("BBQ SAUCE ORIGINAL 4/1 GAL", "gal", "4"),
+        ("FLOUR ALL PURPOSE 50 LB", "lb", "50"),
+        ("EGG LARGE 15DZ", "dz", "15"),
+        ("POTATO RUSSET 50#", "lb", "50"),
+    ],
+)
+def test_a_pack_written_in_the_description_is_read(description, unit, amount):
+    parsed = pack_from_description(description)
+    assert (parsed.unit, parsed.base_units_per_case, parsed.from_description) == (unit, Decimal(amount), True)
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "CUPS HOT PAPER 16 OZ",  # a cup size
+        "CHICKEN BREAST BNLS 6OZ",  # a portion
+        "CHEESE AMER SLCD 120CT",  # slices, not the case
+        "KETCHUP FANCY 6/10#",  # cans or pounds
+        "BURGER PATTY 1/3 LB",  # a third of a pound
+        "BEEF GRND 80/20 4/10",  # no unit
+        "SHRIMP 16/20",  # a count size
+    ],
+)
+def test_sizes_that_arent_the_pack_are_not_read_from_the_description(description):
+    assert pack_from_description(description) is None
+
+
+def test_a_described_pack_only_prices_against_a_product_it_converts_to():
+    pack = pack_for_line(None, "CS", "BAGS TRASH 33 GAL")
+    with pytest.raises(ProductUnitMismatchError):
+        _apply_pack_size(pack, Decimal("1"), Decimal("32.99"), "CS", _product(BaseUom.each))
+    _, price = _apply_pack_size(pack_for_line(None, "CS", "BBQ SAUCE ORIGINAL 4/1 GAL"), Decimal("1"), Decimal("41.16"), "CS", _product(BaseUom.gal))
+    assert price == Decimal("10.2900")

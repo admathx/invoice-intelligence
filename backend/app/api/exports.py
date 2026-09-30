@@ -63,7 +63,13 @@ _STATUS = {
     "confirmed": "Confirmed",
     "failed": "Couldn't read",
 }
-_MATCH = {"auto": "Matched", "pending": "Waiting for review", "confirmed": "Confirmed", "corrected": "Corrected"}
+_MATCH = {
+    "auto": "Matched",
+    "pending": "Waiting for review",
+    "confirmed": "Confirmed",
+    "corrected": "Corrected",
+    "not_product": "Fee or charge",
+}
 
 
 class _Kind(str, Enum):

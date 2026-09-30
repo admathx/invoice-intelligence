@@ -98,6 +98,13 @@ def build_price_observation(
         return None
     if line.canonical_sku_id is None or line.normalized_unit_price is None:
         return None
+    # Not a price someone paid for something delivered: a free promo case
+    # ($0), a return or credit (negative quantity, repeating the original
+    # price), or an item that was out of stock (quantity 0). A free case
+    # recorded at $0 pulled the product's typical price down, and could hide
+    # an increase or fake a drop.
+    if line.normalized_unit_price <= 0 or line.quantity is None or line.quantity <= 0:
+        return None
     if invoice.invoice_date is None or invoice.distributor_id is None:
         return None
     return PriceObservation(

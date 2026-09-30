@@ -32,6 +32,7 @@ from app import mail
 from app.analytics.negotiation import NegotiationBasis, build_negotiation_sheet
 from app.config import settings
 from app.db import bind_tenant
+from app.matching_queue import waiting_to_match
 from app.models import (
     CanonicalSku,
     DigestSend,
@@ -43,8 +44,7 @@ from app.models import (
     TenantMembership,
     User,
 )
-from app.models.distributor import UNRECOGNIZED_SLUG
-from app.models.enums import AlertStatus, InvoiceStatus, ReviewStatus
+from app.models.enums import AlertStatus, InvoiceStatus
 
 logger = logging.getLogger(__name__)
 
@@ -155,11 +155,7 @@ def location_week(db: Session, tenant: Tenant, now: datetime) -> LocationWeek:
         select(func.count(InvoiceLineItem.id))
         .join(Invoice, Invoice.id == InvoiceLineItem.invoice_id)
         .join(Distributor, Distributor.id == Invoice.distributor_id)
-        .where(
-            InvoiceLineItem.tenant_id == tenant.id,
-            InvoiceLineItem.review_status == ReviewStatus.pending,
-            Distributor.slug != UNRECOGNIZED_SLUG,
-        )
+        .where(InvoiceLineItem.tenant_id == tenant.id, *waiting_to_match())
     )
 
     week.received_count, total = db.execute(

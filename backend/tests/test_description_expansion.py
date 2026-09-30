@@ -20,3 +20,7 @@ def test_distributor_shorthand_is_spelled_out(printed, expected):
 def test_grn_is_grain_on_long_grain_rice_and_green_elsewhere():
     assert normalize_for_embedding("RICE LNG GRN") == "RICE LONG GRAIN"
     assert normalize_for_embedding("PEPPER BELL GRN") == "PEPPER BELL GREEN"
+
+
+def test_solid_cheese_is_block_cheese():
+    assert normalize_for_embedding("CHEESE CHEDDAR SOLID") == "CHEESE CHEDDAR BLOCK"

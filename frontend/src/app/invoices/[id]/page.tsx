@@ -16,8 +16,8 @@ async function getHistory(id: string, locationId: string): Promise<AuditEvent[]>
   return res.ok ? res.json() : [];
 }
 
-async function getDistributors(): Promise<Distributor[]> {
-  const res = await serverGet("/distributors");
+async function getDistributors(locationId: string): Promise<Distributor[]> {
+  const res = await serverGet(`/distributors?tenant_id=${locationId}`);
   return res.ok ? res.json() : [];
 }
 
@@ -38,7 +38,7 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
   // Only a reviewable invoice offers a distributor picker, so don't fetch the
   // list for every other invoice detail view.
   const reviewable = invoice.status === "needs_review" || invoice.status === "failed";
-  const distributors = reviewable ? await getDistributors() : [];
+  const distributors = reviewable ? await getDistributors(locationId) : [];
   return (
     <>
       <InvoiceReview initial={invoice} distributors={distributors} />

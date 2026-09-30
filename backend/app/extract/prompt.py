@@ -32,7 +32,13 @@ Rules:
   the month first, so 04/06/2026 is 2026-04-06). Use the invoice date, not a due, order or print date. If no
   invoice date is printed, use an empty string rather than guessing one; delivery_date is null if not printed.
 - distributor is one of: sysco, us_foods, gordon, pfg, other. Use "other" if you cannot identify the
-  distributor from the letterhead/branding.
+  distributor from the letterhead/branding, or if it is a different company (a local produce, seafood or
+  supply company). distributor_name is the selling company's name as printed on the letterhead, e.g.
+  "FreshLine Produce Co." (null if none is printed); never the customer's name from the bill-to block.
+- document_type says what this is: "invoice" (a bill for goods delivered, including a cash-and-carry
+  receipt), "credit_memo" (a credit for returned or damaged goods), "statement" (a list of invoices and
+  balances owed, not goods), "price_list" (an order guide or price list, with no quantities bought or
+  totals), or "other". Read statements and price lists the same way, but say what they are.
 - If the invoice has multiple pages, line items continue across pages in order — do not restart
   line_number at 1 on each page.
 """

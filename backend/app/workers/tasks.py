@@ -8,12 +8,15 @@ from pathlib import Path
 
 from sqlalchemy import delete, select
 
-from app import audit, ops
+from app import audit, business_distributors, ops
 from app.analytics.price_creep import upsert_creep_alerts
 from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS, SessionLocal, bind_tenant
 from app.extract.client import AnthropicExtractorClient, ExtractionFailedError, get_extractor
+from app.duplicates import find_original
+from app.extract.charges import is_charge
 from app.extract.confidence import assess_extraction
+from app.extract.schema import DOCUMENT_TYPES, PRICED_DOCUMENT_TYPES
 from app.extract.amounts import parse_amount
 from app.extract.dates import parse_invoice_date
 from app.extract.units import billing_unit
@@ -103,6 +106,12 @@ def process_invoice(invoice_id: str) -> None:
             extracted, cost_usd = extractor.extract(page_paths)
 
         distributor = db.scalar(select(Distributor).where(Distributor.slug == extracted.distributor))
+        invoice.printed_distributor = (extracted.distributor_name or "").strip() or None
+        if distributor is None or distributor.slug == UNRECOGNIZED_SLUG:
+            # A local vendor this business added before, recognized by the
+            # name printed on it (app/business_distributors.py).
+            distributor = business_distributors.find_by_name(db, invoice.tenant_id, invoice.printed_distributor) or distributor
+        distributor_known = distributor is not None and distributor.slug != UNRECOGNIZED_SLUG
 
         invoice.distributor_id = distributor.id if distributor else None
         invoice.invoice_number = extracted.invoice_number
@@ -132,10 +141,22 @@ def process_invoice(invoice_id: str) -> None:
         # that isn't `extracted`. Doing it after (as this used to) meant
         # auto-matched lines on an invoice with a misread price had already
         # written observations by the time the arithmetic caught the error.
-        invoice.status = assess_extraction(extracted).status
+        invoice.status = assess_extraction(extracted, distributor_known=distributor_known).status
         if invoice.invoice_date is None:
             # Its prices can't be placed in time until someone adds the date
             # (the review screen asks for it).
+            invoice.status = InvoiceStatus.needs_review
+
+        # Held, whatever its numbers say, when it isn't an invoice (a
+        # statement, a price list) or looks like a copy of one already added
+        # (app/duplicates.py). Its lines are kept, unmatched and off Match
+        # items, until a person deletes it or says otherwise.
+        kind = (extracted.document_type or "invoice").strip().lower()
+        invoice.document_type = None if kind in PRICED_DOCUMENT_TYPES else (kind if kind in DOCUMENT_TYPES else "other")
+        original = find_original(db, invoice)
+        invoice.duplicate_of_id = original.id if original is not None else None
+        held = invoice.document_type is not None or original is not None
+        if held:
             invoice.status = InvoiceStatus.needs_review
 
         # Needed for the denormalized metro/volume_tier on any price
@@ -176,7 +197,10 @@ def process_invoice(invoice_id: str) -> None:
             # US Foods product with the same code on the next. The invoice is
             # already held (assess_extraction flags 'other'), and choosing the
             # real distributor on the review screen re-matches every line.
-            if distributor is not None and distributor.slug != UNRECOGNIZED_SLUG:
+            if is_charge(line.raw_description, line.raw_pack_size):
+                # A fee or discount: nothing to match (app/extract/charges.py).
+                line_item.review_status = ReviewStatus.not_product
+            elif distributor_known and not held:
                 match = match_line_item(
                     db,
                     distributor_id=invoice.distributor_id,
@@ -211,6 +235,9 @@ def process_invoice(invoice_id: str) -> None:
             invoice.tenant_id,
             status=invoice.status,
             distributor=extracted.distributor,
+            printed_distributor=invoice.printed_distributor,
+            document_type=invoice.document_type,
+            duplicate_of=invoice.duplicate_of_id,
             line_count=len(extracted.line_items),
             extraction_model=invoice.extraction_model,
             extraction_cost_usd=invoice.extraction_cost_usd,

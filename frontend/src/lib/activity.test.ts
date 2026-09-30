@@ -135,3 +135,30 @@ describe("describing the newer events", () => {
     expect(actorLabel(event("auth.password_reset_requested", { email: "a@b.c", sent: false }))).toBe("Someone");
   });
 });
+
+describe("the realistic test set's actions", () => {
+  const event = (action: string, details: Record<string, unknown>, entity_type = "invoice") =>
+    ({ action, details, entity_type, entity_id: "inv-1", actor_name: "Dana" }) as unknown as AuditEvent;
+
+  it("says in words what happened to copies, statements, fees and new distributors", () => {
+    expect(describeEvent(event("invoice.extracted", { line_count: 12, duplicate_of: "x" }))).toBe(
+      "read 12 items; it looks like a copy of an invoice already added",
+    );
+    expect(describeEvent(event("invoice.extracted", { document_type: "statement" }))).toBe(
+      "read it; it looks like a statement, not an invoice",
+    );
+    expect(describeEvent(event("invoice.deleted", { invoice_number: "88214", distributor: "Sysco", total: "142.50" }))).toBe(
+      "deleted invoice 88214 from Sysco (total 142.50)",
+    );
+    expect(describeEvent(event("distributor.added", { name: "FreshLine Produce Co." }, "distributor"))).toBe(
+      "added the distributor FreshLine Produce Co.",
+    );
+    expect(describeEvent(event("invoice_line.not_a_product", { raw_description: "FUEL SURCHARGE" }, "invoice_line_item"))).toBe(
+      "marked FUEL SURCHARGE as a fee or charge, not a product",
+    );
+  });
+
+  it("doesn't link to an invoice that was deleted", () => {
+    expect(eventInvoiceId(event("invoice.deleted", {}))).toBeNull();
+  });
+});

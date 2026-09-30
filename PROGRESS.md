@@ -2479,3 +2479,52 @@ controls do (falling eggs, pack change, one-week spike, 3% rise).
 ### Gates
 Backend 440, frontend 54 unit, `tsc` clean, matching gate PASS, creep gate
 PASS.
+
+## Copies, non-invoices, local vendors, fees, and packs (test-set follow-ups)
+
+Everything else the realistic test set showed (migration 0020):
+
+- **Copies.** An identical file is refused at upload (by SHA-256) and
+  skipped when emailed; a rescan, once read, is held when another invoice
+  from the same distributor has the same number (ignoring spaces,
+  punctuation and leading zeros). Held copies say which invoice they copy;
+  a person deletes one or says it's different ("keep"). Invoices can now be
+  deleted; their prices go with them, item matches stay.
+- **Not invoices.** Extraction now reports a document type; statements,
+  price lists and anything else are held, unmatched and off Match items,
+  and say what they are. Credit memos are read like invoices.
+- **Local vendors.** Extraction reports the printed distributor name. A
+  business can add its own distributor from the invoice page ("+ Add a
+  distributor", filled from the printed name), visible only to it; its
+  next invoices are recognized by name. In the replay, the second
+  FreshLine invoice was attributed and matched with no one touching it.
+- **Fees.** Fee, surcharge, deposit and discount lines with no pack are
+  marked "not a product" (a new review status): off Match items, shown as
+  "Fee or charge" and as their own spending category. Match items has
+  "Not a product" for the rest; "It's a product" sends one back with a
+  suggestion.
+- **Not prices.** Free promo lines ($0), returns and out-of-stock lines
+  add no price observation.
+- **Password-protected PDFs** are refused at upload and by email, saying so.
+- **Packs.** Rolls ("1/500 FT"), packs of packs ("6/3 PK"), pounds written
+  "#" ("50#", "4/5#"; "6/10#" stays unreadable: cans or pounds), a bag or
+  tub billed against a single-bag pack, and packs written into the
+  description on invoices without a pack column (narrowly: never a bare OZ
+  or count, and only when it converts to the matched product).
+- **Catalog:** Romaine Hearts and Hinged Container 9in; "SOLID" reads as
+  block (cheddar was offered as shredded).
+
+Replay of the set (with a person deleting held copies and non-invoices and
+adding local vendors): 82 of 99 match the key; every difference is either
+the app being safer (holding a misread line) or better than the key
+expected (recognizing a vendor, refusing a copy). Priced items 1,739 of
+1,913 (from 1,575). The scans in set E are copies of set A-C invoices with
+the same numbers, so the replay gives them their own location.
+
+The brief for the invoice generator is updated (version 2): keys hold only
+what's printed, new key fields, a customer column, and new sets for price
+comparisons across six restaurants and for emails.
+
+### Gates
+Backend 482, frontend 56 unit, `tsc` clean, matching gate PASS, creep gate
+PASS.

@@ -309,7 +309,7 @@ def test_extractions_other_counts_as_unrecognized_not_as_a_distributor(client, d
     assert any("distributor" in reason for reason in check["reasons"])
     assert client.post(_url(invoice, tenant, "/confirm")).status_code == 422
     # And it isn't offered as a choice.
-    assert "other" not in {d["slug"] for d in client.get("/distributors").json()}
+    assert "other" not in {d["slug"] for d in client.get("/distributors", params={"tenant_id": str(tenant.id)}).json()}
 
 
 def test_other_cant_be_chosen_as_the_correction(client, db, misread_invoice, tenant):

@@ -73,6 +73,9 @@ ABBREVIATION_EXPANSIONS: dict[str, str] = {
     "SHRMP": "SHRIMP",
     # Pork butt is the shoulder cut; it matched Pork Chop Boneless.
     "BUTT": "SHOULDER",
+    # Solid cheese is block cheese; "CHEESE CHEDDAR SOLID" was offered as
+    # shredded. (Solid butter is block butter too.)
+    "SOLID": "BLOCK",
     "P&D": "PEELED DEVEINED",
     "DEV": "DEVEINED",
     "TLO": "TAIL ON",

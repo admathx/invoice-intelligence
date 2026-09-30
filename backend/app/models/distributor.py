@@ -13,6 +13,10 @@ class Distributor(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String, nullable=False)
     slug: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    # The business that added it (account_key_column: its account, or the
+    # location itself), for a local vendor only that business buys from. Null
+    # for the shared distributors everyone sees.
+    account_key: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
 
 # Seeded slugs (see alembic seed data / synthetic generator):
