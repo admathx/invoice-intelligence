@@ -32,6 +32,7 @@ from app import audit, business_distributors
 from app.analytics.price_creep import upsert_creep_alerts
 from app.api.deps import get_tenant_or_404
 from app.auth import current_user, get_db_for_tenant
+from app.duplicates import BEING_READ, find_original
 from app.extract.charges import is_charge
 from app.extract.confidence import check_arithmetic
 from app.storage import forget_original, get_storage, page_names, renders_prefix
@@ -495,6 +496,14 @@ def confirm_invoice(
     return build_invoice_detail(db, invoice)
 
 
+def _match_held_lines(db: Session, invoice: Invoice) -> None:
+    """Match the lines of an invoice that's no longer held: matching was
+    skipped while it was (app/workers/tasks.py)."""
+    for line in _lines(db, invoice.id):
+        if line.review_status == ReviewStatus.pending and line.canonical_sku_id is None:
+            _match(db, invoice, line)
+
+
 @router.post("/{invoice_id}/keep", response_model=InvoiceDetailOut)
 def keep_invoice(
     invoice_id: uuid.UUID,
@@ -513,17 +522,13 @@ def keep_invoice(
     held_as = {"copy_of": invoice.duplicate_of_id, "document_type": invoice.document_type}
     invoice.duplicate_of_id = None
     invoice.document_type = None
-    for line in _lines(db, invoice.id):
-        if line.review_status == ReviewStatus.pending and line.canonical_sku_id is None:
-            _match(db, invoice, line)
+    _match_held_lines(db, invoice)
     _take_under_review(invoice)
     audit.record(db, user, "invoice.kept", "invoice", invoice.id, tenant_id, **held_as)
     db.commit()
     return build_invoice_detail(db, invoice)
 
 
-# Still being read: the worker holds these and would write lines after.
-_BEING_READ = {InvoiceStatus.received, InvoiceStatus.rendering, InvoiceStatus.extracting}
 
 
 @router.delete("/{invoice_id}", status_code=204)
@@ -540,7 +545,8 @@ def delete_invoice(
     invoice = db.get(Invoice, invoice_id, with_for_update=True)  # tenant-scoped: another location's isn't found
     if invoice is None:
         raise HTTPException(status_code=404, detail="We couldn't find that invoice.")
-    if invoice.status in _BEING_READ:
+    # Still being read: the worker holds these and would write lines after.
+    if invoice.status in BEING_READ:
         raise HTTPException(status_code=409, detail="It's still being read. Delete it once it's done.")
     line_ids = list(db.scalars(select(InvoiceLineItem.id).where(InvoiceLineItem.invoice_id == invoice.id)))
     had_prices = bool(
@@ -561,6 +567,15 @@ def delete_invoice(
         total=invoice.total,
         status=invoice.status,
     )
+    # Copies held against this one: once it's gone, each is either a copy of
+    # another (the earliest remaining) or the only one, and is matched like
+    # any invoice. Otherwise the database would just clear the link, leaving
+    # an unheld invoice whose lines were never matched.
+    copies = list(
+        db.scalars(select(Invoice).where(Invoice.duplicate_of_id == invoice.id).order_by(Invoice.created_at))
+    )
+    for copy in copies:
+        copy.duplicate_of_id = None
     if line_ids:
         db.execute(delete(PriceObservation).where(PriceObservation.invoice_line_item_id.in_(line_ids)))
         # Matches people made on its lines stay: "this item code is that
@@ -568,6 +583,13 @@ def delete_invoice(
         # line clears itself (ON DELETE SET NULL).
         db.execute(delete(InvoiceLineItem).where(InvoiceLineItem.id.in_(line_ids)))
     db.delete(invoice)
+    db.flush()
+    for copy in copies:
+        original = find_original(db, copy)
+        if original is not None:
+            copy.duplicate_of_id = original.id
+        elif copy.document_type is None:
+            _match_held_lines(db, copy)
     db.commit()
 
     # The stored file and page images; a failure here leaves only orphaned

@@ -101,11 +101,13 @@ class ProductUnitMismatchError(PackSizeParseError):
     reason as BilledUnitMismatchError: no price rather than a wrong one."""
 
 
-# A pack's pieces: "6/3 PK" is six packs of three, 18 pieces. Lengths count
-# rolls: "1/500 FT" is one roll, which is how the catalog prices foil and
-# film. Only in a pack size; as a billing unit, a PK is one whole pack.
-_PACK_COUNT_UNITS = {"PK": "ea", "PACK": "ea", "FT": "ea", "FEET": "ea", "IN": "ea", "INCH": "ea", "YD": "ea"}
-_LENGTHS = {"FT", "FEET", "IN", "INCH", "YD"}
+# A pack's pieces: "6/3 PK" is six packs of three, 18 pieces. A roll's length
+# counts rolls: "1/500 FT" is one roll, which is how the catalog prices foil
+# and film. Not inches: "14 IN" is a size (a pizza box, a tortilla), and read
+# as one roll it put a whole case's price on one box. Only in a pack size;
+# as a billing unit, a PK is one whole pack.
+_PACK_COUNT_UNITS = {"PK": "ea", "PACK": "ea", "FT": "ea", "FEET": "ea", "YD": "ea"}
+_LENGTHS = {"FT", "FEET", "YD"}
 
 # Billing units that are the whole case whatever the pack.
 CASE_UNITS = {"CS", "CASE", "CA", "CTN", "CARTON"}
@@ -241,20 +243,34 @@ def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
 
 
 # A pack written into an item's description, on invoices with no pack
-# column: "BBQ SAUCE ORIGINAL 4/1 GAL", "FLOUR ALL PURPOSE 50 LB",
-# "EGG LARGE 15DZ", "POTATO RUSSET 50#". Deliberately narrow: a count of two
-# or more, or a bare weight, volume or dozen. Never a bare OZ ("CHICKEN BREAST
-# 6OZ" is a portion, "CUPS 16 OZ" a cup size) or a count ("120CT" slices),
-# and never "6/10#", which is as likely six #10 cans as six 10 lb bags.
+# column. Deliberately narrow, because the description also carries sizes
+# that aren't the case:
+# - a count and a size ("BBQ SAUCE ORIGINAL 4/1 GAL", "CHEESE 4/5 LB"): the
+#   case, as a pack column would print it;
+# - but not "N/1 LB" on a patty or burger, where "4/1" means four to the
+#   pound;
+# - a bare size ("FLOUR ALL PURPOSE 50 LB") only on a line billed per bag,
+#   sack or tub, where it is the thing billed. Billed per case, a bare size
+#   is as often the unit inside ("SOUR CREAM 5 LB" in a case of four) and
+#   priced a tub of sour cream at four times its price per pound;
+# - never a bare OZ ("CHICKEN BREAST 6OZ", "CUPS 16 OZ"), a count ("120CT"
+#   slices), or "6/10#" (six #10 cans, or six 10 lb bags).
 _DESCRIBED_CASE = re.compile(r"(?<![\d/.])([2-9]|[1-9]\d+)\s*/\s*(\d+(?:\.\d+)?)\s*(LBS?|GAL|DZ|DOZ|OZ)(?![A-Z0-9])")
 _DESCRIBED_BARE = re.compile(r"(?<![\d/.])(\d+(?:\.\d+)?)\s*(LBS?|#|GAL|DZ|DOZ)(?![A-Z0-9])")
 
 
-def pack_from_description(description: str | None) -> ParsedPackSize | None:
+_PER_POUND_COUNT = re.compile(r"\b(PATTY|PATTIES|PTY|BURGER|BURGERS|HAMBURGER)\b")
+# Billed per one of these, a bare size in the description is the thing billed.
+_SINGLE_CONTAINER_BILLING = {"BG", "BAG", "SK", "SACK", "TB", "TUB", "PAIL", "PL", "BKT", "BUCKET", "JG", "JUG"}
+
+
+def pack_from_description(description: str | None, uom: str | None = None) -> ParsedPackSize | None:
     text = (description or "").upper()
     m = _DESCRIBED_CASE.search(text)
+    if m and m.group(2) == "1" and m.group(3).startswith("LB") and _PER_POUND_COUNT.search(text):
+        m = None
     raw = f"{m.group(1)}/{m.group(2)} {m.group(3)}" if m else None
-    if raw is None:
+    if raw is None and (uom or "").strip().upper() in _SINGLE_CONTAINER_BILLING:
         m = _DESCRIBED_BARE.search(text)
         raw = f"{m.group(1)} {'LB' if m.group(2) == '#' else m.group(2)}" if m else None
     if raw is None:
@@ -269,8 +285,8 @@ def pack_for_line(raw_pack_size: str | None, uom: str, description: str | None =
     """The pack a line's price is for. As printed; or, when none is printed:
     - billed by weight or volume ("LB", "GAL"), one of that unit: salmon at
       $9.70 billed LB is $9.70 a pound;
-    - otherwise, a pack written into the description, if there's one
-      (pack_from_description), for pricing only against a product it
+    - otherwise, a pack written into the description, if there's a clear
+      one (pack_from_description), for pricing only against a product it
       converts to.
     A count or a case with neither still says nothing about the amount, so
     that stays unreadable."""
@@ -278,7 +294,7 @@ def pack_for_line(raw_pack_size: str | None, uom: str, description: str | None =
         unit = billed_unit_token(uom)
         if unit in ("lb", "oz", "gal"):
             return ParsedPackSize(unit=unit, base_units_per_case=Decimal(1))
-        described = pack_from_description(description)
+        described = pack_from_description(description, uom)
         if described is not None:
             return described
     return parse_pack_size(raw_pack_size)

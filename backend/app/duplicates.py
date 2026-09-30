@@ -10,7 +10,7 @@ likely copy for a person to delete or keep.
 import hashlib
 import re
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.business_distributors import name_key
@@ -19,8 +19,17 @@ from app.models.distributor import UNRECOGNIZED_SLUG
 from app.models.enums import InvoiceStatus
 
 
+BEING_READ = (InvoiceStatus.received, InvoiceStatus.rendering, InvoiceStatus.extracting)
+
+
 def file_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def same_file(tenant_id, digest: str):
+    """This location's invoices from the identical file, except one that
+    couldn't be read: sending it again is how a person retries."""
+    return (Invoice.tenant_id == tenant_id, Invoice.file_sha256 == digest, Invoice.status != InvoiceStatus.failed)
 
 
 def number_key(number: str | None) -> str:
@@ -30,8 +39,8 @@ def number_key(number: str | None) -> str:
 
 
 def find_original(db: Session, invoice: Invoice) -> Invoice | None:
-    """The earliest other invoice this one looks like a copy of: same
-    location, same distributor, same number. None without a number or a
+    """The earliest invoice added before this one that it looks like a copy
+    of: same location, same distributor, same number. None without a number or a
     distributor to go on. For an unattributed invoice, the printed
     distributor name has to match as well."""
     key = number_key(invoice.invoice_number)
@@ -43,6 +52,12 @@ def find_original(db: Session, invoice: Invoice) -> Invoice | None:
         .where(
             Invoice.tenant_id == invoice.tenant_id,
             Invoice.id != invoice.id,
+            # The original is the one added first. Attachments of one email
+            # share a timestamp (the transaction's), so ties go by id.
+            or_(
+                Invoice.created_at < invoice.created_at,
+                and_(Invoice.created_at == invoice.created_at, Invoice.id < invoice.id),
+            ),
             Invoice.distributor_id == invoice.distributor_id,
             stored_key == key,
             Invoice.status != InvoiceStatus.failed,

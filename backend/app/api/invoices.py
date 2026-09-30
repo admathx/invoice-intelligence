@@ -12,7 +12,7 @@ from app.api.invoice_review import build_invoice_detail
 from app.auth import current_user, get_db_for_tenant
 from app.config import settings
 from app.api.invoice_review import invoice_label
-from app.duplicates import file_hash
+from app.duplicates import BEING_READ, file_hash, same_file
 from app.ingest.upload import InvalidInvoiceFileError, invoice_pdf_from_upload, save_invoice_bytes
 from app.models import Invoice, User
 from app.models.enums import InvoiceSource, InvoiceStatus
@@ -53,12 +53,15 @@ def upload_invoice(
 
     # The very same file again: refused before it's stored or paid for. A
     # rescan is a different file, and is caught once read (app/duplicates.py).
+    # Not one that couldn't be read: adding it again is how a person retries.
     digest = file_hash(pdf)
     already = db.scalar(
-        select(Invoice).where(Invoice.tenant_id == tenant_id, Invoice.file_sha256 == digest).order_by(Invoice.created_at)
+        select(Invoice)
+        .where(*same_file(tenant_id, digest))
+        .order_by(Invoice.created_at)
     )
     if already is not None:
-        which = "It's being read now." if already.invoice_number is None else f"It's {invoice_label(already)}."
+        which = "It's being read now." if already.status in BEING_READ else f"It's {invoice_label(already)}."
         raise HTTPException(status_code=409, detail=f"You've already added this file. {which}")
 
     invoice = Invoice(

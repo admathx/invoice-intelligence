@@ -35,7 +35,7 @@ from app import audit
 from app.config import settings
 from app.db import bind_tenant
 from app.ingest.photos import MAX_PHOTOS, image_kind
-from app.duplicates import file_hash
+from app.duplicates import file_hash, same_file
 from app.ingest.upload import (
     InvalidInvoiceFileError,
     invoice_pdf_from_upload,
@@ -387,7 +387,7 @@ def _add_invoices(db: Session, routed: _Routed, invoice_ids: list[uuid.UUID]) ->
         # skipped, as an upload of it is refused: it would be counted twice.
         digest = file_hash(attachment.content)
         already = None if digest in seen else db.scalar(
-            select(Invoice.id).where(Invoice.tenant_id == tenant.id, Invoice.file_sha256 == digest).limit(1)
+            select(Invoice.id).where(*same_file(tenant.id, digest)).limit(1)
         )
         if digest in seen or already is not None:
             audit.record(

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 DISTRIBUTOR_VALUES = ("sysco", "us_foods", "gordon", "pfg", "other")
@@ -21,9 +23,12 @@ class ExtractedLineItem(BaseModel):
 
 class ExtractedInvoice(BaseModel):
     distributor: str
-    # Defaults keep extractions stored before these existed readable.
+    # Defaults keep extractions stored before these existed readable. A
+    # Literal, so structured output can only answer one of the five: a free
+    # string let "receipt" through, which held a real invoice as "not an
+    # invoice".
     distributor_name: str | None = None
-    document_type: str = "invoice"
+    document_type: Literal["invoice", "credit_memo", "statement", "price_list", "other"] = "invoice"
     invoice_number: str
     invoice_date: str
     delivery_date: str | None = None

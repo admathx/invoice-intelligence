@@ -322,17 +322,41 @@ def test_a_bag_of_a_pack_of_several_bags_is_refused():
 
 
 @pytest.mark.parametrize(
-    "description, unit, amount",
+    "description, uom, unit, amount",
     [
-        ("BBQ SAUCE ORIGINAL 4/1 GAL", "gal", "4"),
-        ("FLOUR ALL PURPOSE 50 LB", "lb", "50"),
-        ("EGG LARGE 15DZ", "dz", "15"),
-        ("POTATO RUSSET 50#", "lb", "50"),
+        ("BBQ SAUCE ORIGINAL 4/1 GAL", "CS", "gal", "4"),
+        ("CHEESE AMERICAN SLICES 4/5 LB", "CS", "lb", "20"),
+        ("BUTTER SOLID 36/1 LB", "CS", "lb", "36"),
+        # A bare size is the thing billed when it's billed per bag or sack.
+        ("FLOUR ALL PURPOSE 50 LB", "BG", "lb", "50"),
+        ("POTATO RUSSET 50#", "SK", "lb", "50"),
     ],
 )
-def test_a_pack_written_in_the_description_is_read(description, unit, amount):
-    parsed = pack_from_description(description)
+def test_a_pack_written_in_the_description_is_read(description, uom, unit, amount):
+    parsed = pack_from_description(description, uom)
     assert (parsed.unit, parsed.base_units_per_case, parsed.from_description) == (unit, Decimal(amount), True)
+
+
+@pytest.mark.parametrize(
+    "description, uom",
+    [
+        # Billed per case, a bare size is as often the unit inside the case.
+        ("SOUR CREAM 5 LB", "CS"),
+        ("MAYO HVY DTY 1 GAL", "CS"),
+        ("EGG LARGE 15DZ", "CS"),
+        # Four patties to the pound, not four 1 lb packs.
+        ("PATTY BEEF 80/20 4/1 LB", "CS"),
+        ("BURGER ANGUS 3/1 LB", "CS"),
+    ],
+)
+def test_sizes_that_may_not_be_the_case_are_not_read_as_the_pack(description, uom):
+    assert pack_from_description(description, uom) is None
+
+
+def test_inches_are_a_size_not_a_roll():
+    """"14 IN" on a pizza box put a case's price on one box."""
+    with pytest.raises(PackSizeParseError):
+        parse_pack_size("14 IN")
 
 
 @pytest.mark.parametrize(
@@ -348,11 +372,11 @@ def test_a_pack_written_in_the_description_is_read(description, unit, amount):
     ],
 )
 def test_sizes_that_arent_the_pack_are_not_read_from_the_description(description):
-    assert pack_from_description(description) is None
+    assert pack_from_description(description, "BG") is None
 
 
 def test_a_described_pack_only_prices_against_a_product_it_converts_to():
-    pack = pack_for_line(None, "CS", "BAGS TRASH 33 GAL")
+    pack = pack_for_line(None, "CS", "BAGS TRASH 2/33 GAL")
     with pytest.raises(ProductUnitMismatchError):
         _apply_pack_size(pack, Decimal("1"), Decimal("32.99"), "CS", _product(BaseUom.each))
     _, price = _apply_pack_size(pack_for_line(None, "CS", "BBQ SAUCE ORIGINAL 4/1 GAL"), Decimal("1"), Decimal("41.16"), "CS", _product(BaseUom.gal))

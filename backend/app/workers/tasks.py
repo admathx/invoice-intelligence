@@ -151,8 +151,11 @@ def process_invoice(invoice_id: str) -> None:
         # statement, a price list) or looks like a copy of one already added
         # (app/duplicates.py). Its lines are kept, unmatched and off Match
         # items, until a person deletes it or says otherwise.
+        # Anything unrecognized is read as an invoice: holding a real one as
+        # "not an invoice" hides its prices, which is worse than a statement
+        # held for its numbers not adding up.
         kind = (extracted.document_type or "invoice").strip().lower()
-        invoice.document_type = None if kind in PRICED_DOCUMENT_TYPES else (kind if kind in DOCUMENT_TYPES else "other")
+        invoice.document_type = kind if kind in DOCUMENT_TYPES and kind not in PRICED_DOCUMENT_TYPES else None
         original = find_original(db, invoice)
         invoice.duplicate_of_id = original.id if original is not None else None
         held = invoice.document_type is not None or original is not None

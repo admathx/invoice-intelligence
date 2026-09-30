@@ -2536,3 +2536,29 @@ from the catalog as it stood when the gates were calibrated
 (`synthetic/generate.py` ADDED_AFTER_CORPUS); the regenerated corpus is
 byte-identical to before, and on a fresh database the gates score as they
 did (matching 98.8% / 0 false, creep 93.9% / 0 false).
+
+### Review fixes (ten findings, all fixed)
+
+- **Packs from descriptions are narrower.** Only a count and a size
+  ("4/1 GAL", "4/5 LB") are read; a bare size ("SOUR CREAM 5 LB") only on a
+  line billed per bag, sack or tub, because billed per case it is as often
+  the unit inside and priced sour cream at four times its price per pound,
+  automatically on repeat purchases. "N/1 LB" on patties and burgers (four
+  to the pound) isn't read. Inches are a size, not a roll ("14 IN" pizza
+  boxes). Replay: 1,723 items priced (was 1,739; the difference is the
+  bare-size lines now left unpriced rather than risked).
+- **A file that couldn't be read can be added again**; the "already added"
+  message says "being read now" only when it is.
+- **Document type is one of five values** in the extraction schema, and an
+  unknown one is read as an invoice rather than held.
+- **A location keeps its own distributors after joining an account**; it
+  sees its own and its account's.
+- **Deleting the original of a held copy** re-checks the copy: held against
+  the next earliest, or matched. The original is always the earlier invoice
+  (ties within one email by id).
+- **Fee wording** no longer includes bare "DELIVERY" or "DISC".
+- **Distributors store their reduced name** (migration 0021), unique per
+  business (a concurrent add returns the other's), looked up by index; "and"
+  and "&" read the same.
+
+Backend 497; matching and creep gates unchanged.

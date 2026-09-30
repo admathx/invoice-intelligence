@@ -248,6 +248,9 @@ def test_another_business_s_distributor_cant_be_chosen(db_session, tenant, distr
         ("CHEESE MOZZ SHRD", None, False),
         # A product line has a pack; its name can't make it a charge.
         ("DELIVERY BAGS PAPER", "500 CT", False),
+        ("BAG DELIVERY PIZZA INSUL", None, False),
+        ("DISC SANDING 5IN", None, False),
+        ("DELIVERY CHARGE", None, True),
     ],
 )
 def test_charges_are_recognized_by_wording_on_lines_with_no_pack(description, pack, charge):
@@ -306,3 +309,80 @@ def test_free_returned_and_out_of_stock_lines_add_no_price(db_session, tenant, d
     line.quantity, line.unit_price, line.normalized_unit_price = Decimal(quantity), Decimal(unit_price), Decimal(unit_price)
     invoice = db_session.get(Invoice, line.invoice_id)
     assert build_price_observation(line, invoice, db_session.get(Tenant, tenant.id)) is None
+
+
+# --- Found reviewing the above ----------------------------------------------------------
+
+
+def test_a_file_that_couldnt_be_read_can_be_added_again(db_session, tenant):
+    data = _pdf("unreadable once")
+    first = _post(tenant, data)
+    assert _post(tenant, data).json()["detail"] == "You've already added this file. It's being read now."
+    bind_tenant(db_session, tenant.id)
+    db_session.get(Invoice, uuid.UUID(first.json()["id"])).status = InvoiceStatus.failed
+    db_session.commit()
+    assert _post(tenant, data).status_code == 201
+
+
+def test_an_unknown_document_label_is_read_as_an_invoice(db_session, tenant, monkeypatch):
+    # Structured output now allows only the five; a stored reading may not.
+    odd = FAKE_PAYLOAD.model_copy(update={"document_type": "receipt", "invoice_number": "R-1"})
+    invoice_id = _read(monkeypatch, tenant, _pdf("receipt"), odd)
+    assert _detail(tenant, invoice_id)["document_type"] is None
+
+
+def test_a_location_keeps_its_distributors_when_it_joins_an_account(db_session, tenant, own_distributors):
+    from app.models import Account, Tenant
+
+    client = TestClient(app)
+    added = client.post("/distributors", params={"tenant_id": str(tenant.id)}, json={"name": "Harbor Prime Meats"}).json()
+    account = Account(id=uuid.uuid4(), name=f"Owner {uuid.uuid4().hex[:6]}")
+    db_session.add(account)
+    db_session.flush()
+    db_session.get(Tenant, tenant.id).account_id = account.id
+    db_session.commit()
+    try:
+        names = {d["id"] for d in client.get("/distributors", params={"tenant_id": str(tenant.id)}).json()}
+        assert added["id"] in names
+        again = client.post("/distributors", params={"tenant_id": str(tenant.id)}, json={"name": "HARBOR PRIME MEATS"})
+        assert again.json()["id"] == added["id"]
+    finally:
+        db_session.get(Tenant, tenant.id).account_id = None
+        db_session.commit()
+        db_session.execute(delete(Account).where(Account.id == account.id))
+        db_session.commit()
+
+
+def test_deleting_the_original_lets_its_copy_be_matched_or_held_against_the_next(db_session, tenant, monkeypatch):
+    original = _read(monkeypatch, tenant, _pdf("original"), FAKE_PAYLOAD)
+    first_copy = _read(monkeypatch, tenant, _pdf("copy one"), FAKE_PAYLOAD)
+    second_copy = _read(monkeypatch, tenant, _pdf("copy two"), FAKE_PAYLOAD)
+
+    assert TestClient(app).delete(f"/invoices/{original}", params={"tenant_id": str(tenant.id)}).status_code == 204
+
+    db_session.expire_all()
+    bind_tenant(db_session, tenant.id)
+    assert db_session.get(Invoice, first_copy).duplicate_of_id is None
+    assert db_session.get(Invoice, second_copy).duplicate_of_id == first_copy
+    # The one that's no longer held has been matched: nothing left unmatched
+    # for want of trying.
+    lines = db_session.scalars(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == first_copy)).all()
+    assert all(li.canonical_sku_id is not None or li.match_confidence is not None for li in lines)
+
+
+def test_adding_a_distributor_someone_just_added_returns_theirs(db_session, tenant, own_distributors, monkeypatch):
+    from app import business_distributors
+
+    first, created = business_distributors.add(db_session, tenant.id, "BulkMart Cash & Carry")
+    db_session.commit()
+    assert created
+    # As if the lookup ran before the other person's row existed.
+    real = business_distributors.find_by_name
+    calls = []
+    monkeypatch.setattr(
+        business_distributors,
+        "find_by_name",
+        lambda db, t, n: None if not calls and not calls.append(1) else real(db, t, n),
+    )
+    again, created_again = business_distributors.add(db_session, tenant.id, "Bulkmart Cash and Carry")
+    assert (again.id, created_again) == (first.id, False)

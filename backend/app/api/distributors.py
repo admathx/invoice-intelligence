@@ -9,7 +9,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import audit, business_distributors
-from app.analytics.benchmark import account_key_for
 from app.api.deps import get_tenant_or_404
 from app.auth import current_user, get_db_for_tenant
 from app.models import Distributor, User
@@ -35,7 +34,7 @@ def list_distributors(
     # 'other' is extraction's "couldn't tell", not a choice a reviewer can make.
     query = (
         select(Distributor)
-        .where(Distributor.slug != UNRECOGNIZED_SLUG, business_distributors.visible_to(account_key_for(db, tenant_id)))
+        .where(Distributor.slug != UNRECOGNIZED_SLUG, business_distributors.visible_to(db, tenant_id))
         .order_by(Distributor.name)
     )
     return [DistributorOut(id=d.id, name=d.name, slug=d.slug) for d in db.scalars(query)]
