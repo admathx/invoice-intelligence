@@ -730,3 +730,23 @@ def test_a_queue_action_waits_for_an_invoice_being_re_attributed(db_session, ten
     # Re-read under the lock, the line is no longer pending: nothing written.
     assert result["status"] == 409
     assert db_session.scalars(select(SkuAlias).where(SkuAlias.tenant_id == tenant.id)).all() == []
+
+
+@pytest.mark.parametrize("printed, expected_date, expected_status", [
+    ("07/07/2026", __import__("datetime").date(2026, 7, 7), None),  # as printed, month first
+    ("", None, InvoiceStatus.needs_review),  # none printed: held for a person, not failed
+])
+def test_the_worker_reads_printed_dates_and_holds_invoices_without_one(
+    db_session, tenant, monkeypatch, printed, expected_date, expected_status
+):
+    payload = FAKE_PAYLOAD.model_copy(update={"invoice_date": printed, "delivery_date": None})
+    monkeypatch.setattr("app.queue.invoice_queue.enqueue", lambda *a, **k: None)
+    monkeypatch.setattr("app.workers.tasks.extractor", _FixedExtractor(payload))
+    invoice_id = _upload(tenant)
+    process_invoice(str(invoice_id))
+    db_session.expire_all()
+    invoice = db_session.get(Invoice, invoice_id)
+    assert invoice.invoice_date == expected_date
+    assert invoice.status != InvoiceStatus.failed
+    if expected_status:
+        assert invoice.status == expected_status

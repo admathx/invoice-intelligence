@@ -2357,3 +2357,40 @@ backup and deployment code. Eight findings, all fixed.
 ### Gates
 Backend 363, frontend 54 unit, `tsc` and `next build` clean, Playwright 29
 (4 new, one extended).
+
+## Realistic test invoices
+
+99 invoices from a separate generator (sets A–H: clean PDFs, missing
+fields, layouts, long invoices, faxes and photos, multi-photo sets, odd
+documents, a 22-week price series), each with an answer key. The set lives
+outside the repo (`validation/test_set/`, gitignored);
+`validation/test_set.py` prepares it (photo sets become one PDF, as the
+upload screen does), scores reads against the keys, and replays them
+through the real worker, matcher and alerts. The replay acts as a person
+on Match items who accepts every suggestion, so aliases and price history
+build up as they would in use. Two full reads cost $6.46 ($0.033 each).
+
+Three bugs the synthetic corpus hid, each of which failed invoices outright:
+
+- **Dates.** The model returns dates as printed ("07/07/2026"); the worker
+  only read ISO, and 95 of 97 invoices failed. `app/extract/dates.py` reads
+  the common US forms; an invoice with no date is held for a look.
+- **Amounts.** "$3,557.97" failed 45 invoices; a blank amount failed the
+  packing slip and photos. `app/extract/amounts.py` reads $, commas and
+  credits written (12.50), 12.50- or 12.50 CR; an unreadable amount holds
+  the invoice.
+- **Units.** The pack size ("4/5 LB") landed in the unit on 807 of 1,924
+  lines, so they couldn't be priced. `app/extract/units.py` falls back to
+  CS (LB for fractional quantities) when the unit looks like a pack size.
+
+The prompt now asks for ISO dates, plain decimals, and CS when no unit is
+printed; the second read confirmed all three.
+
+Results (second read): distributor 97%, invoice # 98%, date 99%, totals
+97%, quantity, price and extended 100% of lines, 94% of invoices with every
+amount right. Every invoice with any wrong field was held as "Needs a
+look"; none came out Ready. In the price series, the rising items that
+were matched alerted and the pack change and one-week spike stayed quiet.
+
+### Gates
+Backend 409.

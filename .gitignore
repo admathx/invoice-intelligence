@@ -44,3 +44,4 @@ logs/
 
 # OS
 .DS_Store
+validation/test_set/

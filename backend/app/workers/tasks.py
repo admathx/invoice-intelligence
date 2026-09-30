@@ -14,6 +14,9 @@ from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS, SessionLocal, bind_tenant
 from app.extract.client import AnthropicExtractorClient, ExtractionFailedError, get_extractor
 from app.extract.confidence import assess_extraction
+from app.extract.amounts import parse_amount
+from app.extract.dates import parse_invoice_date
+from app.extract.units import billing_unit
 from app.ingest.render import render_pdf_to_pngs
 from app.models import Distributor, Invoice, InvoiceLineItem, PriceObservation, Tenant, build_price_observation
 from app.models.distributor import UNRECOGNIZED_SLUG
@@ -103,18 +106,19 @@ def process_invoice(invoice_id: str) -> None:
 
         invoice.distributor_id = distributor.id if distributor else None
         invoice.invoice_number = extracted.invoice_number
-        invoice.invoice_date = datetime.strptime(extracted.invoice_date, "%Y-%m-%d").date()
-        invoice.delivery_date = (
-            datetime.strptime(extracted.delivery_date, "%Y-%m-%d").date() if extracted.delivery_date else None
-        )
-        # Decimal(...) raises InvalidOperation on anything unparseable, which the
-        # except block below catches and routes the whole invoice to `failed` —
-        # per SPEC.md §1, "wrong numbers are worse than missing numbers," so an
-        # extractor returning a garbled number must not silently become a $0.00
-        # line item on an invoice that still ships as `extracted`.
-        invoice.subtotal = Decimal(extracted.subtotal)
-        invoice.tax = Decimal(extracted.tax)
-        invoice.total = Decimal(extracted.total)
+        # Whatever format the invoice prints it in (app/extract/dates.py). A
+        # missing or unreadable date holds the invoice for a person (below)
+        # rather than failing it: everything else on it may be fine.
+        invoice.invoice_date = parse_invoice_date(extracted.invoice_date)
+        invoice.delivery_date = parse_invoice_date(extracted.delivery_date)
+        # Amounts as printed ("$1,234.50", "(12.50)": app/extract/amounts.py).
+        # A blank or unreadable one stays empty, and the arithmetic check
+        # below then holds the invoice for a person: per SPEC.md §1, "wrong
+        # numbers are worse than missing numbers", so it never becomes a
+        # guessed figure on an invoice that ships as `extracted`.
+        invoice.subtotal = parse_amount(extracted.subtotal)
+        invoice.tax = parse_amount(extracted.tax)
+        invoice.total = parse_amount(extracted.total)
         invoice.extraction_model = (
             settings.extraction_model if isinstance(extractor, AnthropicExtractorClient) else "fake"
         )
@@ -129,6 +133,10 @@ def process_invoice(invoice_id: str) -> None:
         # auto-matched lines on an invoice with a misread price had already
         # written observations by the time the arithmetic caught the error.
         invoice.status = assess_extraction(extracted).status
+        if invoice.invoice_date is None:
+            # Its prices can't be placed in time until someone adds the date
+            # (the review screen asks for it).
+            invoice.status = InvoiceStatus.needs_review
 
         # Needed for the denormalized metro/volume_tier on any price
         # observation this invoice produces (see below).
@@ -136,8 +144,14 @@ def process_invoice(invoice_id: str) -> None:
         wrote_any_observation = False
 
         for line in extracted.line_items:
-            quantity = Decimal(line.quantity)
-            unit_price = Decimal(line.unit_price)
+            # A line's numbers can't be stored empty; an unreadable one is
+            # kept as 0, which fails the line's arithmetic, so it's
+            # highlighted on the review screen for a person to fill in. The
+            # invoice is already held: assess_extraction failed that line.
+            quantity = parse_amount(line.quantity) or Decimal(0)
+            unit_price = parse_amount(line.unit_price) or Decimal(0)
+            extended_price = parse_amount(line.extended_price) or Decimal(0)
+            uom = billing_unit(line.uom, line.raw_pack_size, quantity)
             line_item = InvoiceLineItem(
                 id=uuid.uuid4(),
                 tenant_id=invoice.tenant_id,
@@ -148,8 +162,8 @@ def process_invoice(invoice_id: str) -> None:
                 raw_pack_size=line.raw_pack_size,
                 quantity=quantity,
                 unit_price=unit_price,
-                extended_price=Decimal(line.extended_price),
-                uom=line.uom,
+                extended_price=extended_price,
+                uom=uom,
                 extraction_confidence=Decimal(str(line.confidence)),
             )
 
@@ -171,7 +185,7 @@ def process_invoice(invoice_id: str) -> None:
                     raw_pack_size=line.raw_pack_size,
                     quantity=quantity,
                     unit_price=unit_price,
-                    uom=line.uom,
+                    uom=uom,
                     tenant_id=invoice.tenant_id,
                 )
                 apply_match(line_item, match)

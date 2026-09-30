@@ -67,6 +67,10 @@ def _score_invoice(extracted: ExtractedInvoice, truth: ExtractedInvoice) -> dict
     for ln in matched_line_numbers:
         t, e = truth_by_line[ln], extracted_by_line[ln]
         for f in COMPARE_FIELDS:
+            # A key with no unit (none printed on the invoice) has nothing
+            # to score the unit against.
+            if f == "uom" and not t.uom:
+                continue
             field_total[f] += 1
             if getattr(t, f) == getattr(e, f):
                 field_correct[f] += 1

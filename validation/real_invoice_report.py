@@ -111,6 +111,14 @@ def score_folder(folder: Path, *, fake: bool) -> dict:
             awaiting.append(pdf.name)
             continue
         record = json.loads(extracted_path.read_text())
+        # A hand-made key may leave the unit empty where none is printed;
+        # scoring skips it (extraction_report._score_invoice).
+        for line in truth_data.get("line_items", []):
+            if line.get("uom") is None:
+                line["uom"] = ""
+        for field in ("invoice_number", "invoice_date"):
+            if truth_data.get(field) is None:
+                truth_data[field] = ""
         truth = ExtractedInvoice.model_validate(truth_data)
         extracted = (
             ExtractedInvoice.model_validate(record["extraction"])

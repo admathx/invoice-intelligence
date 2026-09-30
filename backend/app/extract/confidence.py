@@ -6,8 +6,9 @@ the invoice to needs_review rather than extracted — this catches OCR digit
 errors far more reliably than asking the model how sure it is.
 """
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
+from app.extract.amounts import parse_amount
 from app.extract.schema import ExtractedInvoice
 from app.models.enums import InvoiceStatus
 
@@ -44,10 +45,8 @@ class ExtractionAssessment:
 
 
 def _to_decimal_or_none(value: str) -> Decimal | None:
-    try:
-        return Decimal(value)
-    except InvalidOperation:
-        return None
+    # As printed ("$1,234.50", "(12.50)"), or None when blank or illegible.
+    return parse_amount(value)
 
 
 @dataclass
