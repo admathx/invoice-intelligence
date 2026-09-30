@@ -295,7 +295,7 @@ def app_run(work_dir: Path, accept_suggestions: bool = True) -> None:
 
     from app.db import SessionLocal, bind_tenant
     from app.ingest.upload import save_invoice_bytes
-    from app.models import CanonicalSku, Invoice, InvoiceLineItem, PriceAlert, PriceObservation
+    from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceAlert, PriceObservation
     from app.models.enums import AlertStatus, InvoiceSource, InvoiceStatus
     from app.workers import tasks
 
@@ -357,14 +357,21 @@ def app_run(work_dir: Path, accept_suggestions: bool = True) -> None:
     # Set H: which products opened alerts, against what the plan says should.
     bind_tenant(db, series.id)
     alerts = db.execute(
-        select(PriceAlert, CanonicalSku.name)
+        select(PriceAlert, CanonicalSku.name, Distributor.name)
         .join(CanonicalSku, CanonicalSku.id == PriceAlert.canonical_sku_id)
+        .outerjoin(Distributor, Distributor.id == PriceAlert.distributor_id)
         .where(PriceAlert.tenant_id == series.id, PriceAlert.status == AlertStatus.open)
     ).all()
     series_result = {
         "alerts": [
-            {"product": name, "pct_change": str(a.pct_change), "from": str(a.baseline_price), "to": str(a.current_price)}
-            for a, name in alerts
+            {
+                "product": name,
+                "distributor": distributor,
+                "pct_change": str(a.pct_change),
+                "from": str(a.baseline_price),
+                "to": str(a.current_price),
+            }
+            for a, name, distributor in alerts
         ]
     }
     series_result["observations"] = db.scalar(
@@ -390,7 +397,7 @@ def _summarize(results: dict, series: dict) -> None:
     )
     print(f"Set H: {series.get('observations')} prices recorded; price alerts: {len(series['alerts'])}")
     for a in series["alerts"]:
-        print(f"  {a['product']}: {a['from']} -> {a['to']} ({float(a['pct_change']):+.1%})")
+        print(f"  {a['product']} from {a['distributor']}: {a['from']} -> {a['to']} ({float(a['pct_change']):+.1%})")
 
 
 def cleanup() -> None:

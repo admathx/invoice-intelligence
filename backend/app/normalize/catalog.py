@@ -10,6 +10,7 @@ separate slug column on canonical_skus in the schema, and these names are unique
 """
 import uuid
 from dataclasses import dataclass
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,6 +26,9 @@ class CatalogItem:
     subcategory: str
     base_uom: BaseUom
     manufacturer: str | None = None
+    # See CanonicalSku.lb_per_gal. Typical values; brands and temperatures
+    # vary by a few percent, well inside the 5% a price has to move to alert.
+    lb_per_gal: Decimal | None = None
 
 
 _lb = BaseUom.lb
@@ -147,13 +151,13 @@ CANONICAL_SKUS: list[CatalogItem] = [
     CatalogItem("Scallion", "produce", "vegetables", _each),
     CatalogItem("Ginger Root", "produce", "vegetables", _lb),
     # --- Oils & condiments (~24) ---
-    CatalogItem("Canola Oil", "oils", "cooking_oil", _gal),
-    CatalogItem("Olive Oil Extra Virgin", "oils", "cooking_oil", _gal),
-    CatalogItem("Olive Oil Pure", "oils", "cooking_oil", _gal),
-    CatalogItem("Vegetable Oil", "oils", "cooking_oil", _gal),
-    CatalogItem("Peanut Oil", "oils", "cooking_oil", _gal),
+    CatalogItem("Canola Oil", "oils", "cooking_oil", _gal, lb_per_gal=Decimal("7.7")),
+    CatalogItem("Olive Oil Extra Virgin", "oils", "cooking_oil", _gal, lb_per_gal=Decimal("7.6")),
+    CatalogItem("Olive Oil Pure", "oils", "cooking_oil", _gal, lb_per_gal=Decimal("7.6")),
+    CatalogItem("Vegetable Oil", "oils", "cooking_oil", _gal, lb_per_gal=Decimal("7.7")),
+    CatalogItem("Peanut Oil", "oils", "cooking_oil", _gal, lb_per_gal=Decimal("7.6")),
     CatalogItem("Sesame Oil", "oils", "cooking_oil", _fl_oz),
-    CatalogItem("Ketchup", "oils", "condiments", _gal),
+    CatalogItem("Ketchup", "oils", "condiments", _gal, lb_per_gal=Decimal("9.5")),
     CatalogItem("Mayonnaise", "oils", "condiments", _gal),
     CatalogItem("Mustard Yellow", "oils", "condiments", _gal),
     CatalogItem("Mustard Dijon", "oils", "condiments", _fl_oz),
@@ -256,6 +260,7 @@ def seed_canonical_skus(db: Session) -> dict[str, uuid.UUID]:
         if item.name in existing:
             continue
         row = CanonicalSku(
+            lb_per_gal=item.lb_per_gal,
             id=uuid.uuid4(),
             name=item.name,
             category=item.category,

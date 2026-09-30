@@ -41,6 +41,7 @@ from app.analytics.price_creep import upsert_creep_alerts  # noqa: E402
 from app.db import SessionLocal, bind_tenant  # noqa: E402
 from app.ingest.email_stub import inbox_address_for  # noqa: E402
 from app.models import (  # noqa: E402
+    CanonicalSku,
     Distributor,
     Invoice,
     InvoiceLineItem,
@@ -160,7 +161,8 @@ def main() -> None:
                     # raise where the cached call didn't — recomputed (not
                     # reused) because qty/price vary per line.
                     pack = pack_for_line(line["raw_pack_size"], line["uom"])
-                    qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, line["uom"], cached.base_uom)
+                    product = db.get(CanonicalSku, cached.canonical_sku_id) if cached.canonical_sku_id else None
+                    qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, line["uom"], product)
                 else:
                     qty_base = price_base = None
 

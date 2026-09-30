@@ -184,29 +184,36 @@ def test_case_billing_is_unchanged():
 
 # --- pricing in the matched product's unit ----------------------------------
 
+from types import SimpleNamespace  # noqa: E402
+
 from app.normalize.pack_size import ProductUnitMismatchError  # noqa: E402
+
+
+def _product(uom, lb_per_gal=None):
+    """What _apply_pack_size reads from a CanonicalSku."""
+    return SimpleNamespace(base_uom=uom, lb_per_gal=lb_per_gal)
 
 
 def test_a_pack_in_dozens_is_priced_per_item_for_a_product_sold_each():
     """Bar towels come "12 DZ"; the catalog prices Bar Mop Towel each."""
-    qty, price = _apply_pack_size(parse_pack_size("12 DZ"), Decimal("1"), Decimal("28.80"), "CS", BaseUom.each)
+    qty, price = _apply_pack_size(parse_pack_size("12 DZ"), Decimal("1"), Decimal("28.80"), "CS", _product(BaseUom.each))
     assert (qty, price) == (Decimal("144"), Decimal("0.2000"))
 
 
 def test_fluid_ounces_are_priced_per_gallon_for_a_product_sold_by_the_gallon():
-    qty, price = _apply_pack_size(parse_pack_size("6/128 OZ"), Decimal("1"), Decimal("30.00"), "CS", BaseUom.gal)
+    qty, price = _apply_pack_size(parse_pack_size("6/128 OZ"), Decimal("1"), Decimal("30.00"), "CS", _product(BaseUom.gal))
     assert (qty, price) == (Decimal("6"), Decimal("5.0000"))
 
 
 def test_ounces_are_priced_per_pound_for_a_product_sold_by_weight():
-    _, price = _apply_pack_size(parse_pack_size("10/16 OZ"), Decimal("1"), Decimal("40.00"), "CS", BaseUom.lb)
+    _, price = _apply_pack_size(parse_pack_size("10/16 OZ"), Decimal("1"), Decimal("40.00"), "CS", _product(BaseUom.lb))
     assert price == Decimal("4.0000")
 
 
 def test_weight_never_converts_to_volume():
     """A 35 lb jug of oil against oil priced per gallon needs a density."""
     with pytest.raises(ProductUnitMismatchError):
-        _apply_pack_size(parse_pack_size("35 LB"), Decimal("1"), Decimal("40.67"), "CS", BaseUom.gal)
+        _apply_pack_size(parse_pack_size("35 LB"), Decimal("1"), Decimal("40.67"), "CS", _product(BaseUom.gal))
 
 
 def test_a_cans_ounces_are_net_weight_never_fluid():
@@ -215,18 +222,18 @@ def test_a_cans_ounces_are_net_weight_never_fluid():
     assert pack.compatible_base_uoms == {BaseUom.oz}
     assert BaseUom.gal not in pack.convertible_base_uoms and BaseUom.fl_oz not in pack.convertible_base_uoms
     with pytest.raises(ProductUnitMismatchError):
-        _apply_pack_size(pack, Decimal("1"), Decimal("41.32"), "CS", BaseUom.gal)
+        _apply_pack_size(pack, Decimal("1"), Decimal("41.32"), "CS", _product(BaseUom.gal))
 
 
 def test_each_against_a_pack_of_many_is_refused():
     """A case of 1000 cups billed "EA" at $65.93 was recorded as $65.93 a
     cup. EA doesn't say whether the price is for one piece or the case."""
     with pytest.raises(BilledUnitMismatchError):
-        _apply_pack_size(parse_pack_size("1000 CT"), Decimal("3"), Decimal("65.93"), "EA", BaseUom.each)
+        _apply_pack_size(parse_pack_size("1000 CT"), Decimal("3"), Decimal("65.93"), "EA", _product(BaseUom.each))
 
 
 def test_each_against_a_single_item_pack_is_its_price():
-    qty, price = _apply_pack_size(parse_pack_size("1 EA"), Decimal("4"), Decimal("12.50"), "EA", BaseUom.each)
+    qty, price = _apply_pack_size(parse_pack_size("1 EA"), Decimal("4"), Decimal("12.50"), "EA", _product(BaseUom.each))
     assert (qty, price) == (Decimal("4"), Decimal("12.5000"))
 
 
@@ -237,7 +244,7 @@ from app.normalize.pack_size import pack_for_line  # noqa: E402
 
 def test_no_pack_billed_by_the_pound_is_priced_per_pound():
     """Salmon at $9.70 billed LB with no pack printed is $9.70 a pound."""
-    qty, price = _apply_pack_size(pack_for_line(None, "LB"), Decimal("12.4"), Decimal("9.70"), "LB", BaseUom.lb)
+    qty, price = _apply_pack_size(pack_for_line(None, "LB"), Decimal("12.4"), Decimal("9.70"), "LB", _product(BaseUom.lb))
     assert (qty, price) == (Decimal("12.4"), Decimal("9.7000"))
 
 
@@ -249,3 +256,29 @@ def test_no_pack_billed_by_the_case_or_count_is_still_unreadable(uom):
 
 def test_a_printed_pack_wins_over_the_billing_unit():
     assert pack_for_line("4/5 LB", "LB").base_units_per_case == Decimal("20")
+
+
+# --- weight against volume, through a product's weight per gallon ------------
+
+
+def test_a_35_lb_jug_of_oil_is_priced_per_gallon_through_its_weight_per_gallon():
+    """35 lb of canola at 7.7 lb/gal is 4.545 gal; $40.67 is $8.95 a gallon."""
+    qty, price = _apply_pack_size(parse_pack_size("35 LB"), Decimal("1"), Decimal("40.67"), "CS", _product(BaseUom.gal, Decimal("7.7")))
+    assert price == Decimal("8.9474")
+    assert qty.quantize(Decimal("0.001")) == Decimal("4.545")
+
+
+def test_a_can_of_ketchup_is_priced_per_gallon_through_its_weight():
+    """6 x #10 (110 oz net) is 41.25 lb; at 9.5 lb/gal, 4.342 gal."""
+    _, price = _apply_pack_size(parse_pack_size("6/#10 CAN"), Decimal("1"), Decimal("41.32"), "CS", _product(BaseUom.gal, Decimal("9.5")))
+    assert price == Decimal("9.5161")
+
+
+def test_gallons_are_priced_per_pound_for_a_weight_product_with_a_density():
+    _, price = _apply_pack_size(parse_pack_size("6/1 GAL"), Decimal("1"), Decimal("46.20"), "CS", _product(BaseUom.lb, Decimal("7.7")))
+    assert price == Decimal("1.0000")
+
+
+def test_without_a_density_weight_and_volume_still_dont_compare():
+    with pytest.raises(ProductUnitMismatchError):
+        _apply_pack_size(parse_pack_size("35 LB"), Decimal("1"), Decimal("40.67"), "CS", _product(BaseUom.gal))

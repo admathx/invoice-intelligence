@@ -11,7 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import yaml
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.models.canonical_sku import CanonicalSku
@@ -191,7 +191,7 @@ def match_by_gtin(db: Session, gtin: str | None) -> uuid.UUID | None:
 
 
 def match_by_embedding(
-    db: Session, raw_description: str, compatible_uoms: set[BaseUom]
+    db: Session, raw_description: str, compatible_uoms: set[BaseUom], density_uoms: set[BaseUom] = frozenset()
 ) -> tuple[CanonicalSku | None, Decimal | None]:
     """SPEC.md §6 step 4: category/UOM-restricted cosine similarity.
 
@@ -212,12 +212,14 @@ def match_by_embedding(
     query_vec = embed_text(query_text)
 
     distance = CanonicalSku.description_embedding.cosine_distance(query_vec)
+    # Plus, in density_uoms, products that carry a weight per gallon: a
+    # 35 lb jug of fry oil is Canola Oil, priced per gallon.
+    in_units = CanonicalSku.base_uom.in_(compatible_uoms)
+    if density_uoms:
+        in_units = or_(in_units, and_(CanonicalSku.lb_per_gal.is_not(None), CanonicalSku.base_uom.in_(density_uoms)))
     row = db.execute(
         select(CanonicalSku, distance.label("distance"))
-        .where(
-            CanonicalSku.base_uom.in_(compatible_uoms),
-            CanonicalSku.description_embedding.is_not(None),
-        )
+        .where(in_units, CanonicalSku.description_embedding.is_not(None))
         .order_by(distance)
         .limit(1)
     ).first()
@@ -230,14 +232,16 @@ def match_by_embedding(
 
 
 def _apply_pack_size(
-    pack: ParsedPackSize, quantity: Decimal, unit_price: Decimal, uom: str, product_uom: BaseUom | None = None
+    pack: ParsedPackSize, quantity: Decimal, unit_price: Decimal, uom: str, product: CanonicalSku | None = None
 ) -> tuple[Decimal, Decimal]:
-    """(quantity, price) per base unit: per `product_uom` when given, the
-    unit the matched product is priced in, else per the pack's own unit."""
-    per_pack_unit = Decimal(1) if product_uom is None else pack.base_units_per_pack_unit(product_uom)
+    """(quantity, price) per base unit: per the unit `product` is priced in
+    when given, else per the pack's own unit."""
+    per_pack_unit = (
+        Decimal(1) if product is None else pack.base_units_per_pack_unit(product.base_uom, product.lb_per_gal)
+    )
     if per_pack_unit is None:
         raise ProductUnitMismatchError(
-            f"pack is in {pack.unit!r} but the product is priced per {product_uom.value!r}; they don't convert"
+            f"pack is in {pack.unit!r} but the product is priced per {product.base_uom.value!r}; they don't convert"
         )
     # unit_price is only a case price when the line is actually billed by the
     # case (printed UOM "CS") — SPEC.md §6 also lists EA/DZ/etc. as UOMs to
@@ -297,16 +301,16 @@ def apply_match(line, match: MatchResult) -> None:
 
 
 def normalize_price(
-    raw_pack_size: str | None, quantity: Decimal, unit_price: Decimal, uom: str, product_uom: BaseUom | None = None
+    raw_pack_size: str | None, quantity: Decimal, unit_price: Decimal, uom: str, product: CanonicalSku | None = None
 ) -> tuple[Decimal | None, Decimal | None]:
     """(qty_base, price_per_base_unit) for a line, or (None, None) when that
     can't be computed without guessing (unparseable pack, or billed in a unit
     the pack can't convert). For re-pricing a line whose identity is already
     settled, e.g. after a human corrects a misread unit price; pass the
-    matched product's unit so the price stays in it.
+    matched product so the price stays in its unit.
     """
     try:
-        return _apply_pack_size(pack_for_line(raw_pack_size, uom), quantity, unit_price, uom, product_uom)
+        return _apply_pack_size(pack_for_line(raw_pack_size, uom), quantity, unit_price, uom, product)
     except PackSizeParseError:
         return None, None
 
@@ -327,11 +331,11 @@ def _exact_match_result(
     # CanonicalSku isn't TenantScoped (a shared reference table), so a plain
     # lookup. Priced in the product's own unit, which is what its price
     # history and benchmarks are kept in.
-    product_uom = db.get(CanonicalSku, canonical_sku_id).base_uom
+    product = db.get(CanonicalSku, canonical_sku_id)
     try:
         pack = pack_for_line(raw_pack_size, uom)
-        qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom, product_uom)
-        base_uom = product_uom
+        qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom, product)
+        base_uom = product.base_uom
         review_status = ReviewStatus.auto
     except PackSizeParseError:
         # Identity is still certain (that's what alias/GTIN means), but with no
@@ -390,11 +394,13 @@ def match_line_item(
 
     # Products priced in any unit the pack converts to exactly, not only its
     # own: "12 DZ" bar towels are Bar Mop Towel, priced each.
-    candidate, similarity = match_by_embedding(db, raw_description, pack.convertible_base_uoms)
+    candidate, similarity = match_by_embedding(
+        db, raw_description, pack.convertible_base_uoms, pack.base_uoms_by_density
+    )
     suggested = candidate is not None and similarity is not None and similarity >= REVIEW_QUEUE_CONFIDENCE_LOW
     candidate_base_uom = candidate.base_uom if suggested else _unit_without_a_product(pack, candidate)
     try:
-        qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom, candidate_base_uom)
+        qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom, candidate if suggested else None)
     except BilledUnitMismatchError:
         # The item can still be identified (the pack parsed, so the unit
         # family is known and the embedding search above is valid); only its

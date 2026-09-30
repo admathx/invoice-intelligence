@@ -23,8 +23,8 @@ never reaches $0.25 regardless of magnitude. ABS_FLOOR_CAP_FRACTION caps the
 dollar floor at a fraction of the item's own baseline price instead of a flat
 number, so the floor scales down for cheap items (letting the 5% rule govern
 them, as intended) while staying at the full $0.25 floor for anything priced
-at or above MIN_ABS_CHANGE_USD / ABS_FLOOR_CAP_FRACTION (~$4.17 at the current
-0.06 fraction).
+at or above MIN_ABS_CHANGE_USD / ABS_FLOOR_CAP_FRACTION ($5 at the current
+0.05 fraction, the same as MIN_PCT_CHANGE).
 
 Window size: a 4-observation recent window (SPEC.md's literal "trailing
 4-week") hit 95.1% recall but let a single false positive through — two rare
@@ -49,7 +49,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import yaml
-from sqlalchemy import select, text, update
+from sqlalchemy import func, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -88,6 +88,7 @@ REOPEN_ABOVE_DISMISSED = Decimal("0.05")
 @dataclass
 class CreepFinding:
     canonical_sku_id: uuid.UUID
+    distributor_id: uuid.UUID
     baseline_price: Decimal
     current_price: Decimal
     pct_change: Decimal
@@ -98,23 +99,41 @@ class CreepFinding:
 
 
 def detect_price_creep(db: Session, tenant_id: uuid.UUID) -> list[CreepFinding]:
-    """One finding per (tenant, canonical_sku) whose recent-vs-baseline median
-    move clears the larger of the two thresholds above. Read-only — does not
-    write price_alerts (see upsert_creep_alerts for that).
+    """One finding per (tenant, canonical_sku, distributor) whose recent-vs-
+    baseline median move clears the larger of the two thresholds above.
+    Read-only — does not write price_alerts (see upsert_creep_alerts for that).
+
+    Per distributor: an increase is one distributor charging more. Pooled,
+    a location buying the same cups from Sysco and, lately, from a cheaper
+    US Foods had Sysco's 9% rise hidden by US Foods' prices landing in the
+    recent window, and whether it alerted depended on how same-day
+    deliveries happened to sort. Buying once from a pricier distributor
+    would read as an increase the other way round.
     """
     bind_tenant(db, tenant_id)
     observations = db.execute(
-        select(PriceObservation.canonical_sku_id, PriceObservation.observed_on, PriceObservation.unit_price_base)
+        select(
+            PriceObservation.canonical_sku_id,
+            PriceObservation.distributor_id,
+            PriceObservation.observed_on,
+            PriceObservation.unit_price_base,
+        )
         .where(PriceObservation.tenant_id == tenant_id)
-        .order_by(PriceObservation.canonical_sku_id, PriceObservation.observed_on)
+        # id last only so equal dates always sort the same way.
+        .order_by(
+            PriceObservation.canonical_sku_id,
+            PriceObservation.distributor_id,
+            PriceObservation.observed_on,
+            PriceObservation.id,
+        )
     ).all()
 
-    by_sku: dict[uuid.UUID, list[tuple[date, Decimal]]] = {}
-    for sku_id, observed_on, price in observations:
-        by_sku.setdefault(sku_id, []).append((observed_on, price))
+    by_series: dict[tuple[uuid.UUID, uuid.UUID], list[tuple[date, Decimal]]] = {}
+    for sku_id, distributor_id, observed_on, price in observations:
+        by_series.setdefault((sku_id, distributor_id), []).append((observed_on, price))
 
     findings: list[CreepFinding] = []
-    for sku_id, points in by_sku.items():
+    for (sku_id, distributor_id), points in by_series.items():
         recent = points[-RECENT_WINDOW_SIZE:]
         baseline = points[-(RECENT_WINDOW_SIZE + BASELINE_WINDOW_SIZE) : -RECENT_WINDOW_SIZE]
         if len(recent) < MIN_OBSERVATIONS_PER_WINDOW or len(baseline) < MIN_OBSERVATIONS_PER_WINDOW:
@@ -142,6 +161,7 @@ def detect_price_creep(db: Session, tenant_id: uuid.UUID) -> list[CreepFinding]:
         findings.append(
             CreepFinding(
                 canonical_sku_id=sku_id,
+                distributor_id=distributor_id,
                 baseline_price=baseline_median,
                 current_price=recent_median,
                 pct_change=(delta / baseline_median).quantize(Decimal("0.0001")),
@@ -161,8 +181,8 @@ def upsert_creep_alerts(db: Session, tenant_id: uuid.UUID) -> list[PriceAlert]:
 
     Uses a single atomic INSERT ... ON CONFLICT DO UPDATE (targeting
     price_alerts' partial unique index on (tenant_id, canonical_sku_id,
-    alert_type) WHERE status='open' — migration 0003) rather than a
-    check-then-act SELECT-then-INSERT: two concurrent callers for the same
+    distributor_id, alert_type) WHERE status='open' — migrations 0003 and
+    0017) rather than a check-then-act SELECT-then-INSERT: two concurrent callers for the same
     tenant (e.g. two review actions landing close together) previously could
     both observe "no open alert yet" and both insert one, producing two open
     creep alerts for the same SKU that only one of them would ever update
@@ -181,37 +201,61 @@ def upsert_creep_alerts(db: Session, tenant_id: uuid.UUID) -> list[PriceAlert]:
 
     # A person dismissed an alert for this product ("we've dealt with it"):
     # it stays dismissed unless the price climbs clearly past what they saw,
-    # rather than reopening on the next delivery at the same price.
-    dismissed_at_price: dict[uuid.UUID, Decimal] = {}
-    for sku_id, price in db.execute(
-        select(PriceAlert.canonical_sku_id, PriceAlert.current_price).where(
+    # rather than reopening on the next delivery at the same price. Keyed by
+    # distributor; one dismissed before alerts had a distributor covers the
+    # product from any.
+    dismissed_at_price: dict[tuple[uuid.UUID, uuid.UUID | None], Decimal] = {}
+    for sku_id, distributor_id, price in db.execute(
+        select(PriceAlert.canonical_sku_id, PriceAlert.distributor_id, PriceAlert.current_price).where(
             PriceAlert.tenant_id == tenant_id,
             PriceAlert.alert_type == AlertType.creep,
             PriceAlert.status == AlertStatus.dismissed,
         )
     ):
-        dismissed_at_price[sku_id] = max(price, dismissed_at_price.get(sku_id, price))
-    findings = [
-        f
-        for f in findings
-        if f.canonical_sku_id not in dismissed_at_price
-        or f.current_price > dismissed_at_price[f.canonical_sku_id] * (1 + REOPEN_ABOVE_DISMISSED)
-    ]
+        key = (sku_id, distributor_id)
+        dismissed_at_price[key] = max(price, dismissed_at_price.get(key, price))
+
+    def still_news(f: CreepFinding) -> bool:
+        seen = [
+            dismissed_at_price[key]
+            for key in ((f.canonical_sku_id, f.distributor_id), (f.canonical_sku_id, None))
+            if key in dismissed_at_price
+        ]
+        return not seen or f.current_price > max(seen) * (1 + REOPEN_ABOVE_DISMISSED)
+
+    findings = [f for f in findings if still_news(f)]
 
     # Resolved rather than deleted: the alert was true when raised, and a
     # dismissed-by-the-data history is worth keeping. Only `open` alerts are
     # touched; anything a person already acknowledged or dismissed is theirs.
-    still_creeping = [finding.canonical_sku_id for finding in findings]
-    db.execute(
-        update(PriceAlert)
-        .where(
-            PriceAlert.tenant_id == tenant_id,
-            PriceAlert.alert_type == AlertType.creep,
-            PriceAlert.status == AlertStatus.open,
-            PriceAlert.canonical_sku_id.not_in(still_creeping),
-        )
-        .values(status=AlertStatus.resolved)
+    # Alerts from before prices were compared per distributor (no
+    # distributor) are always resolved here; a still-rising price reopens as
+    # a per-distributor alert below, dated as the one it replaces, so the
+    # emails don't announce as new an increase people already heard about.
+    legacy_opened = dict(
+        db.execute(
+            select(PriceAlert.canonical_sku_id, PriceAlert.created_at).where(
+                PriceAlert.tenant_id == tenant_id,
+                PriceAlert.alert_type == AlertType.creep,
+                PriceAlert.status == AlertStatus.open,
+                PriceAlert.distributor_id.is_(None),
+            )
+        ).all()
     )
+    still_creeping = [(finding.canonical_sku_id, finding.distributor_id) for finding in findings]
+    no_longer = [
+        PriceAlert.tenant_id == tenant_id,
+        PriceAlert.alert_type == AlertType.creep,
+        PriceAlert.status == AlertStatus.open,
+    ]
+    if still_creeping:
+        no_longer.append(
+            or_(
+                PriceAlert.distributor_id.is_(None),
+                tuple_(PriceAlert.canonical_sku_id, PriceAlert.distributor_id).not_in(still_creeping),
+            )
+        )
+    db.execute(update(PriceAlert).where(*no_longer).values(status=AlertStatus.resolved))
 
     if not findings:
         db.commit()
@@ -222,6 +266,7 @@ def upsert_creep_alerts(db: Session, tenant_id: uuid.UUID) -> list[PriceAlert]:
             "id": uuid.uuid4(),
             "tenant_id": tenant_id,
             "canonical_sku_id": finding.canonical_sku_id,
+            "distributor_id": finding.distributor_id,
             "alert_type": AlertType.creep,
             "baseline_price": finding.baseline_price,
             "current_price": finding.current_price,
@@ -229,13 +274,14 @@ def upsert_creep_alerts(db: Session, tenant_id: uuid.UUID) -> list[PriceAlert]:
             "window_start": finding.window_start,
             "window_end": finding.window_end,
             "status": AlertStatus.open,
+            "created_at": legacy_opened.get(finding.canonical_sku_id, func.now()),
         }
         for finding in findings
     ]
 
     stmt = pg_insert(PriceAlert).values(values)
     stmt = stmt.on_conflict_do_update(
-        index_elements=["tenant_id", "canonical_sku_id", "alert_type"],
+        index_elements=["tenant_id", "canonical_sku_id", "distributor_id", "alert_type"],
         index_where=text("status = 'open'"),
         set_={
             "baseline_price": stmt.excluded.baseline_price,

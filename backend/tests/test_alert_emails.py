@@ -13,7 +13,7 @@ from app.auth import CSRF_HEADER, CSRF_HEADER_VALUE
 from app.config import settings
 from app.db import SessionLocal
 from app.main import app
-from app.models import AlertEmailSend, AuditEvent, PriceAlert, User
+from app.models import AlertEmailSend, AuditEvent, Distributor, PriceAlert, User
 from app.models.enums import AlertStatus, AlertType
 
 # The digest's fixtures: committed users, locations and products, cleaned up after.
@@ -26,10 +26,13 @@ pytestmark = pytest.mark.real_auth
 NOW = datetime(2031, 3, 3, 15, 0, tzinfo=timezone.utc)
 
 
-def _alert(db, tenant, sku, *, pct="0.24", created_at=NOW - timedelta(hours=1), status=AlertStatus.open) -> PriceAlert:
+def _alert(
+    db, tenant, sku, *, pct="0.24", created_at=NOW - timedelta(hours=1), status=AlertStatus.open, distributor=None
+) -> PriceAlert:
     alert = PriceAlert(
         tenant_id=tenant.id,
         canonical_sku_id=sku.id,
+        distributor_id=distributor.id if distributor else None,
         alert_type=AlertType.creep,
         baseline_price=Decimal("0.54"),
         current_price=Decimal("0.67"),
@@ -139,6 +142,34 @@ def test_a_product_isnt_emailed_again_within_the_week_when_its_alert_reopens(db,
     db.commit()
     _send(later)
     assert db.scalar(select(AlertEmailSend.id).where(AlertEmailSend.alert_id == again.id)) is not None
+
+
+def _distributor(db, slug):
+    return db.scalar(select(Distributor).where(Distributor.slug == slug))
+
+
+def test_an_increase_says_whose_price_went_up(db, outbox):
+    tenant = _tenant(db)
+    _alert(db, tenant, _sku(db, "Cups Hot"), distributor=_distributor(db, "sysco"))
+    user = _user(db, tenant)
+    _send(NOW)
+    (path,) = [p for p in _outbox_files(outbox) if user.email.replace("@", "_at_") in p.name]
+    _, text, html_body = _read(path)
+    assert "Cups Hot" in text and "from Sysco" in text and "from Sysco" in html_body
+
+
+def test_the_same_product_from_another_distributor_is_its_own_news(db, outbox):
+    """The week's quiet is per distributor: US Foods raising a price is news
+    even if Sysco's increase on the same product was emailed yesterday."""
+    tenant, sku = _tenant(db), _sku(db)
+    user = _user(db, tenant)
+    first = _alert(db, tenant, sku, distributor=_distributor(db, "sysco"))
+    _send(NOW)
+    first.status = AlertStatus.resolved
+    db.commit()
+    other = _alert(db, tenant, sku, created_at=NOW + timedelta(days=1), distributor=_distributor(db, "us_foods"))
+    _send(NOW + timedelta(days=1, hours=1))
+    assert db.scalar(select(AlertEmailSend.id).where(AlertEmailSend.alert_id == other.id)) is not None
 
 
 def test_a_failed_send_is_retried_on_the_next_run(db, outbox, monkeypatch):

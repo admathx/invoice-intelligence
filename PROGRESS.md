@@ -2442,3 +2442,40 @@ from a cheaper distributor can hide an increase (or a pricier one fake one).
 
 ### Gates
 Backend 430, frontend 54 unit, `tsc` clean, matching gate PASS.
+
+## Price alerts per distributor; oils and ketchup sold by weight
+
+**Price increases are compared per distributor.** Alerts pooled every
+distributor's prices for a product. On the test set's weekly series, a
+location buying the same cups from Sysco and, later, from a cheaper US
+Foods had Sysco's rise hidden, and whether it alerted depended on how
+same-day deliveries sorted; buying once from a pricier distributor would
+have looked like an increase. Alerts now carry a distributor (migration
+0017), show it ("Cups 16oz Hot from Sysco") on Price alerts, in the
+price-increase email and in the weekly email, and chart that distributor's
+prices. A dismissal applies per distributor. Alerts from before this are
+resolved on their location's next refresh and replaced, keeping their
+original date so no email announces them again.
+
+**Cheap items were held to 6%, not 5%.** The dollar floor for items under
+about $4 was capped at 6% of price, stricter than the 5% rule it was meant
+to leave in charge; the test set's cups rose 6.0% and went unflagged. Now
+5%; the synthetic creep gate scores the same (93.9% recall, 0 false
+positives).
+
+**Oils and ketchup sold by weight.** The catalog prices them per gallon;
+distributors sell fry oil in 35 lb jugs and ketchup in #10 cans. Products
+can now carry a weight per gallon (oils 7.6-7.7, ketchup 9.5; migration
+0019), and weight and volume convert through it for those products only.
+
+**Distributor names.** The seeded distributors were named by title-casing
+their codes ("Us Foods", "Pfg"); now "US Foods", "Performance Foodservice"
+and "Gordon Food Service" (migration 0018).
+
+On the test set's weekly series, all four planned increases now alert
+(mozzarella, chicken, canola, cups, each from Sysco) and none of the
+controls do (falling eggs, pack change, one-week spike, 3% rise).
+
+### Gates
+Backend 440, frontend 54 unit, `tsc` clean, matching gate PASS, creep gate
+PASS.

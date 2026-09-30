@@ -807,3 +807,26 @@ def test_the_queue_says_when_an_items_price_cant_be_worked_out(db_session, tenan
 
     item = next(i for i in queue if i["id"] == str(line.id))
     assert item["price_known"] is False
+
+
+def test_a_liquid_with_a_weight_per_gallon_takes_a_pack_sold_by_weight(db_session, tenant, distributor):
+    """Fry oil comes in 35 lb jugs; Canola Oil is priced per gallon. With its
+    7.7 lb/gal, $40.67 a jug is $8.95 a gallon."""
+    oil = CanonicalSku(
+        name=f"Review API Fry Oil {uuid.uuid4().hex[:8]}", category="test", base_uom=BaseUom.gal, lb_per_gal=Decimal("7.7")
+    )
+    db_session.add(oil)
+    db_session.commit()
+    db_session.info["_created"]["skus"].append(oil.id)
+    line = _auto_matched_line(db_session, tenant, distributor, oil)
+    line.raw_pack_size, line.uom, line.unit_price, line.extended_price = "35 LB", "CS", Decimal("40.67"), Decimal("40.67")
+    line.review_status = ReviewStatus.pending
+    line.canonical_sku_id = line.normalized_unit_price = line.normalized_qty_base = None
+    db_session.commit()
+
+    resp = TestClient(app).post(
+        f"/review/{line.id}/correct", params={"tenant_id": str(tenant.id)}, json={"canonical_sku_id": str(oil.id)}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert Decimal(resp.json()["normalized_unit_price"]) == Decimal("8.9474")

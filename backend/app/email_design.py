@@ -93,6 +93,11 @@ class PriceIncreaseRow(Protocol):
     unit: str
 
 
+def product_from(product: str, distributor: str | None) -> str:
+    """How an increase names what went up: the product, and whose price."""
+    return f"{product} from {distributor}" if distributor else product
+
+
 def increase_line(p: PriceIncreaseRow) -> str:
     """One increase in a plain-text email."""
     return f"  - {p.sku}: {price_per(p.before, p.unit)} -> {price_per(p.now, p.unit)} (+{p.pct_change:.1%})"

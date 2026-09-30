@@ -14,8 +14,9 @@ from app.models.enums import AlertStatus, AlertType
 class PriceAlert(Base, TenantScoped):
     __tablename__ = "price_alerts"
     __table_args__ = (
-        # At most one OPEN alert per (tenant, sku, type) — backs
-        # upsert_creep_alerts' check-then-act against concurrent callers.
+        # At most one OPEN alert per (tenant, sku, distributor, type) —
+        # backs upsert_creep_alerts' check-then-act against concurrent
+        # callers. Per distributor since migration 0017 (0003 before).
         # A closed/acknowledged/resolved alert for the same SKU is
         # legitimate history, not a duplicate, hence the partial WHERE.
         # Alembic migration 0003 applies this to databases that already
@@ -24,6 +25,7 @@ class PriceAlert(Base, TenantScoped):
             "ix_price_alerts_open_unique",
             "tenant_id",
             "canonical_sku_id",
+            "distributor_id",
             "alert_type",
             unique=True,
             postgresql_where=text("status = 'open'"),
@@ -34,6 +36,12 @@ class PriceAlert(Base, TenantScoped):
     # tenant_id comes from the TenantScoped mixin.
     canonical_sku_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("canonical_skus.id"), nullable=False
+    )
+
+    # Whose price went up. Null only on alerts from before prices were
+    # compared per distributor (migration 0017).
+    distributor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("distributors.id"), nullable=True
     )
 
     alert_type: Mapped[AlertType] = mapped_column(Enum(AlertType, name="alert_type"), nullable=False)

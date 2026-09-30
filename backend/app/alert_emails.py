@@ -40,7 +40,7 @@ from app import mail
 from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS
 from app.digest import unsubscribe_url
-from app.models import AlertEmailSend, CanonicalSku, PriceAlert, Tenant, TenantMembership, User
+from app.models import AlertEmailSend, CanonicalSku, Distributor, PriceAlert, Tenant, TenantMembership, User
 from app.models.enums import AlertStatus
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,7 @@ class Increase:
     alert_id: uuid.UUID
     tenant_id: uuid.UUID
     sku_id: uuid.UUID
+    distributor_id: uuid.UUID | None
     sku: str
     before: Decimal
     now: Decimal
@@ -86,8 +87,9 @@ class Recipient:
 def due_alerts(db: Session, now: datetime) -> dict[uuid.UUID, list[Increase]]:
     """Open, big-enough alerts opened within LOOKBACK, by location, biggest first."""
     rows = db.execute(
-        select(PriceAlert, CanonicalSku.name, CanonicalSku.base_uom)
+        select(PriceAlert, CanonicalSku.name, CanonicalSku.base_uom, Distributor.name)
         .join(CanonicalSku, CanonicalSku.id == PriceAlert.canonical_sku_id)
+        .outerjoin(Distributor, Distributor.id == PriceAlert.distributor_id)
         .where(
             PriceAlert.status == AlertStatus.open,
             PriceAlert.pct_change >= Decimal(str(settings.alert_email_min_pct_change)),
@@ -99,13 +101,14 @@ def due_alerts(db: Session, now: datetime) -> dict[uuid.UUID, list[Increase]]:
         .execution_options(**{TENANT_SCOPE_BYPASS: True})
     ).all()
     by_tenant: dict[uuid.UUID, list[Increase]] = {}
-    for alert, name, uom in rows:
+    for alert, name, uom, distributor in rows:
         by_tenant.setdefault(alert.tenant_id, []).append(
             Increase(
                 alert_id=alert.id,
                 tenant_id=alert.tenant_id,
                 sku_id=alert.canonical_sku_id,
-                sku=name,
+                distributor_id=alert.distributor_id,
+                sku=design.product_from(name, distributor),
                 before=alert.baseline_price,
                 now=alert.current_price,
                 pct_change=alert.pct_change,
@@ -248,10 +251,12 @@ def send_alert_emails(db: Session, now: datetime | None = None) -> AlertEmailRun
             select(AlertEmailSend.alert_id, AlertEmailSend.user_id).where(AlertEmailSend.alert_id.in_(alert_ids))
         ).all()
     )
-    # (person, location, product) emailed lately, under any alert.
+    # (person, location, product, distributor) emailed lately, under any
+    # alert. A distributor of None is an alert from before alerts had one,
+    # and counts for the product from any distributor.
     recently = set(
         db.execute(
-            select(AlertEmailSend.user_id, PriceAlert.tenant_id, PriceAlert.canonical_sku_id)
+            select(AlertEmailSend.user_id, PriceAlert.tenant_id, PriceAlert.canonical_sku_id, PriceAlert.distributor_id)
             .join(PriceAlert, PriceAlert.id == AlertEmailSend.alert_id)
             .where(AlertEmailSend.sent_at > now - REPEAT_QUIET, AlertEmailSend.alert_id.not_in(alert_ids))
             .execution_options(**{TENANT_SCOPE_BYPASS: True})
@@ -263,7 +268,8 @@ def send_alert_emails(db: Session, now: datetime | None = None) -> AlertEmailRun
             for tenant_id, tenant_name in person.locations
             for increase in by_tenant[tenant_id]
             if (increase.alert_id, person.id) not in already
-            and (person.id, tenant_id, increase.sku_id) not in recently
+            and (person.id, tenant_id, increase.sku_id, increase.distributor_id) not in recently
+            and (person.id, tenant_id, increase.sku_id, None) not in recently
         ]
         claimed = _claim(db, person.id, [i.alert_id for _, i in wanted], now)
         if not claimed:

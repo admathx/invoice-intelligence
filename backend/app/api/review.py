@@ -265,7 +265,7 @@ def _require_comparable_units(line: InvoiceLineItem, sku: CanonicalSku) -> None:
         pack = pack_for_line(line.raw_pack_size, line.uom)
     except PackSizeParseError:
         return
-    if pack.base_units_per_pack_unit(sku.base_uom) is None:
+    if pack.base_units_per_pack_unit(sku.base_uom, sku.lb_per_gal) is None:
         raise HTTPException(
             status_code=400,
             detail=(

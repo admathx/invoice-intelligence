@@ -17,7 +17,7 @@ from app import audit
 from app.analytics.benchmark import account_key_for, compute_benchmark
 from app.api.deps import get_tenant_or_404
 from app.auth import current_user, get_db_for_tenant
-from app.models import CanonicalSku, PriceAlert, PriceObservation, User
+from app.models import CanonicalSku, Distributor, PriceAlert, PriceObservation, User
 from app.models.enums import AlertStatus
 from app.schemas.insights import BenchmarkPosition, InsightCard, PriceHistoryPoint
 
@@ -37,16 +37,28 @@ def get_insights(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant))
     )
 
     # One query for every open alert's price history, not one per alert —
-    # grouped in Python by canonical_sku_id below.
+    # grouped in Python by (canonical_sku_id, distributor) below. An alert is
+    # about one distributor's price, so its chart shows that distributor's.
     sku_ids = [alert.canonical_sku_id for alert in alerts]
-    history_by_sku: dict[uuid.UUID, list[tuple]] = {}
+    history: dict[tuple[uuid.UUID, uuid.UUID], list[tuple]] = {}
     if sku_ids:
-        for sku_id, observed_on, price in db.execute(
-            select(PriceObservation.canonical_sku_id, PriceObservation.observed_on, PriceObservation.unit_price_base)
+        for sku_id, distributor_id, observed_on, price in db.execute(
+            select(
+                PriceObservation.canonical_sku_id,
+                PriceObservation.distributor_id,
+                PriceObservation.observed_on,
+                PriceObservation.unit_price_base,
+            )
             .where(PriceObservation.tenant_id == tenant_id, PriceObservation.canonical_sku_id.in_(sku_ids))
             .order_by(PriceObservation.observed_on)
         ).all():
-            history_by_sku.setdefault(sku_id, []).append((observed_on, price))
+            history.setdefault((sku_id, distributor_id), []).append((observed_on, price))
+
+    def history_for(alert: PriceAlert) -> list[tuple]:
+        if alert.distributor_id is not None:
+            return history.get((alert.canonical_sku_id, alert.distributor_id), [])
+        # From before alerts had a distributor: every distributor's, as then.
+        return sorted(row for (sku_id, _), rows in history.items() if sku_id == alert.canonical_sku_id for row in rows)
 
     # Resolved once, outside the loop: the asking tenant's business is the
     # same for every alert on the page.
@@ -55,10 +67,12 @@ def get_insights(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant))
     # One query for every SKU name on the page, not one db.get() per alert —
     # the same rule app/api/negotiation.py already follows for its sheet.
     names = {sku.id: sku.name for sku in db.scalars(select(CanonicalSku).where(CanonicalSku.id.in_(sku_ids)))}
+    distributor_ids = {alert.distributor_id for alert in alerts if alert.distributor_id is not None}
+    distributors = dict(db.execute(select(Distributor.id, Distributor.name).where(Distributor.id.in_(distributor_ids))).all())
 
     cards = []
     for alert in alerts:
-        history_rows = history_by_sku.get(alert.canonical_sku_id, [])
+        history_rows = history_for(alert)
 
         # Uses the alert's own window_end as "as of," not wall-clock today —
         # keeps the benchmark comparison anchored to the same period the
@@ -80,6 +94,7 @@ def get_insights(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant))
                 alert_id=alert.id,
                 canonical_sku_id=alert.canonical_sku_id,
                 canonical_sku_name=names.get(alert.canonical_sku_id, "(unknown SKU)"),
+                distributor_name=distributors.get(alert.distributor_id),
                 alert_type=alert.alert_type.value,
                 baseline_price=alert.baseline_price,
                 current_price=alert.current_price,
@@ -131,6 +146,7 @@ def dismiss_alert(
         raise HTTPException(status_code=404, detail="That alert isn't open any more.")
     alert.status = AlertStatus.dismissed
     product = db.scalar(select(CanonicalSku.name).where(CanonicalSku.id == alert.canonical_sku_id))
+    distributor = db.scalar(select(Distributor.name).where(Distributor.id == alert.distributor_id))
     audit.record(
         db,
         user,
@@ -139,6 +155,7 @@ def dismiss_alert(
         alert.id,
         tenant_id,
         product=product,
+        distributor=distributor,
         pct_change=alert.pct_change,
         current_price=alert.current_price,
     )

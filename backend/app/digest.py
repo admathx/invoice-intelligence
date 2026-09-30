@@ -114,15 +114,22 @@ def location_week(db: Session, tenant: Tenant, now: datetime) -> LocationWeek:
     )
     week.new_increase_count = db.scalar(select(func.count()).select_from(new_alerts.subquery()))
     rows = db.execute(
-        select(PriceAlert, CanonicalSku.name, CanonicalSku.base_uom)
+        select(PriceAlert, CanonicalSku.name, CanonicalSku.base_uom, Distributor.name)
         .join(CanonicalSku, CanonicalSku.id == PriceAlert.canonical_sku_id)
+        .outerjoin(Distributor, Distributor.id == PriceAlert.distributor_id)
         .where(PriceAlert.tenant_id == tenant.id, PriceAlert.status == AlertStatus.open, PriceAlert.created_at >= since)
         .order_by(PriceAlert.pct_change.desc())
         .limit(LISTED)
     ).all()
     week.new_increases = [
-        PriceIncrease(name, a.baseline_price, a.current_price, a.pct_change, design.UNIT_LABEL.get(uom.value, uom.value))
-        for a, name, uom in rows
+        PriceIncrease(
+            design.product_from(name, distributor),
+            a.baseline_price,
+            a.current_price,
+            a.pct_change,
+            design.UNIT_LABEL.get(uom.value, uom.value),
+        )
+        for a, name, uom, distributor in rows
     ]
     week.open_alert_count = db.scalar(
         select(func.count(PriceAlert.id)).where(PriceAlert.tenant_id == tenant.id, PriceAlert.status == AlertStatus.open)

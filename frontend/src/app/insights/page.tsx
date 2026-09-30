@@ -19,6 +19,7 @@ type InsightCard = {
   alert_id: string;
   canonical_sku_id: string;
   canonical_sku_name: string;
+  distributor_name: string | null;
   alert_type: string;
   baseline_price: string;
   current_price: string;
@@ -206,6 +207,9 @@ export default async function InsightsPage() {
                   <a href={`/skus/${card.canonical_sku_id}`} className="hover:text-brand-700 hover:underline">
                     {card.canonical_sku_name}
                   </a>
+                  {card.distributor_name && (
+                    <span className="font-normal text-gray-500"> from {card.distributor_name}</span>
+                  )}
                 </div>
                 <div className="num mt-0.5 flex flex-wrap items-center gap-2 text-sm text-gray-600">
                   <span>
@@ -224,7 +228,7 @@ export default async function InsightsPage() {
             <div className="mt-3 flex justify-end border-t border-gray-100 pt-2">
               <ActionButton
                 label="Dealt with it"
-                question={`Take ${card.canonical_sku_name} off your price alerts? We'll tell you again if the price goes up more.`}
+                question={`Take ${card.canonical_sku_name}${card.distributor_name ? ` from ${card.distributor_name}` : ""} off your price alerts? We'll tell you again if the price goes up more.`}
                 path={`/insights/${card.alert_id}/dismiss?tenant_id=${locationId}`}
               />
             </div>

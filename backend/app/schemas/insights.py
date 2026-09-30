@@ -29,6 +29,8 @@ class InsightCard(BaseModel):
     alert_id: uuid.UUID
     canonical_sku_id: uuid.UUID
     canonical_sku_name: str
+    # Whose price went up; None on alerts from before that was recorded.
+    distributor_name: str | None = None
     alert_type: str
     baseline_price: Decimal
     current_price: Decimal

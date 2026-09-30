@@ -4,7 +4,7 @@ canonical_sku_id logic that assumes two open creep alerts never coexist for
 the same SKU.
 """
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -206,3 +206,55 @@ def test_a_dismissed_alert_stays_away_unless_the_price_climbs_further(db_session
         _add_observation(db_session, tenant, canonical_sku, distributor, AS_OF + timedelta(days=day), "18.00")
     (reopened,) = upsert_creep_alerts(db_session, tenant.id)
     assert reopened.id != alert.id and reopened.current_price == Decimal("18.0000")
+
+
+def test_each_distributors_prices_are_compared_on_their_own(db_session, tenant, canonical_sku, distributor):
+    """The test set's hot cups: Sysco's price rose, and a second distributor
+    selling the same cups for less, bought over the same recent weeks, hid
+    it when their prices were pooled."""
+    cheaper = Distributor(name="Creep Alert Cheaper Distributor", slug=f"creep-alert-cheap-{uuid.uuid4().hex[:8]}")
+    db_session.add(cheaper)
+    db_session.commit()
+    _seed_creep(db_session, tenant, canonical_sku, distributor)
+    for i in range(RECENT_WINDOW_SIZE + 1):
+        _add_observation(db_session, tenant, canonical_sku, cheaper, AS_OF - timedelta(weeks=RECENT_WINDOW_SIZE - i, days=1), "9.00")
+
+    [alert] = upsert_creep_alerts(db_session, tenant.id)
+
+    assert alert.distributor_id == distributor.id
+    assert alert.current_price == Decimal("15.0000")
+
+
+def test_buying_once_from_a_pricier_distributor_is_not_an_increase(db_session, tenant, canonical_sku, distributor):
+    pricier = Distributor(name="Creep Alert Pricier Distributor", slug=f"creep-alert-dear-{uuid.uuid4().hex[:8]}")
+    db_session.add(pricier)
+    db_session.commit()
+    for i in range(13):
+        _add_observation(db_session, tenant, canonical_sku, distributor, AS_OF - timedelta(weeks=13 - i), "10.00")
+    for i in range(3):
+        _add_observation(db_session, tenant, canonical_sku, pricier, AS_OF - timedelta(days=i), "14.00")
+
+    assert upsert_creep_alerts(db_session, tenant.id) == []
+
+
+def test_an_alert_from_before_distributors_is_replaced_by_a_per_distributor_one(
+    db_session, tenant, canonical_sku, distributor
+):
+    _seed_creep(db_session, tenant, canonical_sku, distributor)
+    legacy_opened = datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc)
+    legacy = PriceAlert(
+        id=uuid.uuid4(), tenant_id=tenant.id, canonical_sku_id=canonical_sku.id, alert_type=AlertType.creep,
+        baseline_price=Decimal("10"), current_price=Decimal("15"), pct_change=Decimal("0.5"),
+        window_start=AS_OF, window_end=AS_OF, status=AlertStatus.open,
+        created_at=legacy_opened,
+    )  # fmt: skip
+    db_session.add(legacy)
+    db_session.commit()
+
+    [alert] = upsert_creep_alerts(db_session, tenant.id)
+
+    db_session.refresh(legacy)
+    assert legacy.status == AlertStatus.resolved
+    assert alert.id != legacy.id and alert.distributor_id == distributor.id
+    # Not news: dated as the alert it replaces, so no email announces it again.
+    assert alert.created_at == legacy_opened

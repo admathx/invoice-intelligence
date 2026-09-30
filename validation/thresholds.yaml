@@ -80,7 +80,12 @@ phase4_analytics:
     # Caps the dollar floor at this fraction of the SKU's own baseline price
     # instead of the flat min_abs_change_usd above, so cheap items aren't held
     # to an unreachable absolute bar — see app/analytics/price_creep.py.
-    abs_floor_cap_fraction: 0.06
+    # 0.05, the same as min_pct_change, so items under $5 are held to the 5%
+    # rule as intended. At 0.06 they were held to 6% instead: a realistic
+    # series of paper cups rising 6.0% at one distributor went unflagged.
+    # The corpus scores identically at either (93.9% recall, 0 false
+    # positives).
+    abs_floor_cap_fraction: 0.05
     min_observations_per_window: 3
     # 0.95 (SPEC.md's literal figure) isn't reachable together with a hard
     # false_positive_max: 0 on this corpus (95.1% recall pairs with 1 false

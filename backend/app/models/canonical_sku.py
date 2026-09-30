@@ -2,7 +2,9 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Enum, Index, String
+from decimal import Decimal
+
+from sqlalchemy import Enum, Index, Numeric, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -38,6 +40,11 @@ class CanonicalSku(Base):
     subcategory: Mapped[str | None] = mapped_column(String, nullable=True)
 
     base_uom: Mapped[BaseUom] = mapped_column(Enum(BaseUom, name="base_uom"), nullable=False)
+    # Pounds per gallon, for liquids distributors sell by weight as often as
+    # by volume (fry oil in 35 lb jugs, ketchup in #10 cans): lets either be
+    # priced in base_uom. Null for everything else, whose weight and volume
+    # never compare (app/normalize/pack_size.py).
+    lb_per_gal: Mapped[Decimal | None] = mapped_column(Numeric(6, 3), nullable=True)
     gtin: Mapped[str | None] = mapped_column(String, nullable=True)
     manufacturer: Mapped[str | None] = mapped_column(String, nullable=True)
 

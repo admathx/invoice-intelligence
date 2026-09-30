@@ -69,6 +69,14 @@ _BASE_UNITS_PER_PACK_UNIT: dict[str, dict[BaseUom, Decimal]] = {
 }
 _VOLUME = {BaseUom.fl_oz, BaseUom.gal}
 
+# Through a product's own weight per gallon (CanonicalSku.lb_per_gal), for
+# the few liquids sold both ways: a pack's pounds per pack unit, a pack's
+# gallons per pack unit, and a product unit's count per pound or per gallon.
+_POUNDS_PER_PACK_UNIT = {"lb": Decimal(1), "oz": Decimal(1) / 16}
+_GALLONS_PER_PACK_UNIT = {"gal": Decimal(1)}
+_PER_POUND = {BaseUom.lb: Decimal(1), BaseUom.oz: Decimal(16)}
+_PER_GALLON = {BaseUom.gal: Decimal(1), BaseUom.fl_oz: Decimal(128)}
+
 
 class PackSizeParseError(ValueError):
     """The pack size string doesn't match any known format. Never guess a
@@ -119,12 +127,32 @@ class ParsedPackSize:
         """Every unit a product could be priced in and still be compared."""
         return {uom for uom in _BASE_UNITS_PER_PACK_UNIT[self.unit] if not (self.net_weight and uom in _VOLUME)}
 
-    def base_units_per_pack_unit(self, product_uom: BaseUom) -> Decimal | None:
+    @property
+    def _is_weight(self) -> bool:
+        # A bare OZ could be fluid; only pounds and can weights are surely weight.
+        return self.unit == "lb" or (self.unit == "oz" and self.net_weight)
+
+    @property
+    def base_uoms_by_density(self) -> set[BaseUom]:
+        """Units a product with a weight per gallon could be priced in,
+        beyond convertible_base_uoms."""
+        if self._is_weight:
+            return set(_PER_GALLON)
+        if self.unit in _GALLONS_PER_PACK_UNIT:
+            return set(_PER_POUND)
+        return set()
+
+    def base_units_per_pack_unit(self, product_uom: BaseUom, lb_per_gal: Decimal | None = None) -> Decimal | None:
         """How many of `product_uom` one of this pack's units holds, or None
-        when they can't be compared."""
-        if product_uom not in self.convertible_base_uoms:
+        when they can't be compared. `lb_per_gal`, the product's, allows
+        weight against volume."""
+        if product_uom in self.convertible_base_uoms:
+            return _BASE_UNITS_PER_PACK_UNIT[self.unit][product_uom]
+        if not lb_per_gal or lb_per_gal <= 0 or product_uom not in self.base_uoms_by_density:
             return None
-        return _BASE_UNITS_PER_PACK_UNIT[self.unit][product_uom]
+        if self._is_weight:
+            return _POUNDS_PER_PACK_UNIT[self.unit] / lb_per_gal * _PER_GALLON[product_uom]
+        return _GALLONS_PER_PACK_UNIT[self.unit] * lb_per_gal * _PER_POUND[product_uom]
 
 
 # The size groups are `\d+(?:\.\d+)?`, not `[\d.]+`: the looser form also
