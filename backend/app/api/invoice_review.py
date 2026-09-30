@@ -272,8 +272,9 @@ def _apply_line_edit(db: Session, invoice: Invoice, line: InvoiceLineItem, edit:
         # The line's identity doesn't depend on its price, so its match
         # stands; its price per base unit was computed from the misread
         # number and has to be redone from the corrected one.
+        product = db.get(CanonicalSku, line.canonical_sku_id) if line.canonical_sku_id else None
         line.normalized_qty_base, line.normalized_unit_price = normalize_price(
-            line.raw_pack_size, line.quantity, line.unit_price, line.uom
+            line.raw_pack_size, line.quantity, line.unit_price, line.uom, product.base_uom if product else None
         )
 
 

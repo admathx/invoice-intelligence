@@ -180,3 +180,72 @@ def test_a_mismatch_is_a_pack_size_error_so_every_caller_routes_it_to_review():
 def test_case_billing_is_unchanged():
     qty, price = _apply_pack_size(parse_pack_size("4/5 LB"), Decimal("2"), Decimal("50.00"), "CS")
     assert (qty, price) == (Decimal("40"), Decimal("2.5000"))
+
+
+# --- pricing in the matched product's unit ----------------------------------
+
+from app.normalize.pack_size import ProductUnitMismatchError  # noqa: E402
+
+
+def test_a_pack_in_dozens_is_priced_per_item_for_a_product_sold_each():
+    """Bar towels come "12 DZ"; the catalog prices Bar Mop Towel each."""
+    qty, price = _apply_pack_size(parse_pack_size("12 DZ"), Decimal("1"), Decimal("28.80"), "CS", BaseUom.each)
+    assert (qty, price) == (Decimal("144"), Decimal("0.2000"))
+
+
+def test_fluid_ounces_are_priced_per_gallon_for_a_product_sold_by_the_gallon():
+    qty, price = _apply_pack_size(parse_pack_size("6/128 OZ"), Decimal("1"), Decimal("30.00"), "CS", BaseUom.gal)
+    assert (qty, price) == (Decimal("6"), Decimal("5.0000"))
+
+
+def test_ounces_are_priced_per_pound_for_a_product_sold_by_weight():
+    _, price = _apply_pack_size(parse_pack_size("10/16 OZ"), Decimal("1"), Decimal("40.00"), "CS", BaseUom.lb)
+    assert price == Decimal("4.0000")
+
+
+def test_weight_never_converts_to_volume():
+    """A 35 lb jug of oil against oil priced per gallon needs a density."""
+    with pytest.raises(ProductUnitMismatchError):
+        _apply_pack_size(parse_pack_size("35 LB"), Decimal("1"), Decimal("40.67"), "CS", BaseUom.gal)
+
+
+def test_a_cans_ounces_are_net_weight_never_fluid():
+    """#10 is 110 oz of product; read as fluid it's about 10% off a jug."""
+    pack = parse_pack_size("6/#10 CAN")
+    assert pack.compatible_base_uoms == {BaseUom.oz}
+    assert BaseUom.gal not in pack.convertible_base_uoms and BaseUom.fl_oz not in pack.convertible_base_uoms
+    with pytest.raises(ProductUnitMismatchError):
+        _apply_pack_size(pack, Decimal("1"), Decimal("41.32"), "CS", BaseUom.gal)
+
+
+def test_each_against_a_pack_of_many_is_refused():
+    """A case of 1000 cups billed "EA" at $65.93 was recorded as $65.93 a
+    cup. EA doesn't say whether the price is for one piece or the case."""
+    with pytest.raises(BilledUnitMismatchError):
+        _apply_pack_size(parse_pack_size("1000 CT"), Decimal("3"), Decimal("65.93"), "EA", BaseUom.each)
+
+
+def test_each_against_a_single_item_pack_is_its_price():
+    qty, price = _apply_pack_size(parse_pack_size("1 EA"), Decimal("4"), Decimal("12.50"), "EA", BaseUom.each)
+    assert (qty, price) == (Decimal("4"), Decimal("12.5000"))
+
+
+# --- a line with no pack printed ---------------------------------------------
+
+from app.normalize.pack_size import pack_for_line  # noqa: E402
+
+
+def test_no_pack_billed_by_the_pound_is_priced_per_pound():
+    """Salmon at $9.70 billed LB with no pack printed is $9.70 a pound."""
+    qty, price = _apply_pack_size(pack_for_line(None, "LB"), Decimal("12.4"), Decimal("9.70"), "LB", BaseUom.lb)
+    assert (qty, price) == (Decimal("12.4"), Decimal("9.7000"))
+
+
+@pytest.mark.parametrize("uom", ["CS", "EA", "BG"])
+def test_no_pack_billed_by_the_case_or_count_is_still_unreadable(uom):
+    with pytest.raises(PackSizeParseError):
+        pack_for_line("", uom)
+
+
+def test_a_printed_pack_wins_over_the_billing_unit():
+    assert pack_for_line("4/5 LB", "LB").base_units_per_case == Decimal("20")

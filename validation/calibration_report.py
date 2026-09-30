@@ -52,7 +52,9 @@ RESULTS_PATH = REPO_ROOT / "validation" / "results" / "calibration.json"
 # Confidence bands the review queue's range is split into. Each has to earn a
 # threshold move on its own evidence.
 BANDS = [
-    (Decimal("0.00"), Decimal("0.80")),
+    (Decimal("0.00"), Decimal("0.60")),
+    (Decimal("0.60"), Decimal("0.70")),
+    (Decimal("0.70"), Decimal("0.80")),
     (Decimal("0.80"), Decimal("0.85")),
     (Decimal("0.85"), Decimal("0.88")),
     (Decimal("0.88"), Decimal("0.90")),

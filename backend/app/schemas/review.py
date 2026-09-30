@@ -21,6 +21,10 @@ class ReviewQueueItem(BaseModel):
     canonical_sku_id: uuid.UUID | None
     canonical_sku_name: str | None
     match_confidence: Decimal | None
+    # Whether a price per pound, gallon or item could be worked out from the
+    # pack size and unit. When not, matching still records what the item is,
+    # but its price isn't tracked until they're corrected on the invoice.
+    price_known: bool
 
 
 class CorrectRequest(BaseModel):

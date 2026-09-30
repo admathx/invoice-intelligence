@@ -20,7 +20,14 @@ from app.models.sku_alias import SkuAlias
 from app.models.tenant import Tenant, account_key_column
 from app.normalize.description_expansion import description_similarity, normalize_for_embedding
 from app.normalize.embeddings import embed_text
-from app.normalize.pack_size import BilledUnitMismatchError, ParsedPackSize, PackSizeParseError, billed_unit_token, parse_pack_size
+from app.normalize.pack_size import (
+    BilledUnitMismatchError,
+    PackSizeParseError,
+    ParsedPackSize,
+    ProductUnitMismatchError,
+    billed_unit_token,
+    pack_for_line,
+)
 
 # Loaded from validation/thresholds.yaml rather than hardcoded literals kept
 # in sync by comment: that pattern (which originated here) lets the live
@@ -223,8 +230,15 @@ def match_by_embedding(
 
 
 def _apply_pack_size(
-    pack: ParsedPackSize, quantity: Decimal, unit_price: Decimal, uom: str
+    pack: ParsedPackSize, quantity: Decimal, unit_price: Decimal, uom: str, product_uom: BaseUom | None = None
 ) -> tuple[Decimal, Decimal]:
+    """(quantity, price) per base unit: per `product_uom` when given, the
+    unit the matched product is priced in, else per the pack's own unit."""
+    per_pack_unit = Decimal(1) if product_uom is None else pack.base_units_per_pack_unit(product_uom)
+    if per_pack_unit is None:
+        raise ProductUnitMismatchError(
+            f"pack is in {pack.unit!r} but the product is priced per {product_uom.value!r}; they don't convert"
+        )
     # unit_price is only a case price when the line is actually billed by the
     # case (printed UOM "CS") — SPEC.md §6 also lists EA/DZ/etc. as UOMs to
     # handle, and a distributor billing directly by the base unit (e.g.
@@ -244,10 +258,28 @@ def _apply_pack_size(
                 f"line billed per {uom!r} but pack is denominated in {pack.unit!r}; "
                 "can't convert to a per-base-unit price without guessing"
             )
-        return quantity, unit_price.quantize(Decimal("0.0001"))
-    normalized_qty_base = quantity * pack.base_units_per_case
-    normalized_unit_price = (unit_price / pack.base_units_per_case).quantize(Decimal("0.0001"))
-    return normalized_qty_base, normalized_unit_price
+        # "EA" against a pack of many ("1000 CT") says nothing about whether
+        # the price is for one piece or the whole case, and invoices use it
+        # both ways. Read as one piece, a $65.93 case of cups was recorded at
+        # $65.93 a cup, a thousand times the real price.
+        if pack.unit == "ea" and pack.base_units_per_case > 1:
+            raise BilledUnitMismatchError(
+                f"line billed per {uom!r} against a pack of {pack.base_units_per_case}: one piece or the case?"
+            )
+        return quantity * per_pack_unit, (unit_price / per_pack_unit).quantize(Decimal("0.0001"))
+    base_units = pack.base_units_per_case * per_pack_unit
+    return quantity * base_units, (unit_price / base_units).quantize(Decimal("0.0001"))
+
+
+def _unit_without_a_product(pack: ParsedPackSize, candidate: CanonicalSku | None) -> BaseUom | None:
+    """The unit to price a line in before anyone has said what it is: the
+    pack's own, or for an ambiguous OZ, a near candidate's where that is one
+    of the pack's own (a hint, not a match)."""
+    if len(pack.compatible_base_uoms) == 1:
+        return next(iter(pack.compatible_base_uoms))
+    if candidate is not None and candidate.base_uom in pack.compatible_base_uoms:
+        return candidate.base_uom
+    return None
 
 
 def apply_match(line, match: MatchResult) -> None:
@@ -265,15 +297,16 @@ def apply_match(line, match: MatchResult) -> None:
 
 
 def normalize_price(
-    raw_pack_size: str | None, quantity: Decimal, unit_price: Decimal, uom: str
+    raw_pack_size: str | None, quantity: Decimal, unit_price: Decimal, uom: str, product_uom: BaseUom | None = None
 ) -> tuple[Decimal | None, Decimal | None]:
     """(qty_base, price_per_base_unit) for a line, or (None, None) when that
     can't be computed without guessing (unparseable pack, or billed in a unit
     the pack can't convert). For re-pricing a line whose identity is already
-    settled, e.g. after a human corrects a misread unit price.
+    settled, e.g. after a human corrects a misread unit price; pass the
+    matched product's unit so the price stays in it.
     """
     try:
-        return _apply_pack_size(parse_pack_size(raw_pack_size), quantity, unit_price, uom)
+        return _apply_pack_size(pack_for_line(raw_pack_size, uom), quantity, unit_price, uom, product_uom)
     except PackSizeParseError:
         return None, None
 
@@ -291,10 +324,14 @@ def _exact_match_result(
     identity, differing only in how canonical_sku_id was found — everything
     about normalizing the price is identical from here.
     """
+    # CanonicalSku isn't TenantScoped (a shared reference table), so a plain
+    # lookup. Priced in the product's own unit, which is what its price
+    # history and benchmarks are kept in.
+    product_uom = db.get(CanonicalSku, canonical_sku_id).base_uom
     try:
-        pack = parse_pack_size(raw_pack_size)
-        qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom)
-        base_uom = _resolve_base_uom(db, pack, canonical_sku_id)
+        pack = pack_for_line(raw_pack_size, uom)
+        qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom, product_uom)
+        base_uom = product_uom
         review_status = ReviewStatus.auto
     except PackSizeParseError:
         # Identity is still certain (that's what alias/GTIN means), but with no
@@ -335,7 +372,7 @@ def match_line_item(
         return _exact_match_result(db, gtin_match, "gtin", raw_pack_size, quantity, unit_price, uom)
 
     try:
-        pack = parse_pack_size(raw_pack_size)
+        pack = pack_for_line(raw_pack_size, uom)
     except PackSizeParseError:
         # SPEC.md §6: a pack-size error produces a confidently wrong benchmark,
         # worse than no benchmark — never guess forward from here. No embedding
@@ -351,26 +388,23 @@ def match_line_item(
             method="unparseable_pack_size",
         )
 
+    # Products priced in any unit the pack converts to exactly, not only its
+    # own: "12 DZ" bar towels are Bar Mop Towel, priced each.
+    candidate, similarity = match_by_embedding(db, raw_description, pack.convertible_base_uoms)
+    suggested = candidate is not None and similarity is not None and similarity >= REVIEW_QUEUE_CONFIDENCE_LOW
+    candidate_base_uom = candidate.base_uom if suggested else _unit_without_a_product(pack, candidate)
     try:
-        qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom)
+        qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom, candidate_base_uom)
     except BilledUnitMismatchError:
-        # The item can still be identified (the pack parsed, so the UOM band
-        # is known and the embedding search below is valid); only its price
-        # per base unit can't be. Keep the suggestion for the reviewer, but
-        # with no normalized price the line can never auto-resolve below and
-        # can never produce a price observation.
+        # The item can still be identified (the pack parsed, so the unit
+        # family is known and the embedding search above is valid); only its
+        # price per base unit can't be. Keep the suggestion for the reviewer,
+        # but with no normalized price the line can never auto-resolve below
+        # and can never produce a price observation.
         qty_base = price_base = None
-    candidate, similarity = match_by_embedding(db, raw_description, pack.compatible_base_uoms)
-    # A singleton compatible-UOM set (everything but the "oz" weight/fluid
-    # ambiguity) is already unambiguous from the pack string alone; only the
-    # ambiguous case needs the matched candidate's own declared base_uom.
-    candidate_base_uom = (
-        next(iter(pack.compatible_base_uoms)) if len(pack.compatible_base_uoms) == 1 else (candidate.base_uom if candidate else None)
-    )
 
     if (
-        candidate is not None
-        and similarity is not None
+        suggested
         and similarity >= AUTO_MATCH_CONFIDENCE_THRESHOLD
         # `auto` means "fully resolved, no human needed", which a line with no
         # usable price isn't (same rule _exact_match_result applies).
@@ -385,7 +419,7 @@ def match_line_item(
             review_status=ReviewStatus.auto,
             method="embedding_auto",
         )
-    if candidate is not None and similarity is not None and similarity >= REVIEW_QUEUE_CONFIDENCE_LOW:
+    if suggested:
         return MatchResult(
             canonical_sku_id=candidate.id,
             match_confidence=similarity,
@@ -396,8 +430,9 @@ def match_line_item(
             method="embedding_review",
         )
 
-    # Below 0.80, or no candidates at all in this UOM band: SPEC.md §6 — "below
-    # 0.80 creates a new canonical SKU candidate." We don't auto-create the row
+    # Below the review band, or no candidates at all in these units: SPEC.md
+    # §6 — "below 0.80 creates a new canonical SKU candidate" (the floor is
+    # now review_queue_confidence_low). We don't auto-create the row
     # (that's a human call in the Phase 5 review queue); we flag it as pending
     # with no canonical_sku_id so it surfaces there instead of silently
     # attaching to the nearest-but-wrong existing SKU. base_uom still reflects
@@ -412,12 +447,3 @@ def match_line_item(
         review_status=ReviewStatus.pending,
         method="new_candidate",
     )
-
-
-def _resolve_base_uom(db: Session, pack: ParsedPackSize, canonical_sku_id: uuid.UUID) -> BaseUom:
-    # CanonicalSku isn't TenantScoped (it's a shared reference table), so this
-    # is a plain lookup — no tenant-scope guard to satisfy here.
-    if len(pack.compatible_base_uoms) == 1:
-        return next(iter(pack.compatible_base_uoms))
-    matched = db.get(CanonicalSku, canonical_sku_id)
-    return matched.base_uom

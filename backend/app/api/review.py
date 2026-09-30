@@ -30,9 +30,10 @@ from app.models import (
     build_price_observation,
 )
 from app.models.distributor import UNRECOGNIZED_SLUG
-from app.models.enums import ReviewStatus
+from app.models.enums import BaseUom, ReviewStatus
 from app.models.tenant import account_key_column
 from app.normalize.matcher import _exact_match_result
+from app.normalize.pack_size import PackSizeParseError, pack_for_line
 from app.schemas.review import CorrectRequest, ReviewActionResponse, ReviewQueueItem
 
 router = APIRouter(prefix="/review", tags=["review"])
@@ -212,6 +213,7 @@ def get_review_queue(
             canonical_sku_id=line.canonical_sku_id,
             canonical_sku_name=sku.name if sku else None,
             match_confidence=line.match_confidence,
+            price_known=line.normalized_unit_price is not None,
         )
         for line, invoice, distributor, sku in rows
     ]
@@ -241,6 +243,39 @@ def confirm_line_item(
     )
 
 
+_PRICED_PER = {
+    BaseUom.lb: "pound",
+    BaseUom.oz: "ounce",
+    BaseUom.fl_oz: "fluid ounce",
+    BaseUom.gal: "gallon",
+    BaseUom.each: "item",
+    BaseUom.dozen: "dozen",
+}
+_PACKED_IN = {"lb": "pounds", "oz": "ounces", "gal": "gallons", "dz": "dozens", "ea": "pieces"}
+
+
+def _require_comparable_units(line: InvoiceLineItem, sku: CanonicalSku) -> None:
+    """A product priced per gallon can't take a pack in pounds: the price per
+    gallon would be a price per pound under the wrong label, and it would sit
+    in that product's history and benchmarks beside real ones. Refused with
+    the reason, rather than kept with no price and sent back here every week.
+    An unreadable pack isn't this check's concern; that line gets no price
+    whatever product it is, and fixing the pack on the invoice prices it."""
+    try:
+        pack = pack_for_line(line.raw_pack_size, line.uom)
+    except PackSizeParseError:
+        return
+    if pack.base_units_per_pack_unit(sku.base_uom) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{sku.name} is priced per {_PRICED_PER[sku.base_uom]}, and this item comes in "
+                f"{_PACKED_IN[pack.unit]} ({line.raw_pack_size}), so their prices can't be compared. "
+                "Choose another product, or skip it."
+            ),
+        )
+
+
 @router.post("/{line_item_id}/correct", response_model=ReviewActionResponse)
 def correct_line_item(
     line_item_id: uuid.UUID,
@@ -260,6 +295,7 @@ def correct_line_item(
     sku = db.get(CanonicalSku, body.canonical_sku_id)
     if sku is None:
         raise HTTPException(status_code=404, detail="We couldn't find that product.")
+    _require_comparable_units(line, sku)
     previous_sku_id, suggested_confidence = line.canonical_sku_id, line.match_confidence
 
     result = _exact_match_result(

@@ -9,7 +9,7 @@ import { api, jsonInit } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
 import { quantity, unitPrice } from "@/lib/format";
 
-/** How sure the matcher was: the review band starts at 80%. */
+/** How sure the matcher was: suggestions start at 60% (validation/thresholds.yaml). */
 function confidenceBadge(confidence: number): string {
   if (confidence >= 0.9) return "bg-brand-100 text-brand-800";
   if (confidence >= 0.85) return "bg-amber-100 text-amber-800";
@@ -30,6 +30,7 @@ type QueueItem = {
   canonical_sku_id: string | null;
   canonical_sku_name: string | null;
   match_confidence: string | null;
+  price_known: boolean;
 };
 
 type SearchResult = {
@@ -307,6 +308,31 @@ function ReviewQueueInner() {
           </span>
           <span className="font-semibold text-gray-900">{unitPrice(current.unit_price)}</span>
         </div>
+
+        {!current.price_known && (
+          <p className="mb-3 text-sm text-gray-600" data-testid="price-unknown">
+            Its price can&rsquo;t be tracked yet:{" "}
+            {current.uom === "CS" ? (
+              <>
+                we can&rsquo;t work out a price per unit from its pack size (
+                {current.raw_pack_size ?? "none printed"}). If that was misread, correct it on{" "}
+                <a href={`/invoices/${current.invoice_id}`} className="link">
+                  the invoice
+                </a>
+                .
+              </>
+            ) : (
+              <>
+                a pack of {current.raw_pack_size ?? "unknown size"} billed per {current.uom} doesn&rsquo;t say what the
+                price covers. If it&rsquo;s for the whole case, set the unit to CS on{" "}
+                <a href={`/invoices/${current.invoice_id}`} className="link">
+                  the invoice
+                </a>
+                .
+              </>
+            )}
+          </p>
+        )}
 
         {current.canonical_sku_id ? (
           <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-sm text-sky-950">

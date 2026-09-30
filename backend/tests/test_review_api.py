@@ -750,3 +750,60 @@ def test_the_worker_reads_printed_dates_and_holds_invoices_without_one(
     assert invoice.status != InvoiceStatus.failed
     if expected_status:
         assert invoice.status == expected_status
+
+
+def test_a_product_priced_in_a_unit_the_pack_cant_convert_to_is_refused(db_session, tenant, distributor):
+    """Picking Canola Oil (per gallon) for a 35 lb jug used to record the price
+    per pound as a price per gallon, in that product's history and benchmarks."""
+    per_gallon = CanonicalSku(name=f"Review API Oil {uuid.uuid4().hex[:8]}", category="test", base_uom=BaseUom.gal)
+    db_session.add(per_gallon)
+    db_session.commit()
+    db_session.info["_created"]["skus"].append(per_gallon.id)
+    line = _auto_matched_line(db_session, tenant, distributor, per_gallon)
+    line.raw_pack_size, line.uom, line.review_status = "35 LB", "CS", ReviewStatus.pending
+    line.canonical_sku_id = line.normalized_unit_price = line.normalized_qty_base = None
+    db_session.commit()
+
+    resp = TestClient(app).post(
+        f"/review/{line.id}/correct", params={"tenant_id": str(tenant.id)}, json={"canonical_sku_id": str(per_gallon.id)}
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert "priced per gallon" in resp.json()["detail"] and "pounds" in resp.json()["detail"]
+    db_session.expire_all()
+    assert db_session.get(InvoiceLineItem, line.id).canonical_sku_id is None
+    assert db_session.scalars(select(PriceObservation).where(PriceObservation.tenant_id == tenant.id)).all() == []
+
+
+def test_a_product_in_a_convertible_unit_is_priced_in_its_own(db_session, tenant, distributor):
+    """"12 DZ" bar towels matched to a product sold each: $28.80 a case is
+    $0.20 a towel, and that's what goes into its price history."""
+    each = CanonicalSku(name=f"Review API Towel {uuid.uuid4().hex[:8]}", category="test", base_uom=BaseUom.each)
+    db_session.add(each)
+    db_session.commit()
+    db_session.info["_created"]["skus"].append(each.id)
+    line = _auto_matched_line(db_session, tenant, distributor, each)
+    line.raw_pack_size, line.uom, line.unit_price, line.extended_price = "12 DZ", "CS", Decimal("28.80"), Decimal("28.80")
+    line.review_status = ReviewStatus.pending
+    line.canonical_sku_id = line.normalized_unit_price = line.normalized_qty_base = None
+    db_session.commit()
+
+    resp = TestClient(app).post(
+        f"/review/{line.id}/correct", params={"tenant_id": str(tenant.id)}, json={"canonical_sku_id": str(each.id)}
+    )
+
+    assert resp.status_code == 200, resp.text
+    observation = db_session.scalar(select(PriceObservation).where(PriceObservation.invoice_line_item_id == line.id))
+    assert observation.unit_price_base == Decimal("0.2000")
+
+
+def test_the_queue_says_when_an_items_price_cant_be_worked_out(db_session, tenant, distributor, canonical_sku):
+    line = _auto_matched_line(db_session, tenant, distributor, canonical_sku)
+    line.raw_pack_size, line.uom, line.review_status = "1000 CT", "EA", ReviewStatus.pending
+    line.normalized_unit_price = line.normalized_qty_base = None
+    db_session.commit()
+
+    queue = TestClient(app).get("/review/queue", params={"tenant_id": str(tenant.id)}).json()
+
+    item = next(i for i in queue if i["id"] == str(line.id))
+    assert item["price_known"] is False

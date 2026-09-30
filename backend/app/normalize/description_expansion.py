@@ -66,12 +66,91 @@ ABBREVIATION_EXPANSIONS: dict[str, str] = {
     "WHT": "WHITE",
     "BLK": "BLACK",
     "GRN": "GREEN",
+    # Added from a set of realistic invoices from four broadline
+    # distributors, where these left most items without a suggestion
+    # ("SHRMP 16/20 P&D TAIL ON" scored 0.31 against Shrimp 16/20 Peeled
+    # Deveined). All standard distributor shorthand.
+    "SHRMP": "SHRIMP",
+    # Pork butt is the shoulder cut; it matched Pork Chop Boneless.
+    "BUTT": "SHOULDER",
+    "P&D": "PEELED DEVEINED",
+    "DEV": "DEVEINED",
+    "TLO": "TAIL ON",
+    "FIL": "FILLET",
+    "FRZ": "FROZEN",
+    "RST": "ROAST",
+    "BRSKT": "BRISKET",
+    "PKCR": "PACKER",
+    "SKNLS": "SKINLESS",
+    "CHS": "CHEESE",
+    "WM": "WHOLE MILK",
+    "CRM": "CREAM",
+    "UNS": "UNSALTED",
+    "UNSLTD": "UNSALTED",
+    "HMBGR": "HAMBURGER",
+    "HOAG": "HOAGIE",
+    "FLR": "FLOUR",
+    "AP": "ALL PURPOSE",
+    "BLCHD": "BLEACHED",
+    "GLTN": "GLUTEN",
+    "HI": "HIGH",
+    "HG": "HIGH GLUTEN",
+    "LNG": "LONG",
+    "RUSS": "RUSSET",
+    "JBO": "JUMBO",
+    "YEL": "YELLOW",
+    "YLLW": "YELLOW",
+    "PEPR": "PEPPER",
+    "GND": "GROUND",
+    "KOSHR": "KOSHER",
+    "OLIV": "OLIVE",
+    "XV": "EXTRA VIRGIN",
+    "XTR": "EXTRA",
+    "VIRGN": "VIRGIN",
+    "SCE": "SAUCE",
+    "ORIG": "ORIGINAL",
+    "KTCHP": "KETCHUP",
+    "HVY": "HEAVY",
+    "DTY": "DUTY",
+    "HD": "HEAVY DUTY",
+    "LRG": "LARGE",
+    "LG": "LARGE",
+    "PCT": "PERCENT",
+    "SL": "SLICED",
+    "HRT": "HEARTS",
+    "CLR": "CLEAR",
+    "CLD": "COLD",
+    "PPR": "PAPER",
+    "CNTR": "CONTAINER",
+    "HNGD": "HINGED",
+    "TOGO": "TO GO",
+    "NPKN": "NAPKIN",
+    "DNR": "DINNER",
+    "TWL": "TOWEL",
+    "TRSH": "TRASH",
+    "GLV": "GLOVE",
+    "BLCH": "BLEACH",
+    "CONC": "CONCENTRATE",
+    "DEGRSR": "DEGREASER",
+    "SANTZR": "SANITIZER",
+    "QAT": "QUATERNARY",
+    "WH": "WHITE",
 }
+
+# Shorthand whose meaning depends on the word before it: GRN is GREEN on a
+# pepper and GRAIN on rice, and "LONG GREEN" rice matched Rice Brown.
+_PHRASE_FIXES = (("LONG GREEN", "LONG GRAIN"),)
+
+# "16Z" is how some distributors print 16 OZ.
+_OUNCES = re.compile(r"^(\d+(?:\.\d+)?)Z$")
 
 
 def expand_description(raw_description: str) -> str:
-    words = raw_description.upper().split()
-    return " ".join(ABBREVIATION_EXPANSIONS.get(w, w) for w in words)
+    words = [_OUNCES.sub(r"\1OZ", w) for w in raw_description.upper().split()]
+    expanded = " ".join(ABBREVIATION_EXPANSIONS.get(w, w) for w in words)
+    for wrong, right in _PHRASE_FIXES:
+        expanded = expanded.replace(wrong, right)
+    return expanded
 
 
 _NON_ALNUM = re.compile(r"[^A-Z0-9 ]+")

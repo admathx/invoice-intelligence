@@ -2394,3 +2394,51 @@ were matched alerted and the pack change and one-week spike stayed quiet.
 
 ### Gates
 Backend 409.
+
+## Matching a new location's items, and "EA" against a case
+
+The realistic test set showed 70% of a new location's distinct items (275
+of 361) arriving on Match items with no suggestion, so each had to be
+searched for by hand. Three causes, all fixed:
+
+- **Shorthand the glossary didn't have** (SHRMP, PPR, HMBGR, JBO, WM for
+  whole milk, "16Z"), plus GRN, which is GREEN on peppers and GRAIN on
+  rice. "SHRMP 16/20 P&D TAIL ON" scored 0.31 against Shrimp 16/20 Peeled
+  Deveined; now 0.85. Pork butt matched Pork Chop; now Pork Shoulder.
+- **Products in another unit were never considered.** The matcher only
+  searched products priced in the pack's own unit, so "12 DZ" bar towels
+  never found Bar Mop Towel (priced each) and "6/121 OZ" bleach never found
+  Bleach (per gallon). Exact conversions (lb/oz, gal/fl oz, dozen/each) now
+  apply, and prices are recorded in the product's own unit. Weight to volume
+  needs a density and stays out; can sizes are net weight and never convert
+  to volume.
+- **The suggestion floor was 0.80**, tuned on synthetic invoices. On the
+  realistic set, the top candidate from 0.60 up was right for 215 of 216
+  distinct items, so suggestions now start at 0.60 (red "% sure" badge below
+  0.85). Auto-accept stays at 0.92.
+
+Also: a line with no pack printed and billed by the pound (salmon, brisket)
+is priced per pound instead of treated as unreadable.
+
+Result on the replay: items matched went from 86 to 214 of 361 (general
+location) and 21 to 47 of 54 (price series); lines matched automatically
+from 533 to 1,253. The synthetic matching gate still passes (98.8% auto,
+0 false matches).
+
+**"EA" against a pack of many.** A $65.93 case of 1000 cups billed "EA" was
+recorded at $65.93 a cup. EA doesn't say whether the price is for one piece
+or the case, so such lines get no price and Match items says why (and that
+setting the unit to CS on the invoice fixes it).
+
+**Picking a product whose unit can't convert is refused.** Choosing Canola
+Oil (per gallon) for a 35 lb jug recorded a per-pound price as a per-gallon
+one in that product's history and benchmarks. Match items now explains why
+not, instead.
+
+Still open: the catalog prices Canola Oil and Ketchup per gallon, while
+distributors sell them in 35 lb jugs and #10 cans; and price alerts compare
+a product's prices across distributors together, so buying the same item
+from a cheaper distributor can hide an increase (or a pricier one fake one).
+
+### Gates
+Backend 430, frontend 54 unit, `tsc` clean, matching gate PASS.

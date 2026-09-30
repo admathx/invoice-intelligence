@@ -115,7 +115,7 @@ def main() -> int:
             continue
 
         candidate_id, candidate_name, similarity = _best_match(
-            np.array(vec, dtype=np.float64), pack.compatible_base_uoms, ids, names, base_uoms, matrix
+            np.array(vec, dtype=np.float64), pack.convertible_base_uoms, ids, names, base_uoms, matrix
         )
         if candidate_id is None:
             match_cache[(desc, pack_str)] = {"status": "no_candidates"}
@@ -156,7 +156,7 @@ def main() -> int:
     print("\n=== Phase 3 matching report ===")
     print(f"Total line items: {total}")
     print(f"Auto-match rate (>={AUTO_MATCH_CONFIDENCE_THRESHOLD}): {auto_rate:.1%} ({counts['auto']}/{total})")
-    print(f"Review-queue rate (0.80-0.92 or new candidate): {review_rate:.1%}")
+    print(f"Review-queue rate ({REVIEW_QUEUE_CONFIDENCE_LOW}-{AUTO_MATCH_CONFIDENCE_THRESHOLD} or new candidate): {review_rate:.1%}")
     print(f"Unparseable pack size: {counts['unparseable_pack_size']}")
     print(f"False match rate among auto-matches: {false_match_rate:.4%} ({auto_wrong}/{counts['auto']})")
     if false_matches:

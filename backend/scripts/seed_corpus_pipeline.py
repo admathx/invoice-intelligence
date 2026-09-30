@@ -16,7 +16,7 @@ line items, per validation/matching_report.py's own count), so this is
 seconds of embedding work, not the ~70 minutes a naive per-line call would
 cost. Only canonical_sku_id/base_uom/review_status/match_confidence are
 cached this way; normalized_qty_base/normalized_unit_price are recomputed per
-line via the real parse_pack_size + matcher._apply_pack_size, since those
+line via the real pack_for_line + matcher._apply_pack_size, since those
 depend on that line's own quantity/unit_price, which varies week to week.
 
 Idempotent: clears any previously-seeded invoices for these 20 tenants before
@@ -50,7 +50,7 @@ from app.models import (  # noqa: E402
 )
 from app.models.enums import InvoiceSource, InvoiceStatus, ReviewStatus, VolumeTier  # noqa: E402
 from app.normalize.matcher import MatchResult, _apply_pack_size, match_line_item  # noqa: E402
-from app.normalize.pack_size import parse_pack_size  # noqa: E402
+from app.normalize.pack_size import pack_for_line  # noqa: E402
 from synthetic.tenants import build_tenants  # noqa: E402
 
 OUT_DIR = REPO_ROOT / "synthetic" / "out"
@@ -159,8 +159,8 @@ def main() -> None:
                     # Same pack string as the cache-priming call, so this can't
                     # raise where the cached call didn't — recomputed (not
                     # reused) because qty/price vary per line.
-                    pack = parse_pack_size(line["raw_pack_size"])
-                    qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, line["uom"])
+                    pack = pack_for_line(line["raw_pack_size"], line["uom"])
+                    qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, line["uom"], cached.base_uom)
                 else:
                     qty_base = price_base = None
 

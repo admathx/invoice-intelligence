@@ -50,6 +50,26 @@ _TOKEN_TO_BASE_UOMS: dict[str, set[BaseUom]] = {
 }
 
 
+# How many of a product's base unit one unit of a pack holds, for the
+# conversions that are exact whatever the product: weight to weight, volume
+# to volume, count to count. The catalog prices each product in one unit
+# (Bleach per gallon, Bar Mop Towel each) while distributors pack them in
+# others ("6/121 OZ", "12 DZ"); without these, a product was only ever found
+# for a pack in its own unit. Weight to volume needs the product's density,
+# so it isn't here: a 35 lb jug of oil doesn't compare with oil priced per
+# gallon.
+_BASE_UNITS_PER_PACK_UNIT: dict[str, dict[BaseUom, Decimal]] = {
+    "lb": {BaseUom.lb: Decimal(1), BaseUom.oz: Decimal(16)},
+    # A bare OZ is weight or fluid (module docstring); the product's own unit
+    # says which.
+    "oz": {BaseUom.oz: Decimal(1), BaseUom.fl_oz: Decimal(1), BaseUom.lb: Decimal(1) / 16, BaseUom.gal: Decimal(1) / 128},
+    "gal": {BaseUom.gal: Decimal(1), BaseUom.fl_oz: Decimal(128)},
+    "dz": {BaseUom.dozen: Decimal(1), BaseUom.each: Decimal(12)},
+    "ea": {BaseUom.each: Decimal(1), BaseUom.dozen: Decimal(1) / 12},
+}
+_VOLUME = {BaseUom.fl_oz, BaseUom.gal}
+
+
 class PackSizeParseError(ValueError):
     """The pack size string doesn't match any known format. Never guess a
     number here — an unparseable pack size must surface as a gap, not a
@@ -67,6 +87,12 @@ class BilledUnitMismatchError(PackSizeParseError):
     """
 
 
+class ProductUnitMismatchError(PackSizeParseError):
+    """The pack's unit can't be converted to the unit the product is priced
+    in (pounds against gallons). Also a PackSizeParseError, for the same
+    reason as BilledUnitMismatchError: no price rather than a wrong one."""
+
+
 def billed_unit_token(uom: str) -> str | None:
     """The physical unit a line's billing UOM names, or None if it names none
     (a container such as BG, BX or PK, whose size the invoice doesn't state)."""
@@ -77,10 +103,28 @@ def billed_unit_token(uom: str) -> str | None:
 class ParsedPackSize:
     unit: str  # "lb" | "oz" | "gal" | "dz" | "ea"
     base_units_per_case: Decimal
+    # Can codes give net weight ("#10" is 110 oz of product, not of liquid),
+    # so a can's ounces are never read as fluid ounces.
+    net_weight: bool = False
 
     @property
     def compatible_base_uoms(self) -> set[BaseUom]:
+        """The units this pack is written in, with no conversion."""
+        if self.net_weight:
+            return {BaseUom.oz}
         return _TOKEN_TO_BASE_UOMS[self.unit]
+
+    @property
+    def convertible_base_uoms(self) -> set[BaseUom]:
+        """Every unit a product could be priced in and still be compared."""
+        return {uom for uom in _BASE_UNITS_PER_PACK_UNIT[self.unit] if not (self.net_weight and uom in _VOLUME)}
+
+    def base_units_per_pack_unit(self, product_uom: BaseUom) -> Decimal | None:
+        """How many of `product_uom` one of this pack's units holds, or None
+        when they can't be compared."""
+        if product_uom not in self.convertible_base_uoms:
+            return None
+        return _BASE_UNITS_PER_PACK_UNIT[self.unit][product_uom]
 
 
 # The size groups are `\d+(?:\.\d+)?`, not `[\d.]+`: the looser form also
@@ -103,7 +147,9 @@ def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
         count, can_code = m.group(1), m.group(2)
         if can_code not in CAN_SIZE_OZ:
             raise PackSizeParseError(f"unknown can size #{can_code} in {raw_pack_size!r}")
-        return _positive(ParsedPackSize(unit="oz", base_units_per_case=Decimal(count) * CAN_SIZE_OZ[can_code]), raw_pack_size)
+        return _positive(
+            ParsedPackSize(unit="oz", base_units_per_case=Decimal(count) * CAN_SIZE_OZ[can_code], net_weight=True), raw_pack_size
+        )
 
     m = _CASE_PATTERN.match(text)
     if m:
@@ -122,6 +168,20 @@ def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
         return _positive(ParsedPackSize(unit=unit, base_units_per_case=Decimal(size)), raw_pack_size)
 
     raise PackSizeParseError(f"unrecognized pack size format: {raw_pack_size!r}")
+
+
+def pack_for_line(raw_pack_size: str | None, uom: str) -> ParsedPackSize:
+    """The pack a line's price is for. As printed, or, when no pack is
+    printed and the line is billed by weight or volume ("LB", "GAL"), one of
+    that unit: salmon at $9.70 billed LB is $9.70 a pound, and treating the
+    missing pack as unreadable left such lines with no price and no
+    suggestion. A count ("EA") or a case ("CS") with no pack still says
+    nothing about the amount, so those stay unreadable."""
+    if not (raw_pack_size or "").strip():
+        unit = billed_unit_token(uom)
+        if unit in ("lb", "oz", "gal"):
+            return ParsedPackSize(unit=unit, base_units_per_case=Decimal(1))
+    return parse_pack_size(raw_pack_size)
 
 
 def _positive(parsed: ParsedPackSize, raw_pack_size: str) -> ParsedPackSize:

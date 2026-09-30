@@ -51,7 +51,14 @@ phase3_normalization:
   # legitimate alias hit is skipped and 98.6% of reassignments are caught.
   # Erring strict costs one embedding search, never a wrong answer.
   min_alias_description_similarity: 0.50
-  review_queue_confidence_low: 0.80
+  # Lowest similarity at which Match items offers a suggestion; below it the
+  # person searches. Was 0.80 (SPEC.md §6), tuned on the synthetic corpus. On
+  # realistic invoices from four distributors, with the abbreviation glossary
+  # extended, the top candidate from 0.60 up was the right product for 215
+  # of 216 distinct items; below 0.60 it was wrong about half the time. At 0.80, 70% of a new location's items came with no suggestion.
+  # Suggestions under 0.85 show a red "% sure" badge and need a keypress, so
+  # a wrong one costs a search, never a wrong price.
+  review_queue_confidence_low: 0.60
   review_queue_confidence_high: 0.92
   false_match_rate_max: 0.01
 
