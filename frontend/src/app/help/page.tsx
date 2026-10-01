@@ -129,7 +129,8 @@ export default async function HelpPage() {
             Press <em>Delete it</em> and add it where it belongs, or <em>It&rsquo;s ours</em>.
           </p>
           <p className="mt-2">
-            PDFs with a password can&rsquo;t be read. Open the file, save a copy without the password, and add that.
+            PDFs with a password can&rsquo;t be read. Open the file, save a copy without the password, and add that. A PDF
+            can have up to 100 pages; split a longer one.
           </p>
         </Section>
 
@@ -266,7 +267,9 @@ export default async function HelpPage() {
         <Section topic={topic("emails")}>
           <ul className="list-disc space-y-1 pl-5">
             <li>
-              <strong>Price increases, as they happen</strong>: an email within minutes when a price jumps.
+              <strong>Price increases, as they happen</strong>: an email the same day a price jumps, about twenty minutes after
+              your last invoice arrives. Increases found in old invoices you add later aren&rsquo;t emailed; they&rsquo;re on
+              Price alerts.
             </li>
             <li>
               <strong>Weekly summary</strong>: every Monday, what happened that week and what needs doing.

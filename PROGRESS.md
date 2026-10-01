@@ -2881,3 +2881,21 @@ not.
 
 Known before the set runs: the app has no limit on pages (a 500-page PDF
 would be rendered and sent whole).
+
+### Two fixes ahead of the version 5 set
+
+- **Price-increase emails wait for the box to be emptied.** A location's
+  alerts are held while its invoices are still arriving (one added in the
+  last fifteen minutes, or one still being read), and only what is still
+  open afterwards is sent: a backlog added in any order produces one email
+  about what is true at the end, not one for each increase a partial
+  history seemed to show. And an increase is only emailed, or called new in
+  the Monday summary, while the prices it is about are within thirty days:
+  last spring's increase, found in old invoices added today, is on the
+  Price alerts page but isn't news.
+- **A page limit.** A PDF of more than 100 pages is refused when added
+  (upload and email), with the count and the limit. Past that, tall pages
+  cut into slices can still exceed what one read takes; the worker then
+  stops before calling the model and keeps the pages for a person.
+
+Backend 619 tests.

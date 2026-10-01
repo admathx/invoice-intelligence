@@ -13,8 +13,8 @@ from app.auth import CSRF_HEADER, CSRF_HEADER_VALUE
 from app.config import settings
 from app.db import SessionLocal
 from app.main import app
-from app.models import AlertEmailSend, AuditEvent, Distributor, PriceAlert, User
-from app.models.enums import AlertStatus, AlertType
+from app.models import AlertEmailSend, AuditEvent, Distributor, Invoice, PriceAlert, User
+from app.models.enums import AlertStatus, AlertType, InvoiceSource, InvoiceStatus
 
 # The digest's fixtures: committed users, locations and products, cleaned up after.
 from test_digest import PASSWORD, _outbox_files, _sku, _tenant, _user, db, outbox  # noqa: F401
@@ -27,8 +27,9 @@ NOW = datetime(2031, 3, 3, 15, 0, tzinfo=timezone.utc)
 
 
 def _alert(
-    db, tenant, sku, *, pct="0.24", created_at=NOW - timedelta(hours=1), status=AlertStatus.open, distributor=None
-) -> PriceAlert:
+    db, tenant, sku, *, pct="0.24", created_at=NOW - timedelta(hours=1), status=AlertStatus.open, distributor=None,
+    window_end=NOW.date() - timedelta(days=4),
+) -> PriceAlert:  # fmt: skip
     alert = PriceAlert(
         tenant_id=tenant.id,
         canonical_sku_id=sku.id,
@@ -37,8 +38,8 @@ def _alert(
         baseline_price=Decimal("0.54"),
         current_price=Decimal("0.67"),
         pct_change=Decimal(pct),
-        window_start=date(2026, 8, 1),
-        window_end=date(2026, 9, 27),
+        window_start=window_end - timedelta(days=60),
+        window_end=window_end,
         status=status,
         created_at=created_at,
     )
@@ -256,3 +257,84 @@ def test_any_failure_after_claiming_hands_the_claims_back(db, outbox, monkeypatc
     monkeypatch.setattr(settings, "outbox_dir", str(outbox))
     assert _send(NOW).sent >= 1
     assert db.scalar(select(AlertEmailSend.alert_id).where(AlertEmailSend.user_id == user.id)) == alert.id
+
+
+# --- A box of old invoices (the fourth test set, replayed in random order) -----
+
+
+def _invoice(db, tenant, *, created_at, status=InvoiceStatus.extracted) -> Invoice:
+    invoice = Invoice(
+        tenant_id=tenant.id, source=InvoiceSource.upload, status=status, original_file_uri="file:///dev/null",
+        created_at=created_at,
+    )  # fmt: skip
+    db.add(invoice)
+    db.commit()
+    return invoice
+
+
+def _emailed(db, user) -> set:
+    """The alerts this person has been emailed about."""
+    return set(db.scalars(select(AlertEmailSend.alert_id).where(AlertEmailSend.user_id == user.id)))
+
+
+def test_alerts_wait_until_the_locations_invoices_have_stopped_arriving(db, outbox):
+    """Added in whatever order they come out of the box, invoices build a
+    price history in pieces, and a piece can look like an increase the rest
+    takes away again. Nothing is emailed mid-box."""
+    tenant = _tenant(db)
+    user = _user(db, tenant)
+    alert = _alert(db, tenant, _sku(db, "Limes"))
+    arriving = _invoice(db, tenant, created_at=NOW - timedelta(minutes=3))
+
+    _send(NOW)
+    assert _emailed(db, user) == set()
+
+    # One is still being read, long after it was added.
+    arriving.created_at = NOW - timedelta(hours=2)
+    arriving.status = InvoiceStatus.extracting
+    db.commit()
+    _send(NOW + timedelta(minutes=5))
+    assert _emailed(db, user) == set()
+
+    # Settled: what is still open is sent.
+    arriving.status = InvoiceStatus.extracted
+    db.commit()
+    _send(NOW + timedelta(minutes=20))
+    assert _emailed(db, user) == {alert.id}
+
+
+def test_another_locations_invoices_dont_hold_this_ones_alerts(db, outbox):
+    tenant, busy = _tenant(db), _tenant(db, "Busy")
+    user = _user(db, tenant)
+    alert = _alert(db, tenant, _sku(db, "Limes"))
+    _invoice(db, busy, created_at=NOW - timedelta(minutes=1))
+    _send(NOW)
+    assert _emailed(db, user) == {alert.id}
+
+
+def test_an_alert_that_closed_while_the_box_was_being_added_is_never_sent(db, outbox):
+    tenant = _tenant(db)
+    user = _user(db, tenant)
+    alert = _alert(db, tenant, _sku(db, "Limes"))
+    _invoice(db, tenant, created_at=NOW - timedelta(minutes=3))
+    _send(NOW)
+    alert.status = AlertStatus.resolved  # the rest of the box took it away
+    db.commit()
+    _send(NOW + timedelta(minutes=30))
+    assert _emailed(db, user) == set()
+
+
+def test_an_increase_in_old_prices_is_history_not_news(db, outbox):
+    """Last year's invoices, added today: the alert is real and shown on the
+    Price alerts page, but it isn't something to email about now."""
+    tenant = _tenant(db)
+    user = _user(db, tenant)
+    _alert(db, tenant, _sku(db, "Old increase"), window_end=NOW.date() - timedelta(days=200))
+    recent = _alert(db, tenant, _sku(db, "Recent increase"), window_end=NOW.date() - timedelta(days=10))
+
+    _send(NOW)
+    assert _emailed(db, user) == {recent.id}
+
+    # Nor is it "new this week" in the Monday summary.
+    week = digest.location_week(db, tenant, NOW)
+    assert week.new_increase_count == 1 and week.open_alert_count == 2

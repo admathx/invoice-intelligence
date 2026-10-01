@@ -20,6 +20,11 @@ TILE_WIDTH = round(8.5 * RENDER_DPI)
 TILE_HEIGHT = round(11 * RENDER_DPI)
 TILE_OVERLAP = 200
 MAX_TILES = 12
+# The most page images one read is given. An upload is limited to this many
+# pages (settings.max_invoice_pages); tall pages cut into slices can still
+# pass it, and the worker then stops before paying for a read that the model
+# would refuse.
+MAX_PAGE_IMAGES = 100
 _TILE_STEP = TILE_HEIGHT - TILE_OVERLAP
 _MAX_TALL_HEIGHT = TILE_HEIGHT + (MAX_TILES - 1) * _TILE_STEP
 

@@ -21,7 +21,7 @@ from app.extract.schema import DOCUMENT_TYPES, PRICED_DOCUMENT_TYPES
 from app.extract.amounts import parse_amount
 from app.extract.dates import dated_ahead, parse_invoice_date
 from app.extract.units import billing_unit
-from app.ingest.render import pdf_of_pages, render_pages
+from app.ingest.render import MAX_PAGE_IMAGES, pdf_of_pages, render_pages
 from app.ingest.upload import save_invoice_bytes
 from app.models import Distributor, Invoice, InvoiceLineItem, PriceObservation, Tenant, build_price_observation
 from app.models.distributor import UNRECOGNIZED_SLUG
@@ -141,6 +141,13 @@ def process_invoice(invoice_id: str) -> None:
             invoice.status = InvoiceStatus.extracting
             db.commit()
 
+            if len(pages) > MAX_PAGE_IMAGES:
+                # More than can be read at once (long receipts cut into
+                # slices): its pages are kept for a person, and nothing is
+                # spent finding out the model won't take it.
+                raise ExtractionFailedError(
+                    f"{len(pages)} page images is more than the {MAX_PAGE_IMAGES} that can be read at once", cost_usd=0.0
+                )
             extracted, cost_usd = extractor.extract([page.path for page in pages])
 
         # Several invoices in one file: this invoice is the first of them,

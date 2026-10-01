@@ -99,11 +99,15 @@ Three kinds, all through your provider's SMTP relay (`SMTP_*` and `MAIL_FROM`
 in `.env.production`):
 
 - **The weekly summary**, described below.
-- **Price-increase emails**: within minutes of a price alert opening for an
-  increase of 10% or more (`ALERT_EMAIL_MIN_PCT_CHANGE`, default `0.10`), to
-  everyone at that location who wants them. Smaller increases wait for the
-  weekly summary. The `scheduler` service sends them, checking every five
-  minutes; each alert is emailed to each person once.
+- **Price-increase emails**: soon after a price alert opens for an increase
+  of 10% or more (`ALERT_EMAIL_MIN_PCT_CHANGE`, default `0.10`), to everyone
+  at that location who wants them. Smaller increases wait for the weekly
+  summary. The `scheduler` service sends them, checking every five minutes;
+  each alert is emailed to each person once. A location's alerts wait until
+  no invoice has arrived there for fifteen minutes and none is still being
+  read, so a batch of invoices produces one email about what is true at the
+  end of it; and an increase in prices more than thirty days old (a backlog
+  of old invoices) is shown in the app but not emailed.
 - **Password reset links** ("Forgot your password?" on the sign-in page):
   single use, valid for an hour, at most three per address per hour.
 

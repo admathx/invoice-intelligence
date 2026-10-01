@@ -14,7 +14,7 @@ const OPTIONS: { setting: Setting; label: string; description: (threshold: strin
     setting: "alert_emails_enabled",
     label: "Price increases, as they happen",
     description: (threshold) =>
-      `An email within minutes when a product's price goes up ${threshold} or more at one of your locations, so you can raise it before the next order.`,
+      `An email the same day a product's price goes up ${threshold} or more at one of your locations, so you can raise it before the next order.`,
   },
   {
     setting: "digest_enabled",

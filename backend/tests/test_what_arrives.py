@@ -553,3 +553,42 @@ def test_a_pdf_cut_off_partway_is_refused_when_added(db_session, tenant):
 def test_empties_going_back_are_not_products():
     assert is_charge("EMPTY KEG RETURN", None) and is_charge("KEG RETURN", None) and is_charge("BOTTLE RETURN", "")
     assert not is_charge("PALE ALE KEG", None) and not is_charge("RETURN ENVELOPE #10", None)
+
+
+# --- Too many pages -------------------------------------------------------------
+
+
+def test_a_pdf_with_more_pages_than_an_invoice_ever_has_is_refused(db_session, tenant, monkeypatch):
+    """A 500-page file was rendered and sent to the model whole."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "max_invoice_pages", 3)
+    client = TestClient(app)
+    ok = client.post(f"/invoices?tenant_id={tenant.id}", files={"file": ("a.pdf", _pdf(["1", "2", "3"]), "application/pdf")})
+    assert ok.status_code == 201
+    resp = client.post(f"/invoices?tenant_id={tenant.id}", files={"file": ("b.pdf", _pdf(["1", "2", "3", "4"]), "application/pdf")})
+    assert resp.status_code == 413
+    assert "4 pages; the limit is 3" in resp.json()["detail"]
+    assert len(db_session.scalars(select(Invoice).where(Invoice.tenant_id == tenant.id)).all()) == 1
+
+
+def test_more_page_images_than_can_be_read_at_once_is_not_sent_to_the_model(db_session, tenant, monkeypatch):
+    """Long receipts cut into slices can pass the page limit; the read stops
+    before it is paid for, and the pages are kept for a person."""
+
+    class _Never:
+        def extract(self, pages):
+            raise AssertionError("the model was called")
+
+    monkeypatch.setattr("app.workers.tasks.MAX_PAGE_IMAGES", 2)
+    resp = TestClient(app).post(
+        f"/invoices?tenant_id={tenant.id}", files={"file": ("a.pdf", _pdf(["1", "2", "3"]), "application/pdf")}
+    )
+    invoice_id = uuid.UUID(resp.json()["id"])
+    monkeypatch.setattr("app.workers.tasks.extractor", _Never())
+    with pytest.raises(Exception, match="3 page images"):
+        process_invoice(str(invoice_id))
+    db_session.expire_all()
+    invoice = db_session.get(Invoice, invoice_id)
+    assert invoice.status == InvoiceStatus.failed and invoice.extraction_cost_usd == 0
+    assert len(page_names(invoice_id)) == 3

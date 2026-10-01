@@ -4,9 +4,19 @@ A price alert opens when a location's recent prices for a product have
 climbed clear of its baseline (app/analytics/price_creep.py), which happens
 as soon as the invoice that shows it is read or reviewed. The weekly digest
 reports every new one; this sends the big ones (settings.
-alert_email_min_pct_change and up) straight away, to everyone at that
+alert_email_min_pct_change and up) soon after, to everyone at that
 location who wants them, so a distributor's quiet 15% on a staple can be
 queried before the next order rather than a week of orders later.
+
+Two things hold an alert back. A box of old invoices added in whatever
+order they come out builds each product's history in pieces, and a piece
+can look like an increase that the rest of the box takes away again: on a
+realistic set a lime alert opened and closed twice that way. So a
+location's alerts wait until its invoices have stopped arriving (none added
+in the last SETTLE, none still being read), and only what is still open
+then is sent. And an increase is only news while the prices it is about are
+recent (NEWS_FOR): what a distributor charged last spring is history, shown
+on the Price alerts page, not something to email about today.
 
 One email per person per run, covering every new alert across their
 locations, so an invoice that opens five alerts sends one message, not five.
@@ -31,7 +41,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from email.message import EmailMessage
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -39,13 +49,15 @@ from app import email_design as design
 from app import mail
 from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS
-from app.digest import unsubscribe_url
-from app.models import AlertEmailSend, CanonicalSku, Distributor, PriceAlert, Tenant, TenantMembership, User
+from app.digest import NEWS_FOR, unsubscribe_url
+from app.duplicates import BEING_READ
+from app.models import AlertEmailSend, CanonicalSku, Distributor, Invoice, PriceAlert, Tenant, TenantMembership, User
 from app.models.enums import AlertStatus
 
 logger = logging.getLogger(__name__)
 
 LOOKBACK = timedelta(hours=48)
+SETTLE = timedelta(minutes=15)
 REPEAT_QUIET = timedelta(days=7)
 LISTED = 8  # per location, before "and N more"
 
@@ -85,7 +97,9 @@ class Recipient:
 
 
 def due_alerts(db: Session, now: datetime) -> dict[uuid.UUID, list[Increase]]:
-    """Open, big-enough alerts opened within LOOKBACK, by location, biggest first."""
+    """Open, big-enough alerts opened within LOOKBACK about prices still
+    recent, by location, biggest first; none for a location whose invoices
+    are still arriving."""
     rows = db.execute(
         select(PriceAlert, CanonicalSku.name, CanonicalSku.base_uom, Distributor.name)
         .join(CanonicalSku, CanonicalSku.id == PriceAlert.canonical_sku_id)
@@ -94,14 +108,28 @@ def due_alerts(db: Session, now: datetime) -> dict[uuid.UUID, list[Increase]]:
             PriceAlert.status == AlertStatus.open,
             PriceAlert.pct_change >= Decimal(str(settings.alert_email_min_pct_change)),
             PriceAlert.created_at >= now - LOOKBACK,
+            PriceAlert.window_end >= (now - NEWS_FOR).date(),
         )
         .order_by(PriceAlert.tenant_id, PriceAlert.pct_change.desc())
         # Across every location at once: this is the system itself, deciding
         # whom to tell, and each person only gets their own locations' alerts.
         .execution_options(**{TENANT_SCOPE_BYPASS: True})
     ).all()
+    still_arriving = set(
+        db.scalars(
+            select(Invoice.tenant_id)
+            .where(
+                Invoice.tenant_id.in_(list({alert.tenant_id for alert, *_ in rows})),
+                or_(Invoice.status.in_(BEING_READ), Invoice.created_at >= now - SETTLE),
+            )
+            .distinct()
+            .execution_options(**{TENANT_SCOPE_BYPASS: True})
+        )
+    )
     by_tenant: dict[uuid.UUID, list[Increase]] = {}
     for alert, name, uom, distributor in rows:
+        if alert.tenant_id in still_arriving:
+            continue  # sent by a later run, if it's still open then
         by_tenant.setdefault(alert.tenant_id, []).append(
             Increase(
                 alert_id=alert.id,

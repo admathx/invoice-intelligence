@@ -46,7 +46,7 @@ def validate_invoice_bytes(data: bytes) -> None:
         )
     if not is_pdf_bytes(data):
         raise InvalidInvoiceFileError("That file isn't a PDF.")
-    problem = _why_it_wont_open(data)
+    problem, pages = _opened(data)
     if problem == "password":
         raise InvalidInvoiceFileError(
             "That PDF is password-protected, so we can't read it. Open it, save a copy without the password, "
@@ -59,23 +59,37 @@ def validate_invoice_bytes(data: bytes) -> None:
         raise InvalidInvoiceFileError(
             "That PDF is damaged and can't be opened. Download or save it again, and add that instead."
         )
+    if pages > settings.max_invoice_pages:
+        # Every page is rendered and shown to the model: hundreds of them
+        # would cost dollars and fail anyway.
+        raise InvalidInvoiceFileError(
+            f"That PDF has {pages} pages; the limit is {settings.max_invoice_pages}. Split it into smaller files "
+            "and add those.",
+            too_large=True,
+        )
 
 
-def _why_it_wont_open(data: bytes) -> str | None:
-    """"password", "damaged", or None for a PDF that opens."""
+def _opened(data: bytes) -> tuple[str | None, int]:
+    """What stops a PDF opening ("password", "damaged", or None), and how
+    many pages it has."""
     import pypdfium2
 
     with PDFIUM_LOCK:  # app/ingest/pdfium_lock.py
         try:
-            pypdfium2.PdfDocument(data).close()
+            pdf = pypdfium2.PdfDocument(data)
         except pypdfium2.PdfiumError as exc:
-            return "password" if "password" in str(exc).lower() else "damaged"
-    return None
+            return ("password" if "password" in str(exc).lower() else "damaged"), 0
+        try:
+            pages = len(pdf)
+        finally:
+            pdf.close()
+    # A PDF with no pages has nothing to read either.
+    return (None, pages) if pages else ("damaged", 0)
 
 
 def is_password_protected(data: bytes) -> bool:
     """A PDF that won't open without a password."""
-    return _why_it_wont_open(data) == "password"
+    return _opened(data)[0] == "password"
 
 
 def invoice_pdf_from_upload(files: list[bytes]) -> tuple[bytes, bool]:

@@ -772,3 +772,18 @@ def test_the_message_returned_in_a_delivery_failure_notice_is_not_an_invoice_sen
     result = ingest_email_file(db_session, path, inbox)
     assert result.status == "quarantined" and "delivery-failure notice" in result.reason
     assert _invoices_for(db_session, tenant) == []
+
+
+def test_an_emailed_pdf_with_too_many_pages_is_turned_away_with_the_reason(db_session, inbox, tenant, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "max_invoice_pages", 2)
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf)
+    for n in range(3):
+        c.drawString(72, 720, f"page {n + 1}")
+        c.showPage()
+    c.save()
+    path = _write_eml(inbox, to=tenant.inbox_address, attachments=[("long.pdf", "pdf", buf.getvalue())])
+    result = ingest_email_file(db_session, path, inbox)
+    assert result.status == "quarantined" and "3 pages; the limit is 2" in result.reason

@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # A multi-page scanned invoice is a few MB; 25 MB is generous headroom
     # while still refusing to read a runaway file into API memory.
     max_upload_bytes: int = 25 * 1024 * 1024
+    # Pages in one PDF. Far more than an invoice, or a week's invoices scanned
+    # together, ever has; a 500-page file was rendered and sent to the model
+    # whole.
+    max_invoice_pages: int = 100
     # Domain half of a tenant's forwarding address (see
     # app/ingest/email_stub.py's inbox_address_for). Configurable because the
     # real deployment's inbound domain won't be this placeholder.
@@ -104,9 +108,9 @@ class Settings(BaseSettings):
     # 12:00 UTC, which is morning across the US.
     digest_weekday: int = 0
     digest_hour_utc: int = 12
-    # Price-increase emails (app/alert_emails.py): sent within minutes of a
-    # price alert opening, for increases of at least this much. Smaller ones
-    # wait for the weekly digest.
+    # Price-increase emails (app/alert_emails.py): sent soon after a price
+    # alert opens (once that location's invoices have stopped arriving), for
+    # increases of at least this much. Smaller ones wait for the weekly digest.
     alert_emails_enabled: bool = True
     alert_email_min_pct_change: float = 0.10
     # Where problems are emailed (app/ops.py): errors, extraction failing,

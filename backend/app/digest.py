@@ -48,6 +48,9 @@ from app.models.enums import AlertStatus, InvoiceStatus
 logger = logging.getLogger(__name__)
 
 WINDOW = timedelta(days=7)
+# How long after the last price it's about an increase is still news to
+# send: the weekly digest and the price-increase emails both go by it.
+NEWS_FOR = timedelta(days=30)
 LISTED = 5  # items of each kind shown before "and N more"
 SAVINGS_LISTED = 3
 
@@ -108,15 +111,22 @@ def location_week(db: Session, tenant: Tenant, now: datetime) -> LocationWeek:
     bind_tenant(db, tenant.id)
     week = LocationWeek(tenant_id=tenant.id, name=tenant.name)
 
-    new_alerts = select(PriceAlert).where(
-        PriceAlert.tenant_id == tenant.id, PriceAlert.status == AlertStatus.open, PriceAlert.created_at >= since
+    # New this week, and about prices still recent: a box of last year's
+    # invoices added this week raises alerts that are history, not news
+    # (as for the price-increase emails, app/alert_emails.py).
+    news = (
+        PriceAlert.tenant_id == tenant.id,
+        PriceAlert.status == AlertStatus.open,
+        PriceAlert.created_at >= since,
+        PriceAlert.window_end >= (now - NEWS_FOR).date(),
     )
+    new_alerts = select(PriceAlert).where(*news)
     week.new_increase_count = db.scalar(select(func.count()).select_from(new_alerts.subquery()))
     rows = db.execute(
         select(PriceAlert, CanonicalSku.name, CanonicalSku.base_uom, Distributor.name)
         .join(CanonicalSku, CanonicalSku.id == PriceAlert.canonical_sku_id)
         .outerjoin(Distributor, Distributor.id == PriceAlert.distributor_id)
-        .where(PriceAlert.tenant_id == tenant.id, PriceAlert.status == AlertStatus.open, PriceAlert.created_at >= since)
+        .where(*news)
         .order_by(PriceAlert.pct_change.desc())
         .limit(LISTED)
     ).all()
