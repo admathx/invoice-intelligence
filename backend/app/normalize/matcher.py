@@ -5,6 +5,7 @@ correction writes a sku_aliases row (app/models/sku_alias.py's own docstring:
 compounding — the embedding matcher is the expensive fallback, never the norm
 once a distributor's catalog has been seen before.
 """
+import time
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
@@ -19,7 +20,13 @@ from app.models.enums import BaseUom, ReviewStatus
 from app.models.price_observation import UNIT_PRICE_PLACES
 from app.models.sku_alias import SkuAlias
 from app.models.tenant import Tenant, account_key_column
-from app.normalize.description_expansion import description_similarity, normalize_for_embedding
+from app.normalize.description_expansion import (
+    correct_spelling,
+    description_similarity,
+    normalize_for_embedding,
+    vocabulary_of,
+)
+from app.normalize.distinguishing import first_not_contradicted
 from app.normalize.embeddings import embed_text
 from app.normalize.pack_size import (
     BilledUnitMismatchError,
@@ -194,10 +201,37 @@ def match_by_gtin(db: Session, gtin: str | None) -> uuid.UUID | None:
     return db.scalar(select(CanonicalSku.id).where(CanonicalSku.gtin == gtin))
 
 
+# How many of the nearest products are looked through for one that doesn't
+# contradict the line (app/normalize/distinguishing.py).
+CANDIDATES_CONSIDERED = 8
+# How alike a line and a product must be for the product to be offered when
+# nothing narrows the search to the units the line is sold in.
+MIN_SIMILARITY_IN_ANY_UNIT = Decimal(str(_matching_thresholds["unpriced_suggestion_confidence_low"]))
+
+
+# The catalog's words, for putting misspellings right. Read again every few
+# minutes: products are added rarely, and this runs for every line.
+_VOCABULARY_SECONDS = 300
+_vocabulary: tuple[float, frozenset[str]] | None = None
+
+
+def catalog_vocabulary(db: Session) -> frozenset[str]:
+    global _vocabulary
+    if _vocabulary is None or time.monotonic() - _vocabulary[0] > _VOCABULARY_SECONDS:
+        _vocabulary = (time.monotonic(), vocabulary_of(db.scalars(select(CanonicalSku.name))))
+    return _vocabulary[1]
+
+
 def match_by_embedding(
     db: Session, raw_description: str, compatible_uoms: set[BaseUom] | None, density_uoms: set[BaseUom] = frozenset()
 ) -> tuple[CanonicalSku | None, Decimal | None]:
     """SPEC.md §6 step 4: category/UOM-restricted cosine similarity.
+
+    The nearest product, unless the line contradicts it: "CUPS HOT PAPER 12
+    OZ" is nearest Cups 16oz Hot, and is not that. Then another variety of
+    it that the line agrees with, or nothing: saying nothing leaves the line
+    for a person, and a wrong suggestion is one click from a wrong price
+    history (app/normalize/distinguishing.py).
 
     UOM-restricted via a hard filter (base_uom must be one of compatible_uoms —
     there's no legitimate match across a physical-unit mismatch). Category
@@ -207,11 +241,12 @@ def match_by_embedding(
     score low) plus the UOM filter, rather than a category classifier that
     would just be guessing from the same text the embedding already sees.
 
-    Scored with a single `ORDER BY cosine_distance LIMIT 1` query rather than
+    Scored with a single `ORDER BY cosine_distance LIMIT n` query rather than
     fetching every compatible-UOM candidate and scoring it in Python — this is
     the query shape the HNSW index (app/models/canonical_sku.py) exists to
     accelerate.
     """
+    raw_description = correct_spelling(raw_description, catalog_vocabulary(db))
     query_text = normalize_for_embedding(raw_description)
     query_vec = embed_text(query_text)
 
@@ -223,18 +258,42 @@ def match_by_embedding(
     in_units = CanonicalSku.base_uom.is_not(None) if compatible_uoms is None else CanonicalSku.base_uom.in_(compatible_uoms)
     if density_uoms:
         in_units = or_(in_units, and_(CanonicalSku.lb_per_gal.is_not(None), CanonicalSku.base_uom.in_(density_uoms)))
-    row = db.execute(
+    rows = db.execute(
         select(CanonicalSku, distance.label("distance"))
         .where(in_units, CanonicalSku.description_embedding.is_not(None))
         .order_by(distance)
-        .limit(1)
-    ).first()
-    if row is None:
+        .limit(CANDIDATES_CONSIDERED)
+    ).all()
+    chosen = first_not_contradicted(raw_description, [candidate.name for candidate, _ in rows])
+    if chosen is None:
         return None, None
+    candidate, distance_value = rows[chosen]
+    return candidate, Decimal(str(round(1 - distance_value, 4)))
 
-    candidate, distance_value = row
-    similarity = Decimal(str(round(1 - distance_value, 4)))
-    return candidate, similarity
+
+def _what_it_is(db: Session, raw_description: str, method: str) -> MatchResult:
+    """A suggestion of which product a line is, for a line that can't be
+    priced: its pack can't be read, or counts something the product isn't
+    priced in. Looked for among products in any unit, and never more than a
+    suggestion: with no price the line can't resolve by itself or produce a
+    price observation.
+
+    These lines used to get no suggestion at all, on the reasoning that a
+    pack that can't be read mustn't be guessed forward from. That is right
+    about the price and says nothing about the name: "KETCHUP TOMATO FANCY"
+    is Ketchup whatever "#10" means, and every line of an invoice with no
+    pack column was left for a person to identify from nothing."""
+    candidate, similarity = match_by_embedding(db, raw_description, None)
+    suggested = candidate is not None and similarity >= MIN_SIMILARITY_IN_ANY_UNIT
+    return MatchResult(
+        canonical_sku_id=candidate.id if suggested else None,
+        match_confidence=similarity if suggested else None,
+        normalized_qty_base=None,
+        normalized_unit_price=None,
+        base_uom=None,
+        review_status=ReviewStatus.pending,
+        method=method,
+    )
 
 
 def _apply_pack_size(
@@ -399,18 +458,9 @@ def match_line_item(
         pack = pack_for_line(raw_pack_size, uom, raw_description)
     except PackSizeParseError:
         # SPEC.md §6: a pack-size error produces a confidently wrong benchmark,
-        # worse than no benchmark — never guess forward from here. No embedding
-        # search either: without a resolved base UOM there's nothing valid to
-        # restrict candidates to.
-        return MatchResult(
-            canonical_sku_id=None,
-            match_confidence=None,
-            normalized_qty_base=None,
-            normalized_unit_price=None,
-            base_uom=None,
-            review_status=ReviewStatus.pending,
-            method="unparseable_pack_size",
-        )
+        # worse than no benchmark — never guess a price forward from here.
+        # What the item is can still be suggested.
+        return _what_it_is(db, raw_description, "unparseable_pack_size")
 
     # Products priced in any unit the pack converts to exactly, not only its
     # own: "12 DZ" bar towels are Bar Mop Towel, priced each.
@@ -421,6 +471,13 @@ def match_line_item(
         frozenset() if pack.from_description else pack.base_uoms_by_density,
     )
     suggested = candidate is not None and similarity is not None and similarity >= REVIEW_QUEUE_CONFIDENCE_LOW
+    if not suggested and not pack.from_description:
+        # Nothing near enough among products priced in the pack's units. A
+        # case of 24 bottles counts bottles, and Hot Sauce is priced by the
+        # fluid ounce: the product can be named, though not priced.
+        in_any_unit = _what_it_is(db, raw_description, "embedding_review")
+        if in_any_unit.canonical_sku_id is not None:
+            return in_any_unit
     candidate_base_uom = candidate.base_uom if suggested else _unit_without_a_product(pack, candidate)
     try:
         qty_base, price_base = _apply_pack_size(pack, quantity, unit_price, uom, candidate if suggested else None)

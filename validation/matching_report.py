@@ -29,12 +29,17 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from app.db import SessionLocal  # noqa: E402
 from app.models.canonical_sku import CanonicalSku  # noqa: E402
-from app.normalize.description_expansion import normalize_for_embedding  # noqa: E402
+from app.normalize.description_expansion import correct_spelling, normalize_for_embedding, vocabulary_of  # noqa: E402
+from app.normalize.distinguishing import first_not_contradicted  # noqa: E402
 from app.normalize.embeddings import embed_texts  # noqa: E402
 # Import the live thresholds rather than redefining them: matcher.py is what
 # actually gates production matches, so this report must score against
 # exactly those cutoffs or it can silently stop reflecting live behavior.
-from app.normalize.matcher import AUTO_MATCH_CONFIDENCE_THRESHOLD, REVIEW_QUEUE_CONFIDENCE_LOW  # noqa: E402
+from app.normalize.matcher import (  # noqa: E402
+    AUTO_MATCH_CONFIDENCE_THRESHOLD,
+    CANDIDATES_CONSIDERED,
+    REVIEW_QUEUE_CONFIDENCE_LOW,
+)
 from app.normalize.pack_size import PackSizeParseError, parse_pack_size  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
@@ -56,15 +61,20 @@ def _load_candidates(db):
     return ids, names, base_uoms, matrix
 
 
-def _best_match(query_vec: np.ndarray, compatible_uoms: set, ids, names, base_uoms, matrix):
+def _best_match(description: str, query_vec: np.ndarray, compatible_uoms: set, ids, names, base_uoms, matrix):
     mask = np.array([u in compatible_uoms for u in base_uoms])
     if not mask.any():
         return None, None, None
     sims = matrix[mask] @ query_vec
-    best_idx_local = int(np.argmax(sims))
     global_indices = np.nonzero(mask)[0]
-    best_idx = global_indices[best_idx_local]
-    return ids[best_idx], names[best_idx], float(sims[best_idx_local])
+    # As the matcher does (match_by_embedding): the nearest few, and of
+    # those the first the line doesn't contradict.
+    nearest = np.argsort(-sims)[:CANDIDATES_CONSIDERED]
+    chosen = first_not_contradicted(description, [names[global_indices[i]] for i in nearest])
+    if chosen is None:
+        return None, None, None
+    best_idx = global_indices[nearest[chosen]]
+    return ids[best_idx], names[best_idx], float(sims[nearest[chosen]])
 
 
 def main() -> int:
@@ -101,13 +111,15 @@ def main() -> int:
 
     # Pass 2: batch-embed the distinct normalized descriptions.
     distinct_keys = list(unique_keys.keys())
-    normalized_texts = [normalize_for_embedding(desc) for desc, _ in distinct_keys]
+    vocabulary = vocabulary_of(names)
+    corrected = [correct_spelling(desc, vocabulary) for desc, _ in distinct_keys]
+    normalized_texts = [normalize_for_embedding(desc) for desc in corrected]
     vectors = embed_texts(normalized_texts)
     print("Batch embedding complete.")
 
     # Pass 3: match each distinct key once, cache the result.
     match_cache: dict[tuple[str, str], dict] = {}
-    for (desc, pack_str), vec in zip(distinct_keys, vectors):
+    for (desc, pack_str), spelled, vec in zip(distinct_keys, corrected, vectors):
         try:
             pack = parse_pack_size(pack_str)
         except PackSizeParseError:
@@ -115,7 +127,7 @@ def main() -> int:
             continue
 
         candidate_id, candidate_name, similarity = _best_match(
-            np.array(vec, dtype=np.float64), pack.convertible_base_uoms, ids, names, base_uoms, matrix
+            spelled, np.array(vec, dtype=np.float64), pack.convertible_base_uoms, ids, names, base_uoms, matrix
         )
         if candidate_id is None:
             match_cache[(desc, pack_str)] = {"status": "no_candidates"}

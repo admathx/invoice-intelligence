@@ -3094,3 +3094,55 @@ The runner grades a planned change two ways now: an alert open at the end
 (`expected_alert`) and one that would have opened at the time
 (`alert_at_the_time`), since an increase halfway through a year has closed
 by the end. The brief is at Version 6.
+
+## Matching suggestions (set V)
+
+The fifth set's weakest result: of 124 trap lines, 9 were offered a
+near-identical product and 28 were left for a person. Run through the
+matcher alone, from nothing, the picture was worse than that: 76 right, 9
+offered the wrong product, and 29 given no suggestion though the catalog
+had theirs.
+
+- **The word that tells two products apart** (`app/normalize/distinguishing.py`).
+  A product is passed over when the line and its name each say something on
+  the same point and differ: form (block, shredded), size in words or
+  measured (medium, large; 12 oz, 16 oz), a ratio (80/20, 81/19), grade,
+  color, cut, fresh or frozen, salted or unsalted. A point only one of them
+  speaks to is no conflict. Past a contradicted product only another variety
+  of the same thing is offered, and it has to agree with the line on the
+  point at issue: past the shredded mozzarellas the nearest thing to a block
+  of mozzarella was a block of cheddar. A product sharing no word of its
+  name with the line isn't offered either ("CHICKEN BREAST" is nearer Duck
+  Breast than Chicken Breast Boneless Skinless).
+- **A line that can't be priced is still told what it probably is.** A
+  pack that can't be read used to mean no suggestion at all, so every line
+  of an invoice with no pack column was left to be identified from nothing.
+  Now the product is suggested, with no price, and never resolves by
+  itself. The same for a product priced in a unit the pack doesn't count in
+  (a case of 24 bottles of hot sauce, priced by the fluid ounce). Both look
+  among products in any unit, so they need 0.70, not 0.60: there,
+  "ROMAINE HEADS" was nearest Tomato Roma at 0.61.
+- **More shorthand** ("CHX BST B/S 6Z IQF", "MOZ ... LMPS", "TOM RMA"),
+  kitchen Spanish ("PECHUGA DE POLLO S/H", "ACEITE DE CANOLA"), accents
+  ("JALAPEÑO" was "JALAPE O"), and the percent sign kept ("MILK REDUCED FAT
+  2%" is 2% Milk at 0.75 with it, Whole Milk at 0.55 without).
+- **Misspellings.** A word one slip from exactly one long catalog word,
+  with the same first letter, is put right before the search: CHIKEN,
+  MOZARELLA, AVACADO. Long words only: one letter turns batter into butter.
+
+On the 124 lines, through the matcher alone: 101 right (was 76), 4 given no
+suggestion though the catalog has the product (was 29; three are a brand
+and a number with no product word), 6 offered something the plan calls
+wrong (was 9). Of those six, four are the right product under another name
+(Pork Shoulder for pork butt, Trash Liner 33 Gallon for trash bags, Black
+Beans Dried, Foil Wrap) and two are the catalog's only product of that kind
+(Vegetable Oil for soybean oil, Chicken Breast for a frozen one). None of
+the mozzarella, egg, cup or olive oil offers remain. Through the app, with
+a person accepting suggestions: 102 right (was 86).
+
+The matching gate, which now chooses candidates the same way: 99.1%
+automatic (was 98.8%), none false. The rest of the fifth set is unchanged:
+258 of 265, 164 of 177, nothing misread came out Ready.
+
+Both briefs now give the catalog's product names for set V's
+`true_product`, so a right match isn't scored wrong for its name.

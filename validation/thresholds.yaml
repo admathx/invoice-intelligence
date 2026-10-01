@@ -59,6 +59,11 @@ phase3_normalization:
   # Suggestions under 0.85 show a red "% sure" badge and need a keypress, so
   # a wrong one costs a search, never a wrong price.
   review_queue_confidence_low: 0.60
+  # The same floor for a line that can't be priced (its pack can't be read,
+  # or counts something the product isn't priced in), where the search is
+  # among products in any unit. Higher, because nothing narrows it: among
+  # all products "ROMAINE HEADS" was nearest Tomato Roma, at 0.61.
+  unpriced_suggestion_confidence_low: 0.70
   review_queue_confidence_high: 0.92
   false_match_rate_max: 0.01
 
