@@ -65,10 +65,17 @@ def _prepare_email(set_dir: Path, work_dir: Path, name: str, entry: dict, gate: 
 
     entry.update(kind="email", outcome=None)
     gate[name] = entry
+    # Every key the email has, including those for invoices the app has to
+    # separate out of one attachment (two invoices photographed together).
+    for key in sorted(set_dir.glob(f"{name}-att*.truth.json")):
+        shutil.copyfile(key, work_dir / key.name)
     parsed = parse_email((set_dir / entry["files"][0]).read_bytes())
     pdfs = [a.content for a in parsed.pdf_attachments]
     if not pdfs and parsed.photo_attachments:
-        pdfs = [invoice_pdf_from_upload([a.content for a in parsed.photo_attachments])[0]]
+        try:
+            pdfs = [invoice_pdf_from_upload([a.content for a in parsed.photo_attachments])[0]]
+        except InvalidInvoiceFileError:
+            pdfs = []  # too many photos: intake refuses the email
     for i, data in enumerate(pdfs, 1):
         att = f"{name}-att{i}"
         try:
@@ -95,6 +102,11 @@ def prepare(set_dir: Path, work_dir: Path) -> None:
             "expected_reason": rows[0]["expected_reason"],
             # The restaurant billed (second set on): its own location.
             "customer": rows[0].get("customer") or None,
+            # Fourth set on: where it's uploaded when that isn't who is
+            # billed, and whether the expected outcome is known or a guess.
+            "upload_to": rows[0].get("upload_to") or None,
+            "certainty": rows[0].get("certainty") or "known",
+            "notes": rows[0].get("notes") or "",
         }
         if files[0].suffix == ".eml":
             _prepare_email(set_dir, work_dir, name, entry, gate)
@@ -117,6 +129,14 @@ def prepare(set_dir: Path, work_dir: Path) -> None:
         truth = set_dir / f"{name}.truth.json"
         if truth.exists():
             shutil.copyfile(truth, work_dir / f"{name}.truth.json")
+        # A file holding several invoices has a key for each (NAME.1, NAME.2
+        # ...). The first is the invoice the file itself becomes; the others
+        # are matched to what the app separates out of it (split()).
+        for part_key in sorted(set_dir.glob(f"{name}.*.truth.json")):
+            shutil.copyfile(part_key, work_dir / part_key.name)
+        first = work_dir / f"{name}.1.truth.json"
+        if first.exists() and not truth.exists():
+            shutil.copyfile(first, work_dir / f"{name}.truth.json")
         entry.update(outcome=None, pages=pages)
         gate[name] = entry
     (work_dir / "gate.json").write_text(json.dumps(gate, indent=2))
@@ -124,6 +144,46 @@ def prepare(set_dir: Path, work_dir: Path) -> None:
     stopped = {k: e["outcome"] for k, e in gate.items() if e["outcome"]}
     print(f"{len(gate)} invoices: {sent} ready to extract, {len(stopped)} stopped at the gate: {stopped}")
     print(f"pages to extract: {sum(e.get('pages', 0) for e in gate.values())}")
+
+
+def split(work_dir: Path) -> None:
+    """After the first read: where the reader found several invoices in one
+    file, write each of the others as its own PDF (the same pages the app
+    would take, app/splitting.py), to be read in a second pass. A part of
+    NAME is NAME.2, NAME.3 ...; for an email's photos, which arrive as one
+    PDF (NAME-att1), the parts take the email's next keys (NAME-att2 ...)."""
+    from app import splitting
+    from app.ingest.render import pdf_of_pages, render_pages
+
+    gate = json.loads((work_dir / "gate.json").read_text())
+    made = 0
+    for name, entry in sorted(gate.items()):
+        record_path = work_dir / f"{name}.extracted.json"
+        if entry.get("outcome") or entry.get("kind") == "part" or not record_path.exists():
+            continue
+        extraction = json.loads(record_path.read_text())["extraction"]
+        if not extraction:
+            continue
+        pdf = (work_dir / f"{name}.pdf").read_bytes()
+        with tempfile.TemporaryDirectory() as scratch:
+            pdf_pages = [page.pdf_page for page in render_pages(pdf, Path(scratch))]
+        plan = splitting.plan(extraction.get("page_invoices") or [], pdf_pages)
+        if not plan:
+            continue
+        entry["split"] = {str(number): pages for number, pages in plan.items()}
+        for position, number in enumerate(sorted(plan)[1:], start=2):
+            if entry.get("kind") == "attachment" and name.endswith("-att1"):
+                part = f"{name[:-1]}{position}"
+            else:
+                part = f"{name}.{position}"
+            (work_dir / f"{part}.pdf").write_bytes(pdf_of_pages(pdf, plan[number]))
+            truth = work_dir / f"{part}.truth.json"
+            gate[part] = {**entry, "kind": "part", "part_of": name, "pages_of_file": plan[number], "files": [f"{part}.pdf"],
+                          "outcome": None, "pages": len(plan[number]), "has_key": truth.exists()}  # fmt: skip
+            gate[part].pop("split", None)
+            made += 1
+    (work_dir / "gate.json").write_text(json.dumps(gate, indent=2))
+    print(f"{made} more invoices found inside files; read them with real_invoice_report --extract")
 
 
 # --- scoring ---------------------------------------------------------------------
@@ -164,6 +224,8 @@ def score(work_dir: Path) -> dict:
             continue
         record = json.loads(extracted_path.read_text())
         truth = json.loads(truth_path.read_text())
+        if truth.get("_reviewed") is False:
+            continue  # no key came with it: that's the reader's own answer, saved as a template
         got = record["extraction"] or {"line_items": []}
         row = {"set": entry["set"], "cost_usd": record["cost_usd"], "failed": record["failed"]}
         row["distributor"] = got.get("distributor") == truth.get("distributor")
@@ -495,6 +557,10 @@ def _summarize(results: dict, series: dict) -> None:
 # The second set's restaurants share a city apart from the demo businesses, so
 # price comparisons use only them.
 TEST_METRO = "Test City (test set)"
+# Set O's last invoice of week 10 (the midweek delivery).
+DISMISS_AFTER = "O-11-"
+# The domain the sets' forwarding addresses are at.
+INBOX_DOMAIN = "invoices.example.com"
 
 
 def app_run_v2(work_dir: Path, set_dir: Path) -> None:
@@ -514,7 +580,8 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     from app.duplicates import file_hash
     from app.ingest.email_stub import ingest_email_bytes, parse_email
     from app.main import app
-    from app.models import Account, Distributor, Invoice, InvoiceLineItem
+    from app.models import Account, AuditEvent, Distributor, Invoice, InvoiceLineItem, PriceAlert
+    from app.models.enums import AlertStatus
     from app.storage import read_uri
     from app.workers import tasks
 
@@ -535,7 +602,10 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     reviewer = _reviewer(db)
     app.dependency_overrides[current_user] = lambda: reviewer
     client = TestClient(app, headers={CSRF_HEADER: CSRF_HEADER_VALUE})
-    customers = sorted({e["customer"] for e in gate.values() if e.get("customer")})
+    customers = sorted(
+        {e["customer"] for e in gate.values() if e.get("customer")}
+        | {e["upload_to"] for e in gate.values() if e.get("upload_to")}
+    )
     # The six compared with each other (set I) share a city; every other
     # restaurant is alone in its own, so it can't pass for a local business.
     compared = {r["customer"] for r in csv.DictReader((set_dir / "peers_plan.csv").open())}
@@ -544,6 +614,7 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     }
     series_customer = next(r["customer"] for r in manifest if r["set"] == "H")
     packs_customer = next(r["customer"] for r in manifest if r["set"] == "K")
+    changes_customer = next((r["customer"] for r in manifest if r["set"] == "O"), None)
     owners: dict[str, set] = defaultdict(set)
     for row in manifest:
         if row["account"] and row["customer"]:
@@ -555,12 +626,18 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
         db.flush()
         for name in names:
             tenants[name].account_id = account.id
-    # Each emailed-to restaurant gets the address its emails are sent to.
+    # Each emailed-to restaurant gets the address its emails are sent to:
+    # the forwarding address, wherever in the headers it is (an auto-forward
+    # leaves the owner's own address in To). An email to two restaurants'
+    # addresses gives the second to the restaurant in upload_to.
     for entry in gate.values():
-        if entry.get("kind") == "email":
-            to = parse_email((set_dir / entry["files"][0]).read_bytes()).recipients
+        if entry.get("kind") == "email" and (entry.get("expected_outcome") != "Rejected" or entry.get("upload_to")):
+            to = list(dict.fromkeys(parse_email((set_dir / entry["files"][0]).read_bytes()).recipients))
+            to = [address for address in to if address.endswith(f"@{INBOX_DOMAIN}")]
             if to and tenants[entry["customer"]].inbox_address is None:
                 tenants[entry["customer"]].inbox_address = to[0]
+            if len(to) > 1 and entry.get("upload_to") and tenants[entry["upload_to"]].inbox_address is None:
+                tenants[entry["upload_to"]].inbox_address = to[1]
     db.commit()
     tenant_ids = {c: t.id for c, t in tenants.items()}
 
@@ -569,6 +646,11 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
         for r in csv.DictReader((set_dir / "packs_plan.csv").open())
     }
     packs_entered: set[str] = set()
+    dismissed: list[dict] = []
+    changes_path = set_dir / "changes_plan.csv"
+    two_stage_codes = (
+        {r["item_code"] for r in csv.DictReader(changes_path.open()) if r["behavior"] == "two_stage"} if changes_path.exists() else set()
+    )
     invoice_names: dict = {}
     results: dict[str, dict] = {}
 
@@ -593,9 +675,42 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
         result["fees"] = sum(1 for li in lines if li.review_status.value == "not_product")
         distributor = db.get(Distributor, invoice.distributor_id) if invoice.distributor_id else None
         result["distributor_name"] = distributor.name if distributor else None
-        if invoice.duplicate_of_id or invoice.document_type:
-            result["held_as"] = "copy" if invoice.duplicate_of_id else invoice.document_type
-            client.delete(f"/invoices/{invoice_id}", params={"tenant_id": str(tenant_id)})
+        result["printed_customer"] = invoice.printed_customer
+        # Other invoices the app took out of this one's file: each is read
+        # with the extraction of the part with the same pages.
+        parts = []
+        for other in db.scalars(select(Invoice).where(Invoice.split_from_id == invoice_id)):
+            details = db.scalar(
+                select(AuditEvent.details).where(AuditEvent.action == "invoice.split_out", AuditEvent.entity_id == other.id)
+            )
+            pages = list((details or {}).get("pages") or [])
+            part = next(
+                (k for k, e in gate.items() if e.get("part_of") == name and [n + 1 for n in e["pages_of_file"]] == pages),
+                None,
+            )
+            parts.append((part or "", other.id))
+        for part, other_id in sorted(parts):
+            if part and (work_dir / f"{part}.extracted.json").exists():
+                read(part, other_id, tenant_id)
+            else:
+                results.setdefault(f"{name} (an unread part)", {"kind": "part", "part_of": name, "app_outcome": "not read"})
+        if parts:
+            result["parts"] = [part for part, _ in sorted(parts)]
+            db.expire_all()
+            bind_tenant(db, tenant_id)
+            invoice = db.get(Invoice, invoice_id)
+        if invoice.is_held:
+            result["held_as"] = (
+                "copy" if invoice.duplicate_of_id else invoice.document_type or f"billed to {invoice.printed_customer}"
+            )
+            # What a person does with a held one: delete it; or, where the
+            # set says it is a real invoice of its own held as a copy (a
+            # credit memo carrying its invoice's number), say so.
+            if invoice.duplicate_of_id and not invoice.document_type and result.get("expected_outcome") == "Ready":
+                client.post(f"/invoices/{invoice_id}/keep", params={"tenant_id": str(tenant_id)})
+                result["kept"] = True
+            else:
+                client.delete(f"/invoices/{invoice_id}", params={"tenant_id": str(tenant_id)})
             return result
         if distributor is not None and distributor.slug == "other":
             # What a person looking at the page does: choose the big
@@ -618,6 +733,24 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
                 db.expire_all()
                 bind_tenant(db, tenant_id)
         result["accepted"] = _accept_suggestions(client, db, tenant_id, invoice_id)
+        if name.startswith(DISMISS_AFTER):
+            # Set O: the person deals with the alerts open after week 10; the
+            # two-stage riser's should come back when it climbs again.
+            db.expire_all()
+            bind_tenant(db, tenant_id)
+            two_stage = set(
+                db.scalars(
+                    select(InvoiceLineItem.canonical_sku_id).where(
+                        InvoiceLineItem.tenant_id == tenant_id, InvoiceLineItem.raw_sku.in_(two_stage_codes)
+                    )
+                )
+            )
+            for alert in db.scalars(select(PriceAlert).where(PriceAlert.tenant_id == tenant_id, PriceAlert.status == AlertStatus.open)):
+                entry_ = {"sku": str(alert.canonical_sku_id), "at": str(alert.current_price), "dismissed": False}
+                if alert.canonical_sku_id in two_stage:
+                    resp = client.post(f"/insights/{alert.id}/dismiss", params={"tenant_id": str(tenant_id)})
+                    entry_["dismissed"] = resp.status_code == 204
+                dismissed.append(entry_)
         if result.get("set") == "K":
             # The person fills in each missing pack size as Match items asks:
             # once per item, the first time it can't be priced.
@@ -637,16 +770,20 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
         return result
 
     for name, entry in sorted(gate.items()):
-        if entry.get("kind") == "attachment":
-            continue  # read when its email arrives
+        if entry.get("kind") in ("attachment", "part"):
+            continue  # read when its email, or the file it's in, arrives
         if entry.get("outcome"):
             results[name] = {**entry, "app_outcome": entry["outcome"]}
             continue
-        tenant_id = tenant_ids[entry["customer"]]
+        # Where it's sent, which is who it's billed to unless the set says
+        # otherwise; a document billed to nobody (a blank page) goes to the first.
+        tenant_id = tenant_ids[entry.get("upload_to") or entry.get("customer") or customers[0]]
         if entry.get("kind") == "email":
             raw = (set_dir / entry["files"][0]).read_bytes()
             ingest = ingest_email_bytes(db, raw, name)
+            tenant_id = ingest.tenant_id or tenant_id
             result = results.setdefault(name, {**entry})
+            result["sent_to"] = next((c for c, t in tenant_ids.items() if t == ingest.tenant_id), None)
             if ingest.status == "quarantined":
                 result["app_outcome"] = "Rejected"
                 result["reason"] = ingest.reason
@@ -667,14 +804,18 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
                     # Photos become a PDF afresh each time (not byte-identical);
                     # one invoice from one attachment is that attachment.
                     att = attachments[0]
-                if att is None:
-                    outcomes.append("not read")
+                if att is None or not (work_dir / f"{att}.extracted.json").exists():
+                    outcomes.append("not read yet")
                     continue
                 outcomes.append(read(att, invoice_id, tenant_id)["app_outcome"])
             result["app_outcome"] = (
                 "Needs a look" if "Needs a look" in outcomes else outcomes[0] if len(set(outcomes)) == 1 else "/".join(outcomes)
             )
+            result["each"] = outcomes
             result["invoices"] = len(ingest.invoice_ids)
+            continue
+        if not (work_dir / f"{name}.extracted.json").exists():
+            results[name] = {**entry, "app_outcome": "not read yet"}
             continue
         data = (work_dir / f"{name}.pdf").read_bytes()
         resp = client.post(
@@ -692,6 +833,8 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     report["series"] = _series_v2(db, tenant_ids[series_customer])
     report["peers"] = _peers_v2(db, set_dir, tenants, gate)
     report["packs"] = _packs_v2(db, tenant_ids[packs_customer], packs_plan, invoice_names, len(packs_entered))
+    if changes_customer:
+        report["changes"] = _changes(db, set_dir, tenant_ids[changes_customer], dismissed)
     score_path = work_dir / "score.json"
     if score_path.exists():
         scores = json.loads(score_path.read_text())
@@ -770,6 +913,57 @@ def _peers_v2(db, set_dir: Path, tenants: dict, gate: dict) -> dict:
     return out
 
 
+def _changes(db, set_dir: Path, tenant_id, open_after_week_10: list[dict]) -> dict:
+    """Set O: for each planned behavior, whether its product has an open
+    alert at the end, against changes_plan.csv's expected_alert."""
+    from sqlalchemy import select
+
+    from app.db import bind_tenant
+    from app.models import CanonicalSku, InvoiceLineItem, PriceAlert
+
+    plan: dict[str, dict] = {}
+    for row in csv.DictReader((set_dir / "changes_plan.csv").open()):
+        b = plan.setdefault(row["behavior"], {"expected_alert": row["expected_alert"], "codes": set(), "descriptions": set()})
+        b["codes"].add(row["item_code"])
+        b["descriptions"].add(row["description"])
+    bind_tenant(db, tenant_id)
+    lines = list(db.scalars(select(InvoiceLineItem).where(InvoiceLineItem.tenant_id == tenant_id)))
+    alerts = list(db.scalars(select(PriceAlert).where(PriceAlert.tenant_id == tenant_id)))
+    names = dict(db.execute(select(CanonicalSku.id, CanonicalSku.name)).all())
+    out: dict[str, dict] = {}
+    special: set = set()
+    for behavior, b in plan.items():
+        if behavior == "stable":
+            continue
+        mine = [li for li in lines if (li.raw_sku or "").strip() in b["codes"]]
+        skus = {li.canonical_sku_id for li in mine if li.canonical_sku_id}
+        special |= skus
+        theirs = [a for a in alerts if a.canonical_sku_id in skus]
+        out[behavior] = {
+            "expected_alert": b["expected_alert"],
+            "items": sorted(b["descriptions"]),
+            "lines": len(mine),
+            "priced": sum(1 for li in mine if li.normalized_unit_price is not None),
+            "products": sorted(names[sku] for sku in skus),
+            "open_alert": any(a.status.value == "open" for a in theirs),
+            "alerts": [
+                {"product": names[a.canonical_sku_id], "status": a.status.value, "pct": str(a.pct_change),
+                 "from": str(a.baseline_price), "to": str(a.current_price)}
+                for a in theirs
+            ],  # fmt: skip
+        }
+    out["stable"] = {
+        "expected_alert": "no",
+        "alerts": [
+            {"product": names[a.canonical_sku_id], "status": a.status.value, "pct": str(a.pct_change)}
+            for a in alerts
+            if a.canonical_sku_id not in special
+        ],
+    }
+    out["open_after_week_10"] = [{**a, "product": names.get(uuid.UUID(a["sku"]))} for a in open_after_week_10]
+    return out
+
+
 def _packs_v2(db, tenant_id, packs_plan: dict, invoice_names: dict, entered: int) -> dict:
     """Set K's prices against the real pack sizes: each line priced as the
     real pack would price it."""
@@ -811,11 +1005,21 @@ def _summarize_v2(report: dict) -> None:
         expected = r.get("expected_outcome") or ""
         return r.get("app_outcome") in [e.strip() for e in expected.split(" or ")]
 
-    graded = {k: r for k, r in results.items() if r.get("kind") != "attachment"}
-    print(f"\n{sum(agrees(r) for r in graded.values())}/{len(graded)} documents had the expected outcome")
-    for k, r in sorted(graded.items()):
-        if not agrees(r):
-            print(f"  {k}: expected {r.get('expected_outcome')}, got {r.get('app_outcome')}  {r.get('reason') or ''}"[:200])
+    graded = {k: r for k, r in results.items() if r.get("kind") not in ("attachment", "part")}
+    for certainty in ("known", "find_out"):
+        group = {k: r for k, r in graded.items() if (r.get("certainty") or "known") == certainty}
+        if not group:
+            continue
+        label = "documents with a known expected outcome" if certainty == "known" else "find-out documents (the expectation was a guess)"
+        print(f"\n{sum(agrees(r) for r in group.values())}/{len(group)} {label} came out as expected")
+        for k, r in sorted(group.items()):
+            if not agrees(r):
+                extra = f" held as {r['held_as']}" if r.get("held_as") else ""
+                print(f"  {k}: expected {r.get('expected_outcome')}, got {r.get('app_outcome')}{extra}  {r.get('reason') or ''}"[:220])
+    split_files = {k: r["parts"] for k, r in results.items() if r.get("parts")}
+    print(f"\nfiles the app separated into several invoices: {len(split_files)}")
+    for k, parts in sorted(split_files.items()):
+        print(f"  {k}: {results[k].get('app_outcome')} + " + ", ".join(f"{p or 'unread part'}: {results.get(p, {}).get('app_outcome')}" for p in parts))
     print(f"held, then deleted: { {k: r['held_as'] for k, r in results.items() if r.get('held_as')} }")
     print(f"local distributors added: { {k: r['distributor_added'] for k, r in results.items() if r.get('distributor_added')} }")
     print(
@@ -833,6 +1037,17 @@ def _summarize_v2(report: dict) -> None:
         print(f"  {customer}: {dict(scopes)}; paying the most nearby for: {high}")
     if "misread" in report:
         print(f"\nDocuments read with a wrong amount, and what the app did: {report['misread']}")
+    if "changes" in report:
+        print("\nSet O, an open alert at the end, by planned behavior:")
+        for behavior, c in report["changes"].items():
+            if behavior in ("stable", "open_after_week_10"):
+                continue
+            got = "yes" if c["open_alert"] else "no"
+            mark = "ok " if got == c["expected_alert"] else "DIFF"
+            detail = "; ".join(f"{a['product']} {float(a['pct']):+.1%} ({a['status']})" for a in c["alerts"])
+            print(f"  {mark} {behavior}: expected {c['expected_alert']}, got {got}; {c['priced']}/{c['lines']} lines priced; products {c['products']}; {detail}")
+        print(f"  alerts on steady items: {report['changes']['stable']['alerts']}")
+        print(f"  open after week 10: {[(a['product'], 'dismissed' if a['dismissed'] else 'left') for a in report['changes']['open_after_week_10']]}")
     k = report["packs"]
     print(
         f"\nSet K: {k['entered']} pack sizes entered by hand; {k['priced']}/{k['lines']} lines priced, "
@@ -901,6 +1116,8 @@ def main() -> None:
     a2.add_argument("set_dir", type=Path)
     sc = sub.add_parser("score")
     sc.add_argument("work_dir", type=Path)
+    sp = sub.add_parser("split", help="after the first read: write out the other invoices found inside files")
+    sp.add_argument("work_dir", type=Path)
     sub.add_parser("cleanup")
     args = parser.parse_args()
     if args.command == "prepare":
@@ -911,6 +1128,8 @@ def main() -> None:
         app_run_v2(args.work_dir, args.set_dir)
     elif args.command == "score":
         score(args.work_dir)
+    elif args.command == "split":
+        split(args.work_dir)
     else:
         cleanup()
 
