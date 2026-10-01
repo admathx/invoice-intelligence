@@ -145,13 +145,50 @@ def test_a_plan_groups_pages_by_invoice():
         ([1, 1], [0, 1]),  # one invoice
         ([1, 0], [0, 1]),  # one invoice and a blank back
         ([1, 2, 3], [0, 1]),  # not an answer about these pages
-        ([1, 2], [0, 0]),  # two invoices on one page: pages can't separate them
+        ([1, 2], [0, 0]),  # two numbers for the slices of one tall page: it is one page, one invoice
         ([1, -1], [0, 1]),
-        (list(range(1, 40)), list(range(39))),  # not a stack: a misreading
+        (list(range(1, 140)), list(range(139))),  # more invoices than a file is divided into
     ],
 )
 def test_a_plan_is_none_when_there_is_nothing_to_split_or_no_safe_way(page_invoices, pdf_pages):
     assert splitting.plan(page_invoices, pdf_pages) is None
+
+
+def test_a_tall_pages_slices_are_one_page_whatever_numbers_they_were_given():
+    """A long receipt in four slices at the end of a stack was numbered as
+    four invoices, and the whole stack then went unseparated."""
+    assert splitting.plan([1, 2, 3, 4, 5], [0, 1, 2, 2, 2]) == {1: [0], 2: [1], 3: [2]}
+    assert splitting.plan([1, 0, 2, 3], [0, 1, 1, 1]) == {1: [0], 2: [1]}
+
+
+def test_a_month_of_single_page_invoices_is_separated():
+    pages = list(range(24))
+    assert splitting.plan([n + 1 for n in pages], pages) == {n + 1: [n] for n in pages}
+
+
+def test_what_cannot_be_separated():
+    assert not splitting.cannot_be_separated([1, 1], [0, 1])  # one invoice
+    assert not splitting.cannot_be_separated([1, 2, 2, 3], [0, 1, 2, 3])  # a stack
+    assert splitting.cannot_be_separated([1, 2], [0, 1, 2])  # not about these pages
+    assert splitting.cannot_be_separated([1, -1], [0, 1])
+    assert splitting.cannot_be_separated(list(range(1, 140)), list(range(139)))
+
+
+def test_several_invoices_that_cant_be_divided_are_not_read_as_the_first_alone(db_session, tenant, monkeypatch, queued):
+    """More invoices than a file is divided into: kept for a person, with
+    every page, not one invoice Ready and the rest gone."""
+    monkeypatch.setattr("app.splitting.MAX_INVOICES_PER_FILE", 2)
+    resp = TestClient(app).post(
+        f"/invoices?tenant_id={tenant.id}", files={"file": ("a.pdf", _pdf(["A", "B", "C"]), "application/pdf")}
+    )
+    invoice_id = uuid.UUID(resp.json()["id"])
+    monkeypatch.setattr("app.workers.tasks.extractor", _FixedExtractor(_numbered(71, page_invoices=[1, 2, 3])))
+    with pytest.raises(Exception, match="several invoices that couldn't be told apart"):
+        process_invoice(str(invoice_id))
+    db_session.expire_all()
+    assert db_session.get(Invoice, invoice_id).status == InvoiceStatus.failed
+    assert len(page_names(invoice_id)) == 3
+    assert db_session.scalars(select(Invoice).where(Invoice.split_from_id == invoice_id)).all() == []
 
 
 def test_pages_can_be_taken_out_of_a_pdf():
@@ -592,3 +629,19 @@ def test_more_page_images_than_can_be_read_at_once_is_not_sent_to_the_model(db_s
     invoice = db_session.get(Invoice, invoice_id)
     assert invoice.status == InvoiceStatus.failed and invoice.extraction_cost_usd == 0
     assert len(page_names(invoice_id)) == 3
+
+
+def test_a_reading_that_doesnt_account_for_every_page_is_never_one_ready_invoice(db_session, tenant, monkeypatch, queued):
+    """From any source of readings (the real reader refuses these itself):
+    five pages, a page list for two."""
+    resp = TestClient(app).post(
+        f"/invoices?tenant_id={tenant.id}", files={"file": ("a.pdf", _pdf(["1", "2", "3", "4", "5"]), "application/pdf")}
+    )
+    invoice_id = uuid.UUID(resp.json()["id"])
+    monkeypatch.setattr("app.workers.tasks.extractor", _FixedExtractor(_numbered(70, page_invoices=[1, 2])))
+    with pytest.raises(Exception, match="accounts for 2 of 5 page images"):
+        process_invoice(str(invoice_id))
+    db_session.expire_all()
+    assert db_session.get(Invoice, invoice_id).status == InvoiceStatus.failed
+    assert len(page_names(invoice_id)) == 5  # every page kept for a person
+    assert db_session.scalars(select(Invoice).where(Invoice.split_from_id == invoice_id)).all() == []

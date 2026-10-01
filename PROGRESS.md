@@ -2922,3 +2922,38 @@ Backend 619 tests.
   products-plan row is found by code and description together.
 
 Backend 626 tests.
+
+### The JPEG path, checked on the real model ($1.28 of reads)
+
+Reading from JPEG pages is as good as from PNG: twelve scanned, faxed,
+photographed, handwritten and clean documents read both ways gave the same
+items and totals (one speckled scan read better as JPEG).
+
+The 24-image stack built to need the JPEG path showed something else. The
+reader answered from the last two pages only: `page_invoices` of two
+numbers for 24 images, and the items of the last invoice. The app would
+have shown one invoice, Ready, and lost the others without a word. Fixed
+three ways:
+
+- **Every page accounted for.** A reading whose page list isn't one number
+  per page image is asked again, then refused ("Couldn't read", pages kept
+  for a person). The worker refuses the same from any source of readings.
+- **Pages numbered for the reader.** With several images, each is introduced
+  ("Page image 7 of 24:") and the request says how many there are. The
+  stack then came back with all 24 accounted for and its first invoice read
+  right; eleven multi-page documents re-read this way were unchanged or
+  better (the two-photo email, 6 wrong lines before, now none). One page is
+  shown exactly as before.
+- **Big stacks can be divided.** A file is divided into up to 100 invoices
+  (it was 20, under which 24 went on as the first alone); the slices of one
+  tall page are one page whatever numbers they were given; and a reading
+  that names several invoices with nothing to divide them by is refused,
+  not read as its first.
+
+Replayed through the app, the stack became 21 invoices. It truly holds 19:
+in a stack that long the reader gave each page of two two-page invoices its
+own number, so each of those arrives as two halves, both held for a person
+(one for not adding up, one as "more pages of invoice X"). Small stacks
+group their pages correctly.
+
+Backend 636 tests.

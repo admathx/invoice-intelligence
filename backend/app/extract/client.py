@@ -68,6 +68,47 @@ def _jpeg_block(page_path: Path) -> dict[str, Any]:
     return _block(out.getvalue(), "image/jpeg")
 
 
+class PagesUnaccountedFor(ValueError):
+    """The reading says which invoice each page image belongs to for fewer
+    (or more) images than it was shown."""
+
+
+def _check_every_page_is_accounted_for(extracted: ExtractedInvoice, pages: int) -> None:
+    """Shown a stack of 24 page images, the reader returned page_invoices
+    for two and the items of the last invoice alone. Read as it stood, that
+    was one invoice, Ready, and fifteen others gone without a word. A
+    reading that doesn't say where every page went isn't one to trust."""
+    if pages > 1 and len(extracted.page_invoices) != pages:
+        raise PagesUnaccountedFor(
+            f"page_invoices has {len(extracted.page_invoices)} numbers for {pages} page images; it needs exactly "
+            f"{pages}, one for each image in order"
+        )
+
+
+def page_content(page_image_paths: list[Path]) -> list[dict[str, Any]]:
+    """What the reader is shown: the page images, then the request. Several
+    images are each introduced by which one it is, and the request says how
+    many there were: without that, a long stack was answered from its last
+    pages only. One image goes as it always has."""
+    blocks = image_blocks(page_image_paths)
+    if len(blocks) <= 1:
+        return [*blocks, {"type": "text", "text": "Extract this invoice."}]
+    count = len(blocks)
+    content: list[dict[str, Any]] = []
+    for number, block in enumerate(blocks, start=1):
+        content += [{"type": "text", "text": f"Page image {number} of {count}:"}, block]
+    content.append(
+        {
+            "type": "text",
+            "text": (
+                f"Extract this invoice. There are {count} page images above, so page_invoices has exactly {count} "
+                "numbers, one for each image in order."
+            ),
+        }
+    )
+    return content
+
+
 def _encoded_size(blocks: list[dict[str, Any]]) -> int:
     return sum(len(block["source"]["data"]) for block in blocks)
 
@@ -135,9 +176,7 @@ class AnthropicExtractorClient:
         self._schema = _strict_json_schema()
 
     def extract(self, page_image_paths: list[Path]) -> tuple[ExtractedInvoice, float]:
-        messages: list[dict[str, Any]] = [
-            {"role": "user", "content": [*image_blocks(page_image_paths), {"type": "text", "text": "Extract this invoice."}]}
-        ]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": page_content(page_image_paths)}]
 
         total_cost = 0.0
         last_error: Exception | None = None
@@ -173,8 +212,9 @@ class AnthropicExtractorClient:
             try:
                 data = json.loads(text)
                 extracted = ExtractedInvoice.model_validate(data)
+                _check_every_page_is_accounted_for(extracted, len(page_image_paths))
                 return extracted, total_cost
-            except (json.JSONDecodeError, pydantic.ValidationError) as e:
+            except (json.JSONDecodeError, pydantic.ValidationError, PagesUnaccountedFor) as e:
                 last_error = e
                 if attempt == 0:
                     messages.append({"role": "assistant", "content": text})

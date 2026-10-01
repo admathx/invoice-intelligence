@@ -150,15 +150,29 @@ def process_invoice(invoice_id: str) -> None:
                 )
             extracted, cost_usd = extractor.extract([page.path for page in pages])
 
+        if len(pages) > 1 and extracted.page_invoices and len(extracted.page_invoices) != len(pages):
+            # The reading doesn't say where every page went (the real reader
+            # refuses these itself, app/extract/client.py; this is for any
+            # other source of readings). Never one invoice, Ready, with the
+            # rest of the file gone: kept, with its pages, for a person.
+            raise ExtractionFailedError(
+                f"the reading accounts for {len(extracted.page_invoices)} of {len(pages)} page images", cost_usd=cost_usd
+            )
+
         # Several invoices in one file: this invoice is the first of them,
         # and each of the others becomes its own, read separately. Not from
         # a file that was itself split out: one level is all a real stack
         # needs, and it can't then go on dividing.
-        others = (
-            splitting.plan(extracted.page_invoices, [page.pdf_page for page in pages])
-            if invoice.split_from_id is None
-            else None
-        )
+        pdf_pages = [page.pdf_page for page in pages]
+        if invoice.split_from_id is None and extracted.page_invoices and splitting.cannot_be_separated(
+            extracted.page_invoices, pdf_pages
+        ):
+            # Several invoices by the reading, and no way to divide them:
+            # going on would keep the first and lose the rest without a word.
+            raise ExtractionFailedError(
+                "the file holds several invoices that couldn't be told apart; add each one on its own", cost_usd=cost_usd
+            )
+        others = splitting.plan(extracted.page_invoices, pdf_pages) if invoice.split_from_id is None else None
         other_pages: list[str] = []
         if others:
             own_pages = set(others.pop(min(others)))

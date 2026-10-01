@@ -410,3 +410,44 @@ def test_a_request_refused_for_its_size_is_the_invoices_problem(extractor_client
     with pytest.raises(ExtractionFailedError, match="too large to read at once") as failure:
         extractor_client.extract([])
     assert failure.value.cost_usd == 0.0 and _TooLarge.calls == 1  # not retried
+
+
+# --- Every page accounted for (a 24-page stack answered from its last two) -----
+
+
+def _pages_response(page_invoices: list[int]) -> _FakeResponse:
+    payload = json.loads(_valid_payload_text())
+    payload["page_invoices"] = page_invoices
+    return _FakeResponse(content=[_FakeTextBlock(json.dumps(payload))], usage=_FakeUsage(1000, 500))
+
+
+def test_one_page_is_shown_as_it_always_was(tmp_path):
+    (page,) = _scan_like_pages(tmp_path, 1, size=(60, 80))
+    content = extract_client.page_content([page])
+    assert [block["type"] for block in content] == ["image", "text"]
+    assert content[-1]["text"] == "Extract this invoice."
+
+
+def test_several_pages_are_each_introduced_and_counted(tmp_path):
+    pages = _scan_like_pages(tmp_path, 3, size=(60, 80))
+    content = extract_client.page_content(pages)
+    assert [block["type"] for block in content] == ["text", "image"] * 3 + ["text"]
+    assert [content[i]["text"] for i in (0, 2, 4)] == ["Page image 1 of 3:", "Page image 2 of 3:", "Page image 3 of 3:"]
+    assert "exactly 3 numbers" in content[-1]["text"]
+
+
+def test_a_reading_that_leaves_pages_out_is_asked_again_and_then_refused(tmp_path, extractor_client):
+    """Twenty-four page images, page_invoices for two, and the last invoice's
+    items: read as it stood, one invoice Ready and fifteen gone."""
+    pages = _scan_like_pages(tmp_path, 3, size=(60, 80))
+    stub = _StubMessages([_pages_response([1, 2]), _pages_response([1, 1, 2])])
+    extractor_client.client.messages = stub
+    extracted, _ = extractor_client.extract(pages)
+    assert extracted.page_invoices == [1, 1, 2] and len(stub.calls) == 2
+    assert "needs exactly 3" in stub.calls[1]["messages"][-1]["content"]
+
+    stub = _StubMessages([_pages_response([1, 2]), _pages_response([1])])
+    extractor_client.client.messages = stub
+    with pytest.raises(ExtractionFailedError, match="1 numbers for 3 page images") as failure:
+        extractor_client.extract(pages)
+    assert failure.value.cost_usd > 0  # both attempts were billed
