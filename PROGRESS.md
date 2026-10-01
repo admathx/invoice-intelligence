@@ -2613,3 +2613,37 @@ Backend 507; frontend 56; gates unchanged.
 
 Replay: 774 waiting lines -> 227 cards (was 224: three reused or divergent
 codes now kept apart); 581 -> 49 unchanged. Backend 513; gates unchanged.
+
+## Second test set (156 documents, sets A-K)
+
+Read in parallel (`real_invoice_report --workers 6`; rendering is
+serialized, as pdfium segfaults when two threads render at once): 150
+documents in about 9.5 minutes, $5.03. Replayed with `test_set app2`: a
+location per restaurant (two sharing an owner under one account), uploads
+through the upload endpoint, emails through email intake, and a person
+deleting held copies and non-invoices, adding local vendors, accepting
+suggestions and entering set K's missing pack sizes as Match items asks.
+
+- Reading: 99% on distributor, invoice number, date and totals; 100% of
+  lines; 95% of documents with every amount right. Fixed keys (only what's
+  printed) took set B's item codes from 74% to 100%.
+- 151 of 153 documents had the expected outcome. Every document read with
+  a wrong amount (four damaged scans, a two-photo email) was held; none
+  came out Ready. G-04 (no invoice date) was read with its delivery date
+  and came out Ready.
+- Copies: the identical upload and the identical emailed file were refused;
+  a photo of an existing invoice was held as a copy; an invoice number
+  reused by another distributor was not.
+- Local vendors: each added once, then recognized by name on 10 later
+  invoices, including FreshLine printed two ways.
+- Emails: three invoices from one, the signature logo ignored, the text-only
+  and password-protected ones rejected, the statement held.
+- Set H: the four Sysco risers alert, per distributor; US Foods mozzarella
+  also alerts (+5.6%), correctly: its price rose with Sysco's. US Foods eggs
+  rising across only six invoices don't alert (fewer than the eight prices
+  the detector needs).
+- Set K: 20 pack sizes entered by hand priced all 220 lines at the real
+  pack's price; 123 were filled in from memory.
+- Set I: no restaurant was shown a local comparison. Six restaurants are
+  five businesses, and a comparison needs five *other* businesses, so each
+  sees four. Every product fell back to the national comparison.

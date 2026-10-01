@@ -33,6 +33,8 @@ import argparse
 import json
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import yaml
@@ -55,38 +57,51 @@ def _paths(pdf: Path, fake: bool) -> tuple[Path, Path]:
     return pdf.with_name(f"{pdf.stem}.{prefix}extracted.json"), pdf.with_name(f"{pdf.stem}.{prefix}truth.json")
 
 
-def extract_folder(folder: Path, extractor, *, fake: bool, limit: int | None) -> list[Path]:
-    """Extract every PDF that has no cached extraction yet, up to `limit`.
-    Returns the PDFs extracted this run."""
-    done = []
-    for pdf in sorted(folder.glob("*.pdf")):
-        extracted_path, truth_path = _paths(pdf, fake)
-        if extracted_path.exists():
-            continue
-        if limit is not None and len(done) >= limit:
-            break
-        with tempfile.TemporaryDirectory() as scratch:
+_RENDER_LOCK = threading.Lock()
+
+
+def _extract_one(pdf: Path, extractor, fake: bool) -> None:
+    extracted_path, truth_path = _paths(pdf, fake)
+    with tempfile.TemporaryDirectory() as scratch:
+        # pdfium isn't thread-safe (rendering two at once segfaults); it's
+        # quick next to the API call, which is what runs in parallel.
+        with _RENDER_LOCK:
             pages = render_pdf_to_pngs(pdf.read_bytes(), Path(scratch))
-            try:
-                extracted, cost = extractor.extract(pages)
-                failed = None
-            except ExtractionFailedError as exc:
-                extracted, cost, failed = None, exc.cost_usd, str(exc)
-        record = {
-            "cost_usd": cost,
-            "failed": failed,
-            "extraction": extracted.model_dump() if extracted else None,
-        }
-        extracted_path.write_text(json.dumps(record, indent=2))
-        if not truth_path.exists():
-            template = extracted.model_dump() if extracted else ExtractedInvoice(
-                distributor="other", invoice_number="", invoice_date="", subtotal="0", tax="0", total="0", line_items=[]
-            ).model_dump()
-            truth_path.write_text(json.dumps({"_reviewed": False, **template}, indent=2))
-        done.append(pdf)
-        status = f"FAILED: {failed}" if failed else f"{len(extracted.line_items)} lines"
-        print(f"  {pdf.name}: ${cost:.4f} {status}", flush=True)
-    return done
+        try:
+            extracted, cost = extractor.extract(pages)
+            failed = None
+        except ExtractionFailedError as exc:
+            extracted, cost, failed = None, exc.cost_usd, str(exc)
+    record = {
+        "cost_usd": cost,
+        "failed": failed,
+        "extraction": extracted.model_dump() if extracted else None,
+    }
+    extracted_path.write_text(json.dumps(record, indent=2))
+    if not truth_path.exists():
+        template = extracted.model_dump() if extracted else ExtractedInvoice(
+            distributor="other", invoice_number="", invoice_date="", subtotal="0", tax="0", total="0", line_items=[]
+        ).model_dump()
+        truth_path.write_text(json.dumps({"_reviewed": False, **template}, indent=2))
+    status = f"FAILED: {failed}" if failed else f"{len(extracted.line_items)} lines"
+    print(f"  {pdf.name}: ${cost:.4f} {status}", flush=True)
+
+
+def extract_folder(folder: Path, extractor, *, fake: bool, limit: int | None, workers: int = 1) -> list[Path]:
+    """Extract every PDF that has no cached extraction yet, up to `limit`,
+    `workers` at a time (each is one API request, saved as it finishes, so
+    an interrupted run keeps what it read). Returns the PDFs extracted."""
+    pending = [pdf for pdf in sorted(folder.glob("*.pdf")) if not _paths(pdf, fake)[0].exists()]
+    if limit is not None:
+        pending = pending[:limit]
+    if workers <= 1:
+        for pdf in pending:
+            _extract_one(pdf, extractor, fake)
+        return pending
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for future in [pool.submit(_extract_one, pdf, extractor, fake) for pdf in pending]:
+            future.result()
+    return pending
 
 
 def _money_mistake(extracted: ExtractedInvoice, truth: ExtractedInvoice) -> bool:
@@ -166,6 +181,7 @@ def main() -> int:
     parser.add_argument("--extract", action="store_true", help="extract PDFs not yet extracted (costs API money)")
     parser.add_argument("--limit", type=int, default=None, help="extract at most this many this run")
     parser.add_argument("--fake", action="store_true", help="fake extractor, separate cache: a free dry run")
+    parser.add_argument("--workers", type=int, default=1, help="read this many at once (each is one API request)")
     args = parser.parse_args()
     if not args.folder.is_dir():
         parser.error(f"{args.folder} is not a directory")
@@ -175,7 +191,7 @@ def main() -> int:
         pending = [p for p in sorted(args.folder.glob("*.pdf")) if not _paths(p, args.fake)[0].exists()]
         count = len(pending) if args.limit is None else min(len(pending), args.limit)
         print(f"Extracting {count} of {len(pending)} not-yet-extracted invoice(s) with {type(extractor).__name__}")
-        extract_folder(args.folder, extractor, fake=args.fake, limit=args.limit)
+        extract_folder(args.folder, extractor, fake=args.fake, limit=args.limit, workers=args.workers)
 
     summary = score_folder(args.folder, fake=args.fake)
     thresholds = yaml.safe_load(THRESHOLDS_PATH.read_text())["phase2_extraction"]

@@ -55,6 +55,33 @@ def _groups(set_dir: Path) -> dict[str, list[dict]]:
     return dict(groups)
 
 
+def _prepare_email(set_dir: Path, work_dir: Path, name: str, entry: dict, gate: dict) -> None:
+    """An emailed invoice is read from its attachments, as email intake
+    takes them: each PDF is an invoice; with no PDF, the photos are the pages
+    of one. Each becomes NAME-attN (its answer key's name); the email itself
+    is replayed through intake (app_run)."""
+    from app.ingest.email_stub import parse_email
+    from app.ingest.upload import validate_invoice_bytes
+
+    entry.update(kind="email", outcome=None)
+    gate[name] = entry
+    parsed = parse_email((set_dir / entry["files"][0]).read_bytes())
+    pdfs = [a.content for a in parsed.pdf_attachments]
+    if not pdfs and parsed.photo_attachments:
+        pdfs = [invoice_pdf_from_upload([a.content for a in parsed.photo_attachments])[0]]
+    for i, data in enumerate(pdfs, 1):
+        att = f"{name}-att{i}"
+        try:
+            validate_invoice_bytes(data)
+        except InvalidInvoiceFileError:
+            continue  # intake refuses it; nothing to read
+        (work_dir / f"{att}.pdf").write_bytes(data)
+        truth = set_dir / f"{att}.truth.json"
+        if truth.exists():
+            shutil.copyfile(truth, work_dir / f"{att}.truth.json")
+        gate[att] = {**entry, "kind": "attachment", "email": name, "files": [f"{att}.pdf"], "outcome": None, "pages": 1}
+
+
 def prepare(set_dir: Path, work_dir: Path) -> None:
     work_dir.mkdir(parents=True, exist_ok=True)
     gate: dict[str, dict] = {}
@@ -66,7 +93,12 @@ def prepare(set_dir: Path, work_dir: Path) -> None:
             "distributor": rows[0]["distributor"],
             "expected_outcome": rows[0]["expected_outcome"],
             "expected_reason": rows[0]["expected_reason"],
+            # The restaurant billed (second set on): its own location.
+            "customer": rows[0].get("customer") or None,
         }
+        if files[0].suffix == ".eml":
+            _prepare_email(set_dir, work_dir, name, entry, gate)
+            continue
         try:
             pdf, _ = invoice_pdf_from_upload([f.read_bytes() for f in files])
         except InvalidInvoiceFileError as exc:
@@ -284,6 +316,8 @@ def _accept_suggestions(client, db, tenant_id, invoice_id) -> int:
     done = 0
     for line_id in pending:
         res = client.post(f"/review/{line_id}/confirm?tenant_id={tenant_id}")
+        if res.status_code == 409:
+            continue  # settled already, as a repeat of one confirmed just before
         if res.status_code != 200:
             raise RuntimeError(f"confirm failed: {res.status_code} {res.text[:200]}")
         done += 1
@@ -453,12 +487,344 @@ def _summarize(results: dict, series: dict) -> None:
         print(f"  {a['product']} from {a['distributor']}: {a['from']} -> {a['to']} ({float(a['pct_change']):+.1%})")
 
 
+# The second set's restaurants share a city apart from the demo businesses, so
+# price comparisons use only them.
+TEST_METRO = "Test City (test set)"
+HARBOR_MAILBOX = "harbor-and-pine@invoices.example.com"
+
+
+def app_run_v2(work_dir: Path, set_dir: Path) -> None:
+    """The second set through the app as a business would use it: a location
+    per restaurant (two sharing an owner under one account), uploads through
+    the upload endpoint (so the same file is refused there), emails through
+    email intake, and a person doing what Match items and the invoice page
+    ask: deleting held copies and non-invoices, adding local vendors,
+    accepting suggestions, and, for set K, entering each missing pack size
+    once. Then checks set H's alerts, set I's comparisons and set K's prices."""
+    from fastapi.testclient import TestClient
+    from sqlalchemy import select
+
+    import app.queue as queue_module
+    from app.auth import CSRF_HEADER, CSRF_HEADER_VALUE, current_user
+    from app.db import SessionLocal, bind_tenant
+    from app.duplicates import file_hash
+    from app.ingest.email_stub import ingest_email_bytes
+    from app.main import app
+    from app.models import Account, Distributor, Invoice, InvoiceLineItem
+    from app.storage import read_uri
+    from app.workers import tasks
+
+    cleanup()
+    gate = json.loads((work_dir / "gate.json").read_text())
+    manifest = list(csv.DictReader((set_dir / "manifest.csv").open()))
+    replay = _Replay()
+    tasks.extractor = replay
+    queue_module.invoice_queue.enqueue = lambda *a, **k: None  # read here, not by a worker
+
+    by_hash = {
+        file_hash(pdf.read_bytes()): pdf.stem
+        for pdf in work_dir.glob("*.pdf")
+        if (work_dir / f"{pdf.stem}.extracted.json").exists()
+    }
+
+    db = SessionLocal()
+    reviewer = _reviewer(db)
+    app.dependency_overrides[current_user] = lambda: reviewer
+    client = TestClient(app, headers={CSRF_HEADER: CSRF_HEADER_VALUE})
+    customers = sorted({e["customer"] for e in gate.values() if e.get("customer")})
+    # The six compared with each other (set I) share a city; every other
+    # restaurant is alone in its own, so it can't pass for a local business.
+    compared = {r["customer"] for r in csv.DictReader((set_dir / "peers_plan.csv").open())}
+    tenants = {
+        c: _location(db, f"{TEST_LOCATION_PREFIX}{c}", TEST_METRO if c in compared else f"{c} (test set)") for c in customers
+    }
+    series_customer = next(r["customer"] for r in manifest if r["set"] == "H")
+    packs_customer = next(r["customer"] for r in manifest if r["set"] == "K")
+    owners: dict[str, set] = defaultdict(set)
+    for row in manifest:
+        if row["account"] and row["customer"]:
+            owners[row["account"]].add(row["customer"])
+    shared = {number: names for number, names in owners.items() if len(names) > 1}
+    for number, names in shared.items():
+        account = Account(id=uuid.uuid4(), name=f"{TEST_LOCATION_PREFIX}owner {number}")
+        db.add(account)
+        db.flush()
+        for name in names:
+            tenants[name].account_id = account.id
+    tenants["Harbor & Pine Kitchen"].inbox_address = HARBOR_MAILBOX
+    db.commit()
+    tenant_ids = {c: t.id for c, t in tenants.items()}
+
+    packs_plan = {
+        (Path(r["invoice_file"]).stem, r["item_code"]): r["real_pack_size"]
+        for r in csv.DictReader((set_dir / "packs_plan.csv").open())
+    }
+    packs_entered: set[str] = set()
+    invoice_names: dict = {}
+    results: dict[str, dict] = {}
+
+    def read(name: str, invoice_id, tenant_id) -> dict:
+        """Read one stored invoice with its paid-for extraction, then do what
+        a person would with it."""
+        result = results.setdefault(name, {**gate.get(name, {}), "app_outcome": None})
+        replay.next = json.loads((work_dir / f"{name}.extracted.json").read_text())
+        try:
+            tasks.process_invoice(str(invoice_id))
+        except Exception as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"[:200]
+        db.expire_all()
+        bind_tenant(db, tenant_id)
+        invoice = db.get(Invoice, invoice_id)
+        invoice_names[invoice_id] = name
+        result["status"] = invoice.status.value
+        result["app_outcome"] = _OUTCOME.get(invoice.status.value, invoice.status.value)
+        lines = list(db.scalars(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id)))
+        result["lines"] = len(lines)
+        result["auto_matched"] = sum(1 for li in lines if li.review_status.value == "auto")
+        result["fees"] = sum(1 for li in lines if li.review_status.value == "not_product")
+        distributor = db.get(Distributor, invoice.distributor_id) if invoice.distributor_id else None
+        result["distributor_name"] = distributor.name if distributor else None
+        if invoice.duplicate_of_id or invoice.document_type:
+            result["held_as"] = "copy" if invoice.duplicate_of_id else invoice.document_type
+            client.delete(f"/invoices/{invoice_id}", params={"tenant_id": str(tenant_id)})
+            return result
+        if distributor is not None and distributor.slug == "other" and invoice.printed_distributor:
+            added = client.post(
+                "/distributors", params={"tenant_id": str(tenant_id)}, json={"name": invoice.printed_distributor}
+            ).json()
+            client.patch(f"/invoices/{invoice_id}", params={"tenant_id": str(tenant_id)}, json={"distributor_id": added["id"]})
+            result["distributor_added"] = added["name"]
+            db.expire_all()
+            bind_tenant(db, tenant_id)
+        result["accepted"] = _accept_suggestions(client, db, tenant_id, invoice_id)
+        if result.get("set") == "K":
+            # The person fills in each missing pack size as Match items asks:
+            # once per item, the first time it can't be priced.
+            db.expire_all()
+            bind_tenant(db, tenant_id)
+            for line in db.scalars(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id)):
+                real = packs_plan.get((name, (line.raw_sku or "").strip()))
+                if (
+                    real
+                    and line.normalized_unit_price is None
+                    and line.review_status.value != "not_product"
+                    and line.raw_sku not in packs_entered
+                ):
+                    resp = client.post(f"/review/{line.id}/pack", params={"tenant_id": str(tenant_id)}, json={"pack_size": real})
+                    if resp.status_code == 200:
+                        packs_entered.add(line.raw_sku)
+        return result
+
+    for name, entry in sorted(gate.items()):
+        if entry.get("kind") == "attachment":
+            continue  # read when its email arrives
+        if entry.get("outcome"):
+            results[name] = {**entry, "app_outcome": entry["outcome"]}
+            continue
+        tenant_id = tenant_ids[entry["customer"]]
+        if entry.get("kind") == "email":
+            raw = (set_dir / entry["files"][0]).read_bytes()
+            ingest = ingest_email_bytes(db, raw, name)
+            result = results.setdefault(name, {**entry})
+            if ingest.status == "quarantined":
+                result["app_outcome"] = "Rejected"
+                result["reason"] = ingest.reason
+                continue
+            if ingest.status == "duplicate":
+                result["app_outcome"] = "Refused as a copy"
+                continue
+            outcomes = []
+            attachments = [k for k, e in gate.items() if e.get("email") == name]
+            for invoice_id in ingest.invoice_ids:
+                bind_tenant(db, tenant_id)
+                stored = db.get(Invoice, invoice_id)
+                att = by_hash.get(file_hash(read_uri(stored.original_file_uri)))
+                if att is None and len(attachments) == 1 and len(ingest.invoice_ids) == 1:
+                    # Photos become a PDF afresh each time (not byte-identical);
+                    # one invoice from one attachment is that attachment.
+                    att = attachments[0]
+                if att is None:
+                    outcomes.append("not read")
+                    continue
+                outcomes.append(read(att, invoice_id, tenant_id)["app_outcome"])
+            result["app_outcome"] = (
+                "Needs a look" if "Needs a look" in outcomes else outcomes[0] if len(set(outcomes)) == 1 else "/".join(outcomes)
+            )
+            result["invoices"] = len(ingest.invoice_ids)
+            continue
+        data = (work_dir / f"{name}.pdf").read_bytes()
+        resp = client.post(
+            f"/invoices?tenant_id={tenant_id}", files={"file": (f"{name}.pdf", data, "application/pdf")}
+        )
+        if resp.status_code == 409:
+            results[name] = {**entry, "app_outcome": "Refused as a copy", "reason": resp.json()["detail"]}
+            continue
+        if resp.status_code != 201:
+            results[name] = {**entry, "app_outcome": "Rejected", "reason": resp.json().get("detail")}
+            continue
+        read(name, uuid.UUID(resp.json()["id"]), tenant_id)
+
+    report = {"invoices": results}
+    report["series"] = _series_v2(db, tenant_ids[series_customer])
+    report["peers"] = _peers_v2(db, set_dir, tenants, gate)
+    report["packs"] = _packs_v2(db, tenant_ids[packs_customer], packs_plan, invoice_names, len(packs_entered))
+    score_path = work_dir / "score.json"
+    if score_path.exists():
+        scores = json.loads(score_path.read_text())
+        scores = scores.get("invoices", scores)
+        report["misread"] = {
+            k: results.get(k, {}).get("app_outcome")
+            for k, v in scores.items()
+            if isinstance(v, dict) and (v.get("money_mistake") or v.get("header_money_right") is False)
+        }
+    app.dependency_overrides.pop(current_user, None)
+    db.close()
+    (work_dir / "app_results.json").write_text(json.dumps(report, indent=2, default=str))
+    _summarize_v2(report)
+
+
+def _series_v2(db, tenant_id) -> dict:
+    from sqlalchemy import select
+
+    from app.db import bind_tenant
+    from app.models import CanonicalSku, Distributor, PriceAlert
+    from app.models.enums import AlertStatus
+
+    bind_tenant(db, tenant_id)
+    alerts = db.execute(
+        select(PriceAlert, CanonicalSku.name, Distributor.name)
+        .join(CanonicalSku, CanonicalSku.id == PriceAlert.canonical_sku_id)
+        .outerjoin(Distributor, Distributor.id == PriceAlert.distributor_id)
+        .where(PriceAlert.tenant_id == tenant_id, PriceAlert.status == AlertStatus.open)
+    ).all()
+    return {
+        "alerts": [
+            {"product": name, "distributor": d, "pct_change": str(a.pct_change), "from": str(a.baseline_price), "to": str(a.current_price)}
+            for a, name, d in alerts
+        ]
+    }
+
+
+def _peers_v2(db, set_dir: Path, tenants: dict, gate: dict) -> dict:
+    """What each set I restaurant is told about how its prices compare."""
+    from sqlalchemy import func, select
+
+    from app.analytics.benchmark import account_key_for, compute_benchmark
+    from app.db import bind_tenant
+    from app.models import CanonicalSku, PriceObservation
+
+    peer_customers = sorted({r["customer"] for r in csv.DictReader((set_dir / "peers_plan.csv").open())})
+    out: dict[str, list] = {}
+    for customer in peer_customers:
+        tenant = tenants[customer]
+        bind_tenant(db, tenant.id)
+        latest = db.execute(
+            select(PriceObservation.canonical_sku_id, func.max(PriceObservation.observed_on))
+            .where(PriceObservation.tenant_id == tenant.id)
+            .group_by(PriceObservation.canonical_sku_id)
+        ).all()
+        rows = []
+        for sku_id, as_of in latest:
+            price = db.scalar(
+                select(PriceObservation.unit_price_base)
+                .where(PriceObservation.tenant_id == tenant.id, PriceObservation.canonical_sku_id == sku_id)
+                .order_by(PriceObservation.observed_on.desc())
+                .limit(1)
+            )
+            bench = compute_benchmark(
+                db, sku_id, tenant.metro, as_of, exclude_account_key=account_key_for(db, tenant.id), subject_price=price
+            )
+            rows.append(
+                {
+                    "product": db.scalar(select(CanonicalSku.name).where(CanonicalSku.id == sku_id)),
+                    "scope": bench.scope if bench else None,
+                    "businesses": bench.distinct_account_count if bench else None,
+                    "percentile": str(bench.subject_percentile) if bench and bench.subject_percentile is not None else None,
+                }
+            )
+        out[customer] = rows
+    return out
+
+
+def _packs_v2(db, tenant_id, packs_plan: dict, invoice_names: dict, entered: int) -> dict:
+    """Set K's prices against the real pack sizes: each line priced as the
+    real pack would price it."""
+    from sqlalchemy import select
+
+    from decimal import Decimal
+
+    from app.db import bind_tenant
+    from app.models import CanonicalSku, InvoiceLineItem
+    from app.normalize.matcher import normalize_price
+
+    bind_tenant(db, tenant_id)
+    counts = {"lines": 0, "priced": 0, "right": 0, "wrong": [], "remembered": 0, "entered": entered}
+    for line in db.scalars(select(InvoiceLineItem).where(InvoiceLineItem.tenant_id == tenant_id)):
+        name = invoice_names.get(line.invoice_id)
+        real = packs_plan.get((name, (line.raw_sku or "").strip()))
+        if real is None or not name.startswith("K-"):
+            continue
+        counts["lines"] += 1
+        counts["remembered"] += int(line.pack_size_remembered)
+        if line.normalized_unit_price is None:
+            continue
+        counts["priced"] += 1
+        product = db.get(CanonicalSku, line.canonical_sku_id) if line.canonical_sku_id else None
+        _, expected = normalize_price(real, line.quantity, line.unit_price, line.uom, product)
+        if expected is not None and abs(expected - line.normalized_unit_price) <= Decimal("0.0002"):
+            counts["right"] += 1
+        else:
+            counts["wrong"].append(f"{name} {line.raw_description} [{line.raw_pack_size}] {line.normalized_unit_price} vs {expected}")
+    return counts
+
+
+def _summarize_v2(report: dict) -> None:
+    from collections import Counter
+
+    results = report["invoices"]
+
+    def agrees(r) -> bool:
+        expected = r.get("expected_outcome") or ""
+        return r.get("app_outcome") in [e.strip() for e in expected.split(" or ")]
+
+    graded = {k: r for k, r in results.items() if r.get("kind") != "attachment"}
+    print(f"\n{sum(agrees(r) for r in graded.values())}/{len(graded)} documents had the expected outcome")
+    for k, r in sorted(graded.items()):
+        if not agrees(r):
+            print(f"  {k}: expected {r.get('expected_outcome')}, got {r.get('app_outcome')}  {r.get('reason') or ''}"[:200])
+    print(f"held, then deleted: { {k: r['held_as'] for k, r in results.items() if r.get('held_as')} }")
+    print(f"local distributors added: { {k: r['distributor_added'] for k, r in results.items() if r.get('distributor_added')} }")
+    print(
+        "recognized by name: "
+        f"{ {k: r['distributor_name'] for k, r in results.items() if r.get('distributor') == 'other' and r.get('distributor_name') not in (None, 'Other') and not r.get('distributor_added') and not r.get('held_as')} }"
+    )
+    print(f"fee lines kept off Match items: {sum(r.get('fees', 0) for r in results.values())}")
+    print(f"\nSet H alerts ({len(report['series']['alerts'])}):")
+    for a in report["series"]["alerts"]:
+        print(f"  {a['product']} from {a['distributor']}: {a['from']} -> {a['to']} ({float(a['pct_change']):+.1%})")
+    print("\nSet I, what each restaurant is shown:")
+    for customer, rows in report["peers"].items():
+        scopes = Counter(r["scope"] for r in rows)
+        high = [r["product"] for r in rows if r["percentile"] and float(r["percentile"]) >= 0.9 and r["scope"] == "metro"]
+        print(f"  {customer}: {dict(scopes)}; paying the most nearby for: {high}")
+    if "misread" in report:
+        print(f"\nDocuments read with a wrong amount, and what the app did: {report['misread']}")
+    k = report["packs"]
+    print(
+        f"\nSet K: {k['entered']} pack sizes entered by hand; {k['priced']}/{k['lines']} lines priced, "
+        f"{k['right']} at the real pack's price, {k['remembered']} filled in from memory"
+    )
+    for w in k["wrong"][:10]:
+        print(f"  wrong: {w}")
+
+
 def cleanup() -> None:
     """Remove the test locations and everything in them."""
     from sqlalchemy import delete, select
 
     from app.db import SessionLocal, bind_tenant
     from app.models import (
+        Account,
         AuditEvent,
         Distributor,
         Invoice,
@@ -491,6 +857,7 @@ def cleanup() -> None:
             forget_original(invoice_id)
             get_storage().delete_prefix(renders_prefix(invoice_id))
     db.execute(delete(User).where(User.email == REVIEWER_EMAIL))
+    db.execute(delete(Account).where(Account.name.like(f"{TEST_LOCATION_PREFIX}owner %")))
     db.commit()
     db.close()
     if tenant_ids:
@@ -505,6 +872,9 @@ def main() -> None:
     p.add_argument("work_dir", type=Path)
     a = sub.add_parser("app")
     a.add_argument("work_dir", type=Path)
+    a2 = sub.add_parser("app2", help="the second set: locations per restaurant, emails, peers, packs")
+    a2.add_argument("work_dir", type=Path)
+    a2.add_argument("set_dir", type=Path)
     sc = sub.add_parser("score")
     sc.add_argument("work_dir", type=Path)
     sub.add_parser("cleanup")
@@ -513,6 +883,8 @@ def main() -> None:
         prepare(args.set_dir, args.work_dir)
     elif args.command == "app":
         app_run(args.work_dir)
+    elif args.command == "app2":
+        app_run_v2(args.work_dir, args.set_dir)
     elif args.command == "score":
         score(args.work_dir)
     else:
