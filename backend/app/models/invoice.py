@@ -58,6 +58,9 @@ class Invoice(Base, TenantScoped):
     # That name is another restaurant's (app/billed_to.py): held until a
     # person deletes it or says it's theirs.
     billed_elsewhere: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    # Its page also shows another invoice, which wasn't read (two tickets
+    # copied onto one sheet): kept for a person, who adds the other one.
+    shares_page: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     # The invoice whose file this one was taken out of, when one file held
     # several invoices (app/splitting.py).
     split_from_id: Mapped[uuid.UUID | None] = mapped_column(

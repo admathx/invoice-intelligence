@@ -223,6 +223,9 @@ def check_set(set_dir: Path) -> list[str]:
         problems.append("year_plan: two files share an upload_order")
     for plan in ("changes_plan.csv", "year_plan.csv"):
         expected: dict[str, set] = defaultdict(set)
+        then = {row.get("alert_at_the_time", "") for row in _plan(set_dir, plan)} - {"", "yes", "no", "find_out"}
+        if then:
+            problems.append(f"{plan}: alert_at_the_time is {sorted(then)}; it must be yes, no, find_out or blank")
         for row in _plan(set_dir, plan):
             expected[row.get("behavior", "")].add(row.get("expected_alert", ""))
         for behavior, values in expected.items():
@@ -1087,17 +1090,29 @@ def _peers_v2(db, set_dir: Path, tenants: dict, gate: dict) -> dict:
     return out
 
 
+def alerted_at_some_point(points: list) -> bool:
+    """Whether a product's prices (date and price, oldest first) would have
+    had an alert open at any time, had they arrived in date order. An
+    increase in March has closed by December: the alert was news when it
+    happened, and whether it is open at the end says nothing about that."""
+    from app.analytics.price_creep import _recent_move, _slow_move
+
+    return any(_recent_move(points[:n]) or _slow_move(points[:n]) for n in range(1, len(points) + 1))
+
+
 def _changes(db, plan_rows: list[dict], tenant_id, dismissed: list[dict]) -> dict:
     """A planned series (set O's changes_plan.csv, set U's year_plan.csv):
     for each planned behavior, whether each of its products has an open
     alert from its distributor at the end, against the plan's
-    expected_alert. Also whether the alerts that are open are the ones the
-    prices as they now stand call for, whatever order the invoices came in."""
+    expected_alert; and whether it would have had one at the time, in date
+    order, against the plan's alert_at_the_time (when it has that column).
+    Also whether the alerts that are open are the ones the prices as they
+    now stand call for, whatever order the invoices came in."""
     from sqlalchemy import select
 
     from app.analytics.price_creep import detect_price_creep
     from app.db import bind_tenant
-    from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceAlert
+    from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceAlert, PriceObservation
 
     # A behavior whose rows disagree on what's expected (the old item no, its
     # replacement yes) is graded as two, one for each answer.
@@ -1107,7 +1122,11 @@ def _changes(db, plan_rows: list[dict], tenant_id, dismissed: list[dict]) -> dic
     plan: dict[str, dict] = {}
     for row in plan_rows:
         key = row["behavior"] if len(answers[row["behavior"]]) == 1 else f"{row['behavior']} (expected {row['expected_alert']})"
-        b = plan.setdefault(key, {"expected_alert": row["expected_alert"], "codes": set(), "descriptions": set()})
+        b = plan.setdefault(
+            key,
+            {"expected_alert": row["expected_alert"], "alert_at_the_time": row.get("alert_at_the_time") or None,
+             "codes": set(), "descriptions": set()},
+        )  # fmt: skip
         b["codes"].add(row["item_code"])
         b["descriptions"].add(row["description"])
     bind_tenant(db, tenant_id)
@@ -1117,6 +1136,18 @@ def _changes(db, plan_rows: list[dict], tenant_id, dismissed: list[dict]) -> dic
         .where(InvoiceLineItem.tenant_id == tenant_id)
     ).all()
     alerts = list(db.scalars(select(PriceAlert).where(PriceAlert.tenant_id == tenant_id)))
+    prices: dict[tuple, list] = defaultdict(list)
+    for sku, distributor, on, price in db.execute(
+        select(
+            PriceObservation.canonical_sku_id,
+            PriceObservation.distributor_id,
+            PriceObservation.observed_on,
+            PriceObservation.unit_price_base,
+        )
+        .where(PriceObservation.tenant_id == tenant_id)
+        .order_by(PriceObservation.observed_on, PriceObservation.id)
+    ):
+        prices[(sku, distributor)].append((on, price))
     names = dict(db.execute(select(CanonicalSku.id, CanonicalSku.name)).all())
     distributors = dict(db.execute(select(Distributor.id, Distributor.name)).all())
 
@@ -1146,6 +1177,13 @@ def _changes(db, plan_rows: list[dict], tenant_id, dismissed: list[dict]) -> dic
             # As planned: every product alerting where one is expected, none
             # where none is.
             "open_alert": bool(series) and len(alerting) == len(series) if expected == "yes" else bool(alerting),
+            "expected_at_the_time": b["alert_at_the_time"],
+            # Every product, where the plan expects it; any, where it doesn't.
+            "alerted_at_the_time": (
+                bool(series) and all(alerted_at_some_point(prices[key]) for key in series)
+                if (b["alert_at_the_time"] or expected) == "yes"
+                else any(alerted_at_some_point(prices[key]) for key in series)
+            ),
             "alerts": [
                 {"product": names[a.canonical_sku_id], "status": a.status.value, "pct": str(a.pct_change),
                  "from": str(a.baseline_price), "to": str(a.current_price)}
@@ -1335,7 +1373,7 @@ def _summarize_v2(report: dict) -> None:
     for key, title in (("changes", "Set O"), ("year", "Set U, a year added in random order")):
         if key not in report:
             continue
-        print(f"\n{title}: an open alert at the end, by planned behavior:")
+        print(f"\n{title}: an open alert at the end (and at the time), by planned behavior:")
         for behavior, c in report[key].items():
             if not isinstance(c, dict) or behavior == "stable":
                 continue
@@ -1343,9 +1381,13 @@ def _summarize_v2(report: dict) -> None:
             mark = "ok " if got == c["expected_alert"] else "?  " if c["expected_alert"] not in ("yes", "no") else "DIFF"
             detail = "; ".join(f"{a['product']} {float(a['pct']):+.1%} ({a['status']})" for a in c["alerts"])
             unmatched = f"; {c['unmatched_lines']} lines unmatched" if c["unmatched_lines"] else ""
+            then = "yes" if c.get("alerted_at_the_time") else "no"
+            wanted = c.get("expected_at_the_time")
+            then_mark = "" if wanted in (None, then) else " ?" if wanted == "find_out" else " DIFF"
+            at_the_time = f"; at the time, in date order: {then}" + (f" (expected {wanted}){then_mark}" if wanted else "")
             print(
                 f"  {mark} {behavior}: expected {c['expected_alert']}, got {got} ({c['products_alerting']} of {len(c['products'])} "
-                f"products alerting); {c['priced']}/{c['lines']} lines priced{unmatched}; {c['products']}; {detail}"
+                f"products alerting){at_the_time}; {c['priced']}/{c['lines']} lines priced{unmatched}; {c['products']}; {detail}"
             )
         print(f"  alerts on steady items: {report[key]['stable']['alerts']}")
         if report[key]["open_after_week_10"]:

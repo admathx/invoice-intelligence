@@ -36,7 +36,7 @@ class InvoiceLineItem(Base, TenantScoped):
         UUID(as_uuid=True), ForeignKey("canonical_skus.id"), nullable=True, index=True
     )
     normalized_qty_base: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
-    normalized_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    normalized_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True)
     base_uom: Mapped[BaseUom | None] = mapped_column(Enum(BaseUom, name="base_uom"), nullable=True)
 
     # QA

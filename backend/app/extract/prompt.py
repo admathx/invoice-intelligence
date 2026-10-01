@@ -63,6 +63,13 @@ Rules:
   header, its totals and its line items. The others are read separately. Pages that continue one invoice (the
   same invoice number, "Page 2 of 3", totals only on the last page) are that one invoice, not several. Use 0 for an image that belongs to
   none: a blank back, a page of terms and conditions only, or a second picture of a page already shown.
+- shares_a_page is true only when a single page image shows this invoice together with a second, separate
+  invoice or delivery ticket that has its own invoice number and its own total, as when two half-page tickets
+  are copied onto one sheet. Then extract ONLY the first of them (the top one, or the left one): its header,
+  its totals and its line items, and nothing from the other. It is false for everything else: a remittance
+  slip or payment coupon at the foot of an invoice, two pages of the same invoice shown side by side, a
+  receipt shown in overlapping slices, and several invoices each on a page of their own (page_invoices says
+  that).
 """
 
 

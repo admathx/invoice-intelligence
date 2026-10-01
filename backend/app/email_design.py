@@ -73,8 +73,19 @@ def money(value: Decimal) -> str:
 UNIT_LABEL = {"lb": "lb", "oz": "oz", "gal": "gal", "fl_oz": "fl oz", "each": "each", "dozen": "dozen"}
 
 
+def unit_price(value: Decimal) -> str:
+    """A price per unit, where fractions of a cent matter on small items
+    (as the dashboard shows them, frontend/src/lib/format.ts): cents from
+    $1 up, up to four places below it and six below a cent, zeros dropped
+    past the cent. To the cent, a napkin going from $0.0125 to $0.0131 read
+    "$0.01 -> $0.01"."""
+    places = 2 if abs(value) >= 1 else 4 if abs(value) >= Decimal("0.01") else 6
+    whole, _, fraction = f"{value:,.{places}f}".partition(".")
+    return f"${whole}.{fraction.rstrip('0').ljust(2, '0')}"
+
+
 def price_per(value: Decimal, unit: str) -> str:
-    return f"{money(value)}/{unit}" if unit else money(value)
+    return f"{unit_price(value)}/{unit}" if unit else unit_price(value)
 
 
 def dashboard_link(path: str, location: uuid.UUID) -> str:

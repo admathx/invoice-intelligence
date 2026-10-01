@@ -243,6 +243,11 @@ def _lines(db: Session, invoice_id: uuid.UUID) -> list[InvoiceLineItem]:
 
 def _split_note(db: Session, invoice: Invoice) -> str | None:
     """What to say about a file that held several invoices (app/splitting.py)."""
+    if invoice.shares_page:
+        return (
+            "This page also shows another invoice, which wasn't read. Add that one on its own: "
+            "a photo or scan of just that part of the page."
+        )
     if invoice.split_from_id is not None:
         return "This came in a file with other invoices. Each was added on its own."
     others = db.scalar(select(func.count(Invoice.id)).where(Invoice.split_from_id == invoice.id))

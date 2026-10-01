@@ -37,6 +37,37 @@ def name_key(name: str) -> str:
     return "".join(name_words(name))
 
 
+# What each big distributor's own invoices print in the company name, as
+# whole words ("Sysco Central Florida, Inc.", "US Foods, Inc. - Charlotte
+# Division"), and the words another company's name borrows to look like it.
+_PRINTS = {
+    "us_foods": ("US FOODS", "U S FOODS", "USFOODS", "US FOODSERVICE", "U S FOODSERVICE"),
+    "gordon": ("GORDON FOOD SERVICE", "GORDON FOODSERVICE", "GFS"),
+    "pfg": ("PERFORMANCE FOODSERVICE", "PERFORMANCE FOOD SERVICE", "PERFORMANCE FOOD GROUP", "PFG"),
+}
+_RESEMBLES = {
+    "us_foods": ("US FOOD", "U S FOOD"),
+    "gordon": ("GORDON", "GORDONS"),
+    "pfg": ("PERFORMANCE",),
+}
+
+
+def prints_as(slug: str, printed: str | None) -> bool:
+    """False when the name printed on an invoice borrows the big
+    distributor `slug`'s name without being it. The reader names the
+    distributor from the letterhead, and took "Gordon's Restaurant Supply"
+    and "Performance Food Mart" for Gordon Food Service and Performance
+    Foodservice: another company's item codes, matched against theirs.
+
+    Only a name that resembles theirs is doubted. One that doesn't (an
+    operating company such as Reinhart Foodservice, which is PFG) is the
+    reader's to place, as is an invoice with no name printed."""
+    name = f" {' '.join(name_words(printed or ''))} "
+    if not any(f" {word} " in name for word in _RESEMBLES.get(slug, ())):
+        return True
+    return any(f" {known} " in name for known in _PRINTS[slug])
+
+
 def _keys(db: Session, tenant_id: uuid.UUID) -> list[uuid.UUID]:
     """Whose distributors this location sees: its own, and its account's."""
     account_id = db.scalar(select(Tenant.account_id).where(Tenant.id == tenant_id))

@@ -38,8 +38,16 @@ def number_key(number: str | None) -> str:
     return re.sub(r"[^A-Z0-9]", "", (number or "").upper()).lstrip("0")
 
 
-# How a reissued invoice is numbered: the original's number and a suffix.
-_REISSUE = re.compile(r"(.*\d)\s*[-/. ]\s*(R|RB|REV|REVISED|REBILL|CORR|CORRECTED)")
+# How a reissued invoice is numbered: the original's number and a suffix
+# that says so, sometimes counted ("904718242 R1"). A bare R needs its
+# separator or its count: "1234R" says no more than "1234A" does.
+_REISSUE = re.compile(
+    r"(.*\d)\s*[-/. ]?\s*(RB|REV|REVISED|REBILL|CORR|CORRECTED|R(?=\d)|(?<=[-/. ])R)\s*\d{0,2}"
+)
+# The original's number and one letter ("904718243A", "88214-B"). That is
+# also how the parts of a split shipment are numbered, which are different
+# invoices, so it counts only with the same total (find_original).
+_LETTERED = re.compile(r"(.*\d)\s*[-/. ]?\s*[A-Z]")
 
 
 def reissue_of(number: str | None) -> str | None:
@@ -47,6 +55,12 @@ def reissue_of(number: str | None) -> str | None:
     rebill of 904718271), or None. A rebill came out Ready beside its
     original, and the delivery was counted twice."""
     match = _REISSUE.fullmatch((number or "").strip().upper())
+    return number_key(match.group(1)) or None if match else None
+
+
+def lettered_from(number: str | None) -> str | None:
+    """The key of the number this one adds a single letter to, or None."""
+    match = _LETTERED.fullmatch((number or "").strip().upper())
     return number_key(match.group(1)) or None if match else None
 
 
@@ -69,9 +83,12 @@ def one_at_a_time(db: Session, tenant_id) -> None:
 def find_original(db: Session, invoice: Invoice) -> Invoice | None:
     """The earliest invoice added before this one that it looks like a copy
     of: same location, same distributor, same number, or one the reissue of
-    the other ("904718271-R"), whichever of those arrived first. None without
-    a number or a distributor to go on. For an unattributed invoice, the
-    printed distributor name has to match as well.
+    the other ("904718271-R"), whichever of those arrived first; or one the
+    other's number with a letter added and the same total ("904718243A", a
+    rebill; "88214-A" and "88214-B" with their own totals are the two parts
+    of a split shipment). None without a number or a distributor to go on.
+    For an unattributed invoice, the printed distributor name has to match
+    as well.
 
     A credit and a charge are never copies of each other: a credit memo
     often carries the number of the invoice it credits."""
@@ -79,7 +96,8 @@ def find_original(db: Session, invoice: Invoice) -> Invoice | None:
     if not key or invoice.distributor_id is None:
         return None
     reissued = reissue_of(invoice.invoice_number)
-    keys = [key, reissued] if reissued else [key]
+    lettered = lettered_from(invoice.invoice_number)
+    keys = [k for k in (key, reissued, lettered) if k]
     stored_key = func.ltrim(func.regexp_replace(func.upper(Invoice.invoice_number), "[^A-Z0-9]", "", "g"), "0")
     candidates = db.scalars(
         select(Invoice)
@@ -93,9 +111,10 @@ def find_original(db: Session, invoice: Invoice) -> Invoice | None:
                 and_(Invoice.created_at == invoice.created_at, Invoice.id < invoice.id),
             ),
             Invoice.distributor_id == invoice.distributor_id,
-            # Its own number, the one it reissues, or (narrowed below) one
-            # that reissues it: a suffix after the same number.
-            or_(stored_key.in_(keys), stored_key.like(f"{key}%")),
+            # Its own number, the one it reissues or adds a letter to, or
+            # (narrowed below) one that does that to it or reissues the same
+            # one: a suffix after the same number.
+            or_(stored_key.in_(keys), *(stored_key.like(f"{prefix}%") for prefix in (key, reissued) if prefix)),
             Invoice.status != InvoiceStatus.failed,
             # The original, not another copy of it.
             Invoice.duplicate_of_id.is_(None),
@@ -106,10 +125,16 @@ def find_original(db: Session, invoice: Invoice) -> Invoice | None:
     if distributor is not None and distributor.slug == UNRECOGNIZED_SLUG:
         printed = name_key(invoice.printed_distributor or "")
         candidates = [c for c in candidates if printed and name_key(c.printed_distributor or "") == printed]
-    candidates = [
-        c
-        for c in candidates
-        if (number_key(c.invoice_number) in keys or reissue_of(c.invoice_number) == key)
-        and _is_credit(c) == _is_credit(invoice)
-    ]
+
+    def same_invoice(other: Invoice) -> bool:
+        theirs = number_key(other.invoice_number)
+        # The same number, one a reissue of the other, or both reissues of
+        # one original ("R1" and "R2", when the original has been deleted).
+        their_original = reissue_of(other.invoice_number)
+        if theirs == key or theirs == reissued or (their_original and their_original in (key, reissued)):
+            return True
+        same_total = invoice.total is not None and other.total == invoice.total
+        return same_total and (theirs == lettered or lettered_from(other.invoice_number) == key)
+
+    candidates = [c for c in candidates if same_invoice(c) and _is_credit(c) == _is_credit(invoice)]
     return candidates[0] if candidates else None

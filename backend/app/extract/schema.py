@@ -35,6 +35,9 @@ class ExtractedInvoice(BaseModel):
     # page that belongs to none), when one file holds several. Only the
     # first is read into the fields here (app/splitting.py).
     page_invoices: list[int] = []
+    # One page image shows this invoice and another, separate one (two
+    # half-page tickets copied onto one sheet). Only this one is read.
+    shares_a_page: bool = False
     invoice_number: str
     invoice_date: str
     delivery_date: str | None = None

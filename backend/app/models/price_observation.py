@@ -53,7 +53,7 @@ class PriceObservation(Base):
     )
 
     observed_on: Mapped[date] = mapped_column(Date, nullable=False)
-    unit_price_base: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    unit_price_base: Mapped[Decimal] = mapped_column(Numeric(14, 6), nullable=False)
 
     metro: Mapped[str] = mapped_column(String, nullable=False)
     volume_tier: Mapped[VolumeTier] = mapped_column(Enum(VolumeTier, name="volume_tier"), nullable=False)
@@ -61,6 +61,13 @@ class PriceObservation(Base):
     invoice_line_item_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("invoice_line_items.id"), nullable=False, unique=True
     )
+
+
+# How finely a price per base unit is kept. A case of 3,000 napkins at
+# $37.43 is $0.012477 each: at four places that is $0.0125, a 5% increase
+# can round to 4% or 6%, and a case of 1,000 picks at four cents came to
+# $0.0000 each.
+UNIT_PRICE_PLACES = Decimal("0.000001")
 
 
 def build_price_observation(

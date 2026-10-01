@@ -76,10 +76,15 @@ MAX_PHOTO_ASPECT = 3.0
 # invoice attached".
 MAX_TALL_PHOTO_ASPECT = 10.0
 
-# How far a forwarded message is followed into the messages attached to it,
-# and how many files are taken from a zip.
-MAX_FORWARD_DEPTH = 3
+# How far a forwarded message is followed into the messages attached to it
+# (an invoice forwarded on by four people in turn arrived five deep, and was
+# turned away at three), how many files are taken from a zip, and how far
+# into the zips inside it.
+MAX_FORWARD_DEPTH = 10
 MAX_ZIP_FILES = 50
+MAX_ZIP_DEPTH = 3
+# Who a delivery-failure notice comes from.
+_BOUNCE_SENDERS = ("mailer-daemon", "postmaster")
 _ZIP_TYPES = {"application/zip", "application/x-zip-compressed", "application/x-zip"}
 
 
@@ -196,7 +201,7 @@ def _attachments(message: EmailMessage, depth: int = 0) -> list[EmailAttachment]
     # A delivery-failure notice carries the message that couldn't be
     # delivered. That is something sent out coming back, not an invoice
     # sent in.
-    bounce = message.get_content_type() == "multipart/report"
+    bounce = _is_bounce(message)
     for part in message.iter_attachments():
         filename = part.get_filename() or "attachment"
         content_type = (part.get_content_type() or "").lower()
@@ -236,6 +241,24 @@ def _attachments(message: EmailMessage, depth: int = 0) -> list[EmailAttachment]
     return found
 
 
+def _is_bounce(message: EmailMessage) -> bool:
+    """Whether a message is a mail server's own notice (it couldn't deliver
+    something, or someone is away) and not a person or a distributor
+    writing in. Not every server sends the standard report: one arrived as
+    an ordinary message from MAILER-DAEMON with the undelivered email
+    attached, and the invoice in that was filed."""
+    if message.get_content_type() == "multipart/report":
+        return True
+    senders = [address.lower() for _, address in getaddresses([str(v) for v in message.get_all("from", [])])]
+    if any(address.split("@")[0] in _BOUNCE_SENDERS for address in senders):
+        return True
+    # An empty return path is how mail servers mark their own notices, so
+    # that a notice never gets one back.
+    if str(message.get("return-path", "")).strip() == "<>" or message.get("x-failed-recipients"):
+        return True
+    return str(message.get("auto-submitted", "")).strip().lower().startswith("auto-replied")
+
+
 def _is_zip(attachment: EmailAttachment) -> bool:
     # By name or type as well as by its bytes: Word and Excel files are zips
     # too, and the pictures inside those are logos, not invoices.
@@ -243,49 +266,61 @@ def _is_zip(attachment: EmailAttachment) -> bool:
     return labelled and attachment.content.startswith(b"PK")
 
 
+class _ZipProblem(Exception):
+    """Why a zip can't be taken in full."""
+
+
 def _unzipped(archive: EmailAttachment) -> list[EmailAttachment]:
-    """The PDFs and pictures in a zip, as if each had been attached. A zip
-    that can't be taken in full (a password, a file too big, too many
-    files) comes back with a `problem`, which turns the whole email away:
-    taking forty invoices of sixty and saying nothing would be worse. With
-    nothing usable in it and nothing wrong, the zip itself, so a rejection
-    names it."""
-    limit = settings.max_upload_bytes
+    """The PDFs and pictures in a zip, as if each had been attached,
+    including those in a zip inside it. A zip that can't be taken in full (a
+    password, a file too big, too many files) comes back with a `problem`,
+    which turns the whole email away: taking forty invoices of sixty and
+    saying nothing would be worse. With nothing usable in it and nothing
+    wrong, the zip itself, so a rejection names it."""
     files: list[EmailAttachment] = []
     problem = None
     try:
-        with zipfile.ZipFile(io.BytesIO(archive.content)) as zipped:
-            # Never trusting the sizes the zip claims: each file is read up
-            # to the upload limit and no further, and all of them together
-            # up to a few times that, so a small zip can't unpack into
-            # gigabytes of memory.
-            budget = 4 * limit
-            for info in zipped.infolist():
-                if info.is_dir():
-                    continue
-                if info.flag_bits & 0x1:
-                    problem = "it's password-protected"
-                    break
-                if budget <= 0:
-                    problem = "there's too much in it"
-                    break
-                allowed = min(limit, budget)
-                with zipped.open(info) as member:
-                    data = member.read(allowed + 1)
-                budget -= len(data)
-                if len(data) > allowed:
-                    problem = "a file in it is too big" if allowed == limit else "there's too much in it"
-                    break
-                if is_pdf_bytes(data) or image_kind(data) is not None:
-                    if len(files) >= MAX_ZIP_FILES:
-                        problem = f"it holds more than {MAX_ZIP_FILES} invoices; send them in smaller batches"
-                        break
-                    files.append(EmailAttachment(filename=Path(info.filename).name, content_type="", content=data))
+        # Never trusting the sizes the zip claims: each file is read up to
+        # the upload limit and no further, and all of them together (zips
+        # inside it included) up to a few times that, so a small zip can't
+        # unpack into gigabytes of memory.
+        _take_from_zip(archive.content, files, [4 * settings.max_upload_bytes], depth=1)
+    except _ZipProblem as exc:
+        problem = str(exc)
     except (zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError, EOFError, ValueError):
         problem = "it couldn't be opened"
     if problem:
         return [EmailAttachment(filename=archive.filename, content_type=archive.content_type, content=b"", problem=problem)]
     return files or [EmailAttachment(filename=archive.filename, content_type=archive.content_type, content=b"")]
+
+
+def _take_from_zip(content: bytes, files: list[EmailAttachment], budget: list[int], depth: int) -> None:
+    """Adds a zip's PDFs and pictures to `files`. `budget` is the bytes
+    still allowed, shared with the zips inside it."""
+    limit = settings.max_upload_bytes
+    with zipfile.ZipFile(io.BytesIO(content)) as zipped:
+        for info in zipped.infolist():
+            if info.is_dir():
+                continue
+            if info.flag_bits & 0x1:
+                raise _ZipProblem("it's password-protected")
+            if budget[0] <= 0:
+                raise _ZipProblem("there's too much in it")
+            allowed = min(limit, budget[0])
+            with zipped.open(info) as member:
+                data = member.read(allowed + 1)
+            budget[0] -= len(data)
+            if len(data) > allowed:
+                raise _ZipProblem("a file in it is too big" if allowed == limit else "there's too much in it")
+            if info.filename.lower().endswith(".zip") and data.startswith(b"PK"):
+                # A zip of the month holding a zip for each week.
+                if depth >= MAX_ZIP_DEPTH:
+                    raise _ZipProblem("it holds zips inside zips, too deep to open")
+                _take_from_zip(data, files, budget, depth + 1)
+            elif is_pdf_bytes(data) or image_kind(data) is not None:
+                if len(files) >= MAX_ZIP_FILES:
+                    raise _ZipProblem(f"it holds more than {MAX_ZIP_FILES} invoices; send them in smaller batches")
+                files.append(EmailAttachment(filename=Path(info.filename).name, content_type="", content=data))
 
 
 def find_tenant_for_recipients(db: Session, recipients: list[str]) -> Tenant | None:
@@ -294,11 +329,18 @@ def find_tenant_for_recipients(db: Session, recipients: list[str]) -> Tenant | N
     Matched case-insensitively: addresses are case-insensitive in practice,
     and a tenant whose stored address differs only in case from what the mail
     server delivered would otherwise quarantine for no reason.
+
+    A tag after a plus sign is ignored ("harbor-and-pine+sysco@..."): people
+    give each distributor its own so they can tell who is sending what, and
+    mail servers deliver it to the plain address. Addresses here are never
+    made with a plus in them (inbox_address_for).
     """
     for address in recipients:
-        tenant = db.scalar(select(Tenant).where(func.lower(Tenant.inbox_address) == address))
-        if tenant is not None:
-            return tenant
+        local, _, domain = address.rpartition("@")
+        for candidate in dict.fromkeys((address, f"{local.split('+')[0]}@{domain}")):
+            tenant = db.scalar(select(Tenant).where(func.lower(Tenant.inbox_address) == candidate))
+            if tenant is not None:
+                return tenant
     return None
 
 

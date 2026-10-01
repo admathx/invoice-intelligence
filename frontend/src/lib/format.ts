@@ -1,6 +1,7 @@
 /** How numbers look and what color they are, in one place.
  *
- * The API sends money as exact decimal strings with four places ("4240.1143")
+ * The API sends money as exact decimal strings with four places ("4240.1143",
+ * six for a price per unit)
  * because that's what's stored; screens used to print them as is. These turn
  * them into what a person reads, and say which way a change is good: for
  * someone buying food, a price going up is bad (red) and down is good (green).
@@ -24,12 +25,13 @@ export function money(value: Num): string {
 }
 
 /** Unit prices, where fractions of a cent matter on small items: cents from
- *  $1 up, up to four places below it, trailing zeros dropped past the cent.
- *  "$18.06", "$0.6656", "$0.50" */
+ *  $1 up, up to four places below it and six below a cent (one napkin of a
+ *  3,000 case), trailing zeros dropped past the cent.
+ *  "$18.06", "$0.6656", "$0.50", "$0.004167" */
 export function unitPrice(value: Num): string {
   const n = toNumber(value);
   if (n === null) return DASH;
-  const places = Math.abs(n) >= 1 ? 2 : 4;
+  const places = Math.abs(n) >= 1 ? 2 : Math.abs(n) >= 0.01 ? 4 : 6;
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: places });
 }
 

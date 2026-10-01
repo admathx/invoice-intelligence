@@ -341,3 +341,14 @@ def test_an_increase_in_old_prices_is_history_not_news(db, outbox):
     # Nor is the old one "new this week" in the Monday summary.
     week = digest.location_week(db, tenant, NOW)
     assert week.new_increase_count == 2 and week.open_alert_count == 3
+
+
+def test_a_price_under_a_dollar_keeps_the_places_that_show_its_increase():
+    """To the cent, a napkin going from $0.0125 to $0.0131 read "$0.01 -> $0.01"."""
+    from app.email_design import price_per, unit_price
+
+    assert unit_price(Decimal("18.0618")) == "$18.06" and unit_price(Decimal("1234.5")) == "$1,234.50"
+    assert unit_price(Decimal("0.6656")) == "$0.6656" and unit_price(Decimal("0.500000")) == "$0.50"
+    assert unit_price(Decimal("0.012477")) == "$0.0125" and unit_price(Decimal("0.013101")) == "$0.0131"
+    assert unit_price(Decimal("0.004167")) == "$0.004167" and unit_price(Decimal("0.000040")) == "$0.00004"
+    assert price_per(Decimal("0.0659"), "each") == "$0.0659/each" and price_per(Decimal("3.34"), "") == "$3.34"

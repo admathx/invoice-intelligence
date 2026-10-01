@@ -16,6 +16,11 @@ only on evidence:
   A distributor bills an account under one name, so a different one on its
   invoice is someone else's account. A new distributor using a name not
   seen before says nothing: that is how a restaurant's names are learned.
+- this distributor has billed this restaurant before, and this name has a
+  word in it that no name the restaurant goes by has ("Harbor Pine Kitchen
+  & Bar" at Harbor & Pine Kitchen). A shorter name is an abbreviation; a
+  longer one is a different business, and one in another city was filed
+  here without a word.
 
 Held, a person deletes it or says it's theirs, after which that exact name
 on that distributor's invoices is theirs, whichever rule held it.
@@ -50,6 +55,18 @@ def same_name(a: str, b: str) -> bool:
     return SequenceMatcher(None, name_key(a), name_key(b)).ratio() >= MIN_SIMILARITY
 
 
+def adds_a_word(printed: str, names: list[str]) -> bool:
+    """Whether the printed name has a word that none of `names` has, nor
+    anything close enough to be one misread ("KITCHN")."""
+    known = {word for name in names for word in name_words(name)}
+    return any(
+        word not in known and not any(SequenceMatcher(None, word, other).ratio() >= MIN_SIMILARITY for other in known)
+        for word in name_words(printed)
+        # An initial is punctuation's doing ("H.P." for "HP"), not a word.
+        if len(word) > 1 or word.isdigit()
+    )
+
+
 def names_sibling(printed: str, own_name: str, sibling_names: list[str]) -> bool:
     """Whether the printed name is one of the owner's other restaurants and
     not this one: it has every word that tells that restaurant's name from
@@ -76,24 +93,20 @@ def is_elsewhere(
     `invoice_id` is the invoice itself, left out of its own history."""
     if not printed or not name_words(printed):
         return False
-    # The names this distributor's invoices here have carried: read without
-    # being held, or held and then kept by a person.
-    usual = (
-        db.execute(
-            select(Invoice.printed_customer, func.count())
-            .where(
-                Invoice.tenant_id == tenant.id,
-                Invoice.distributor_id == distributor_id,
-                Invoice.id != invoice_id,
-                Invoice.printed_customer.is_not(None),
-                Invoice.billed_elsewhere.is_(False),
-                Invoice.status != InvoiceStatus.failed,
-            )
-            .group_by(Invoice.printed_customer)
-        ).all()
-        if distributor_id is not None
-        else []
-    )
+    # The names invoices here have carried: read without being held, or
+    # held and then kept by a person. `usual` is this distributor's.
+    carried = db.execute(
+        select(Invoice.printed_customer, Invoice.distributor_id, func.count())
+        .where(
+            Invoice.tenant_id == tenant.id,
+            Invoice.id != invoice_id,
+            Invoice.printed_customer.is_not(None),
+            Invoice.billed_elsewhere.is_(False),
+            Invoice.status != InvoiceStatus.failed,
+        )
+        .group_by(Invoice.printed_customer, Invoice.distributor_id)
+    ).all()
+    usual = [(name, count) for name, theirs, count in carried if distributor_id is not None and theirs == distributor_id]
     # Exactly a name already theirs settles it, before anything else: an
     # owner's two restaurants on one distributor account are both billed
     # under one's name, and "It's ours" has to stick.
@@ -105,6 +118,8 @@ def is_elsewhere(
         )
         if names_sibling(printed, tenant.name, siblings):
             return True
-    if same_name(printed, tenant.name) or sum(count for _, count in usual) < MIN_HISTORY:
+    if sum(count for _, count in usual) < MIN_HISTORY:
         return False
-    return not any(same_name(printed, name) for name, _ in usual)
+    if adds_a_word(printed, [tenant.name, *(name for name, _, _ in carried)]):
+        return True
+    return not same_name(printed, tenant.name) and not any(same_name(printed, name) for name, _ in usual)

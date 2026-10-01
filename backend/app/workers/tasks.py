@@ -199,6 +199,11 @@ def process_invoice(invoice_id: str) -> None:
 
         distributor = db.scalar(select(Distributor).where(Distributor.slug == extracted.distributor))
         invoice.printed_distributor = (extracted.distributor_name or "").strip() or None
+        if distributor is not None and not business_distributors.prints_as(distributor.slug, invoice.printed_distributor):
+            # A name that resembles a big distributor's and isn't one of
+            # theirs: a vendor of its own, like any other the reader
+            # couldn't place.
+            distributor = db.scalar(select(Distributor).where(Distributor.slug == UNRECOGNIZED_SLUG))
         if distributor is None or distributor.slug == UNRECOGNIZED_SLUG:
             # A local vendor this business added before, recognized by the
             # name printed on it (app/business_distributors.py).
@@ -246,6 +251,13 @@ def process_invoice(invoice_id: str) -> None:
             # Its prices can't be placed in time until someone adds the date,
             # or corrects one that hasn't happened yet (the review screen
             # asks for it).
+            invoice.status = InvoiceStatus.needs_review
+        # Two tickets copied onto one sheet: a page can't be cut in two, so
+        # the first is read and the other isn't. Kept for a person, who is
+        # told to add the other one (the review screen says so): it came
+        # out Ready, and the second ticket was gone without a word.
+        invoice.shares_page = bool(extracted.shares_a_page)
+        if invoice.shares_page:
             invoice.status = InvoiceStatus.needs_review
 
         # Held, whatever its numbers say, when it isn't an invoice (a
@@ -358,6 +370,7 @@ def process_invoice(invoice_id: str) -> None:
             duplicate_of=invoice.duplicate_of_id,
             billed_to=invoice.printed_customer if invoice.billed_elsewhere else None,
             other_invoices_in_file=len(split_ids) or None,
+            another_invoice_on_its_page=True if invoice.shares_page else None,
             counted_as_credits=True if credited else None,
             line_count=len(extracted.line_items),
             extraction_model=invoice.extraction_model,

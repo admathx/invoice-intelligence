@@ -46,14 +46,14 @@ class PriceAlert(Base, TenantScoped):
 
     alert_type: Mapped[AlertType] = mapped_column(Enum(AlertType, name="alert_type"), nullable=False)
 
-    baseline_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
-    current_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    baseline_price: Mapped[Decimal] = mapped_column(Numeric(14, 6), nullable=False)
+    current_price: Mapped[Decimal] = mapped_column(Numeric(14, 6), nullable=False)
     pct_change: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
 
     window_start: Mapped[date] = mapped_column(Date, nullable=False)
     window_end: Mapped[date] = mapped_column(Date, nullable=False)
 
-    peer_median: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    peer_median: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True)
     peer_percentile: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
 
     status: Mapped[AlertStatus] = mapped_column(

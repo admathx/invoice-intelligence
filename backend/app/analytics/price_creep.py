@@ -111,6 +111,33 @@ def _highs_it_came_back_from(baseline: list[Decimal], recent: list[Decimal]) -> 
     ]
 
 
+# How many prices before the recent ones are looked through for a level the
+# price was cut from and has only come back to (see _back_where_it_was).
+RETURN_LOOKBACK = RECENT_WINDOW_SIZE + 2 * BASELINE_WINDOW_SIZE
+
+
+def _threshold(baseline_price: Decimal) -> Decimal:
+    """How far above `baseline_price` counts as an increase: the larger of
+    the percentage and the dollar floor (see the module docstring)."""
+    floor = min(MIN_ABS_CHANGE_USD, ABS_FLOOR_CAP_FRACTION * baseline_price)
+    return max(MIN_PCT_CHANGE * baseline_price, floor)
+
+
+def _back_where_it_was(earlier: list[Decimal], recent: list[Decimal], current_price: Decimal) -> bool:
+    """Whether the price has only returned to a level it held before and
+    was cut from. A price cut for a few weeks (a promotion) and then
+    restored puts the cheap weeks in the baseline, and the old price coming
+    back read as an 11% increase. It is one only once it is clearly above
+    what was paid before the cut. Several earlier prices, because one spike
+    is not a level; and a price that eased 2% and then climbed 7% was never
+    cut, so it is climbing."""
+    held = _highs_it_came_back_from(earlier, recent)
+    if len(held) < MIN_OBSERVATIONS_PER_WINDOW:
+        return False
+    level = statistics.median(held)
+    return current_price - level < _threshold(level)
+
+
 # How much stronger than the usual threshold a short history's trend must be
 # before it alerts with the medians short of it.
 SHORT_HISTORY_TREND_FACTOR = 2
@@ -126,9 +153,142 @@ def _trend(prices: list[Decimal]) -> Decimal:
     return statistics.median(slopes) * (len(prices) - 1)
 
 
+# How far back a slow rise is measured from, and how much more than the
+# usual threshold it has to come to (see _slow_move). Twice: what food costs
+# drifts by itself, and on the corpus proteins nobody raised the price of
+# were 5% dearer after six months.
+SLOW_SPAN_DAYS = 365
+SLOW_MOVE_FACTOR = 2
+
+
+@dataclass
+class _Move:
+    """An increase in one series of prices: from what, to what, over when."""
+
+    baseline_price: Decimal
+    current_price: Decimal
+    window_start: date
+    window_end: date
+    recent_observation_count: int
+    baseline_observation_count: int
+
+
+def _recent_move(points: list[tuple[date, Decimal]]) -> _Move | None:
+    """The increase the last few prices show over the ones just before
+    them, if they show one. `points` is one product from one distributor,
+    oldest first."""
+    recent = points[-RECENT_WINDOW_SIZE:]
+    baseline = points[-(RECENT_WINDOW_SIZE + BASELINE_WINDOW_SIZE) : -RECENT_WINDOW_SIZE]
+    short_history = len(baseline) < MIN_OBSERVATIONS_PER_WINDOW
+    if short_history:
+        # A short history (six or seven prices): the newest few against
+        # the ones before. Per distributor, a second distributor often has
+        # this few, and a 12% rise across six US Foods invoices went
+        # unflagged for want of eight. Each side still has the minimum.
+        recent = points[-MIN_OBSERVATIONS_PER_WINDOW:]
+        baseline = points[:-MIN_OBSERVATIONS_PER_WINDOW][-BASELINE_WINDOW_SIZE:]
+    if len(recent) < MIN_OBSERVATIONS_PER_WINDOW or len(baseline) < MIN_OBSERVATIONS_PER_WINDOW:
+        return None
+
+    recent_prices = [p for _, p in recent]
+    baseline_prices = [p for _, p in baseline]
+    current_price = statistics.median(recent_prices)
+    baseline_price = statistics.median(baseline_prices)
+    if baseline_price <= 0:
+        # A $0 baseline (e.g. a promo/free-case line) makes both a
+        # percentage move and the price-tiered floor below undefined —
+        # skip rather than divide by zero computing pct_change.
+        return None
+    # Not above where the price has already been and come back from:
+    # produce that swings a quarter either way from week to week
+    # (avocados, limes) isn't creeping when a run of dear weeks lands in
+    # the recent window. On a realistic series that opened and closed an
+    # alert eight times in fourteen weeks, each one an email. Twice or
+    # more, because a single spike says nothing about the usual range;
+    # and only levels it came back from, so a price that stepped up and
+    # stayed is still an increase for as long as it was.
+    left_behind = _highs_it_came_back_from(baseline_prices, recent_prices)
+    if len(left_behind) >= 2 and current_price <= max(left_behind):
+        return None
+
+    delta = current_price - baseline_price
+    threshold = _threshold(baseline_price)
+    # Increases only. A price coming down is good news, and every place
+    # alerts are shown ("Price alerts", the weekly email, the price-
+    # increase email) presents them as increases: a -15% alert read as
+    # "▲ -15%" under "price increases". Any open alert on a price that
+    # has since fallen back is resolved below, like any other.
+    if delta < threshold:
+        # On a short history the two medians sit only three prices apart,
+        # so a steady climb shows as a fraction of itself: mozzarella up
+        # 19% across six invoices measured 4.7%, and went unflagged. The
+        # trend across the whole history is looked at instead, and has to
+        # be clearly stronger (SHORT_HISTORY_TREND_FACTOR) to count.
+        if not short_history or delta <= 0:
+            return None
+        rise = _trend(baseline_prices + recent_prices)
+        if rise < SHORT_HISTORY_TREND_FACTOR * threshold:
+            return None
+
+    earlier = [p for _, p in points[: -len(recent)][-RETURN_LOOKBACK:]]
+    if _back_where_it_was(earlier, recent_prices, current_price):
+        return None
+
+    return _Move(baseline_price, current_price, baseline[0][0], recent[-1][0], len(recent), len(baseline))
+
+
+def _slow_move(points: list[tuple[date, Decimal]]) -> _Move | None:
+    """An increase too gradual for _recent_move to see: a price that goes
+    up 0.4% a week is 23% dearer in a year, and no run of thirteen
+    purchases ever shows more than 3% of it.
+
+    The last few prices against the oldest of the past year. Measured from
+    the last increase that _recent_move would have reported, when there is
+    one, so a step that was news in March isn't news again in September."""
+    short = RECENT_WINDOW_SIZE + BASELINE_WINDOW_SIZE
+    latest = points[-1][0]
+    span = [point for point in points if (latest - point[0]).days <= SLOW_SPAN_DAYS]
+    earlier = span[:-short]  # older than anything _recent_move compares
+    if len(earlier) < MIN_OBSERVATIONS_PER_WINDOW:
+        return None
+    recent = span[-RECENT_WINDOW_SIZE:]
+    start = earlier[:BASELINE_WINDOW_SIZE]
+    recent_prices = [p for _, p in recent]
+    current_price = statistics.median(recent_prices)
+    baseline_price = statistics.median([p for _, p in start])
+    first = len(points) - len(span)
+    if baseline_price <= 0 or current_price - baseline_price < SLOW_MOVE_FACTOR * _threshold(baseline_price):
+        return None
+    # As in _recent_move: a level it has been at and come back from, twice
+    # or more, is its usual range and not a rise; and a price that has only
+    # returned to what it was before a cut hasn't risen. The prices just
+    # before the year are looked at too: when the year's oldest prices are
+    # a promotion's, the old price coming back would otherwise be news a
+    # year after it did.
+    earlier = [p for _, p in points[max(0, first - RETURN_LOOKBACK) : -RECENT_WINDOW_SIZE]]
+    left_behind = _highs_it_came_back_from(earlier, recent_prices)
+    if len(left_behind) >= 2 and current_price <= max(left_behind):
+        return None
+    if _back_where_it_was(earlier, recent_prices, current_price):
+        return None
+    window_start, since = start[0][0], len(start)
+    # Everything _recent_move reads: its recent prices and the ones it
+    # looks back through.
+    reach = RECENT_WINDOW_SIZE + RETURN_LOOKBACK
+    for end in range(len(points) - 1, first + short, -1):
+        told = _recent_move(points[max(0, end - reach) : end])
+        if told is not None:
+            baseline_price, window_start, since = told.current_price, told.window_end, told.recent_observation_count
+            break
+    if current_price - baseline_price < SLOW_MOVE_FACTOR * _threshold(baseline_price):
+        return None
+    return _Move(baseline_price, current_price, window_start, recent[-1][0], len(recent), since)
+
+
 def detect_price_creep(db: Session, tenant_id: uuid.UUID) -> list[CreepFinding]:
     """One finding per (tenant, canonical_sku, distributor) whose recent-vs-
-    baseline median move clears the larger of the two thresholds above.
+    baseline median move clears the larger of the two thresholds above, or
+    whose price has risen that far over the past year by smaller steps.
     Read-only — does not write price_alerts (see upsert_creep_alerts for that).
 
     Per distributor: an increase is one distributor charging more. Pooled,
@@ -162,71 +322,22 @@ def detect_price_creep(db: Session, tenant_id: uuid.UUID) -> list[CreepFinding]:
 
     findings: list[CreepFinding] = []
     for (sku_id, distributor_id), points in by_series.items():
-        recent = points[-RECENT_WINDOW_SIZE:]
-        baseline = points[-(RECENT_WINDOW_SIZE + BASELINE_WINDOW_SIZE) : -RECENT_WINDOW_SIZE]
-        short_history = len(baseline) < MIN_OBSERVATIONS_PER_WINDOW
-        if short_history:
-            # A short history (six or seven prices): the newest few against
-            # the ones before. Per distributor, a second distributor often has
-            # this few, and a 12% rise across six US Foods invoices went
-            # unflagged for want of eight. Each side still has the minimum.
-            recent = points[-MIN_OBSERVATIONS_PER_WINDOW:]
-            baseline = points[:-MIN_OBSERVATIONS_PER_WINDOW][-BASELINE_WINDOW_SIZE:]
-        if len(recent) < MIN_OBSERVATIONS_PER_WINDOW or len(baseline) < MIN_OBSERVATIONS_PER_WINDOW:
+        move = _recent_move(points) or _slow_move(points)
+        if move is None:
             continue
-
-        recent_prices = [p for _, p in recent]
-        baseline_prices = [p for _, p in baseline]
-        current_price = statistics.median(recent_prices)
-        baseline_price = statistics.median(baseline_prices)
-        if baseline_price <= 0:
-            # A $0 baseline (e.g. a promo/free-case line) makes both a
-            # percentage move and the price-tiered floor below undefined —
-            # skip rather than divide by zero computing pct_change.
-            continue
-        # Not above where the price has already been and come back from:
-        # produce that swings a quarter either way from week to week
-        # (avocados, limes) isn't creeping when a run of dear weeks lands in
-        # the recent window. On a realistic series that opened and closed an
-        # alert eight times in fourteen weeks, each one an email. Twice or
-        # more, because a single spike says nothing about the usual range;
-        # and only levels it came back from, so a price that stepped up and
-        # stayed is still an increase for as long as it was.
-        left_behind = _highs_it_came_back_from(baseline_prices, recent_prices)
-        if len(left_behind) >= 2 and current_price <= max(left_behind):
-            continue
-
-        delta = current_price - baseline_price
-        floor = min(MIN_ABS_CHANGE_USD, ABS_FLOOR_CAP_FRACTION * baseline_price)
-        threshold = max(MIN_PCT_CHANGE * baseline_price, floor)
-        # Increases only. A price coming down is good news, and every place
-        # alerts are shown ("Price alerts", the weekly email, the price-
-        # increase email) presents them as increases: a -15% alert read as
-        # "▲ -15%" under "price increases". Any open alert on a price that
-        # has since fallen back is resolved below, like any other.
-        if delta < threshold:
-            # On a short history the two medians sit only three prices apart,
-            # so a steady climb shows as a fraction of itself: mozzarella up
-            # 19% across six invoices measured 4.7%, and went unflagged. The
-            # trend across the whole history is looked at instead, and has to
-            # be clearly stronger (SHORT_HISTORY_TREND_FACTOR) to count.
-            if not short_history or delta <= 0:
-                continue
-            rise = _trend(baseline_prices + recent_prices)
-            if rise < SHORT_HISTORY_TREND_FACTOR * threshold:
-                continue
-
         findings.append(
             CreepFinding(
                 canonical_sku_id=sku_id,
                 distributor_id=distributor_id,
-                baseline_price=baseline_price,
-                current_price=current_price,
-                pct_change=(delta / baseline_price).quantize(Decimal("0.0001")),
-                window_start=baseline[0][0],
-                window_end=recent[-1][0],
-                recent_observation_count=len(recent),
-                baseline_observation_count=len(baseline),
+                baseline_price=move.baseline_price,
+                current_price=move.current_price,
+                pct_change=((move.current_price - move.baseline_price) / move.baseline_price).quantize(
+                    Decimal("0.0001")
+                ),
+                window_start=move.window_start,
+                window_end=move.window_end,
+                recent_observation_count=move.recent_observation_count,
+                baseline_observation_count=move.baseline_observation_count,
             )
         )
     return findings

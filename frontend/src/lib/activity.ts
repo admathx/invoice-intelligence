@@ -77,6 +77,8 @@ export function describeEvent(event: AuditEvent): string {
       if (d.billed_to) return `read ${show(d.line_count)} items; it's made out to ${show(d.billed_to)}, not this restaurant`;
       if (typeof d.other_invoices_in_file === "number")
         return `read ${show(d.line_count)} items; the file held ${d.other_invoices_in_file} more invoice${d.other_invoices_in_file === 1 ? "" : "s"}, added on ${d.other_invoices_in_file === 1 ? "its" : "their"} own`;
+      if (d.another_invoice_on_its_page)
+        return `read ${show(d.line_count)} items; its page also shows another invoice, which wasn't read`;
       if (d.counted_as_credits)
         return `read ${show(d.line_count)} items; a credit memo printed with positive amounts, so they count as credits`;
       return d.status === "extracted"

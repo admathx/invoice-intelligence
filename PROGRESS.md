@@ -3009,3 +3009,88 @@ alone; rebills numbered "R1" or with a letter not linked; a bounce's
 returned invoice taken in; a tagged forwarding address (`+sysco`) not
 recognized; a zip inside a zip and a forward five deep not opened; a
 return from a promotion alerts for two purchases.
+
+## The ten things the fifth set found, fixed
+
+Each is in the app now, with tests. The whole set was replayed afterwards:
+258 of 265 known outcomes as expected (unchanged: no new hold on anything
+that was right), 164 of 177 find-out outcomes as wanted (was 156), and
+still nothing misread that came out Ready.
+
+1. **Slow inflation.** A price rising 0.4% a week is 23% dearer in a year
+   and never showed 5% across thirteen purchases. The detector now also
+   compares the latest prices with the oldest of the past year, at twice the
+   usual bar (10%), measured from the last increase it would already have
+   reported so a step in March isn't news again in September. Twice the
+   bar because the corpus's proteins drift 5% in six months by themselves:
+   at the ordinary bar that was three false alerts on the gate.
+2. **Two tickets on one sheet.** The reader now says when a page shows
+   this invoice and another (`shares_a_page`); the first is read and kept
+   for a person, who is told to add the other. Confirmed on 61 re-read
+   documents ($2.52): only the two-ticket page was flagged, and 57 of 61
+   read identically.
+3. **Look-alike distributors.** A printed name that borrows a big
+   distributor's ("Gordon's Restaurant Supply") and isn't one of theirs is
+   an unknown vendor, whatever the reader called it. A name that doesn't
+   resemble theirs (an operating company) is left where the reader put it.
+4. **Rebill numbers.** "R1", "REV2" and "-RB" are reissues; a number with
+   one letter added is one when its total is the original's ("904718243A"),
+   and a split shipment when it isn't. Two rebills of one original are
+   copies of each other.
+5. **Bounces.** A delivery-failure notice is recognized by who sent it
+   (MAILER-DAEMON, postmaster, an empty return path), not only by the
+   standard report format; automatic replies too. Machine-sent invoices
+   ("auto-generated") are still taken.
+6. **Tagged addresses.** `harbor-and-pine+sysco@` reaches Harbor & Pine.
+7. **Nesting.** Zips are opened three deep, sharing one size limit;
+   forwarded messages are followed ten deep.
+8. **Look-alike customers.** With a distributor that has billed the
+   restaurant before, a name with a word added ("Harbor Pine Kitchen &
+   Bar") is held. Shorter names and misprints are still the restaurant's.
+9. **Back from a promotion.** A price that returns to a level it held
+   before a cut is not an increase until it is clearly above that level.
+10. **Fractions of a cent.** Prices per unit are kept to six decimal
+    places (migration 0025), and shown that way on screen and in emails:
+    a napkin at $0.012477 was $0.0125, where a 5% rise could round to 4%.
+
+Also: a pack written "4x5 LB" is read as "4/5 LB" (a quarter of one
+product's invoices in the year set were unpriced).
+
+The bug check on these found seven problems in the new code, all fixed
+before the replay: a slow-rise alert a year after any promotion; operating
+companies of the big distributors held on every invoice; the shared-page
+note hidden when the numbers also failed; a second rebill not linked to
+the first; emails printing sub-cent prices to the cent; a wrong activity
+line; and the detector copying a product's whole history at each step.
+Writing the promotion test then showed the first version of fix 9 let an
+eight-week promotion through, and it was rewritten.
+
+Price-alert gate after the changes: 95.1% recall, no false alerts.
+
+### By set, after the fixes
+
+| Set | Documents | As expected | Notes |
+|---|---|---|---|
+| A–D, F | 32 | 32 of 32 | every amount read right |
+| G, L, M | 48 | 48 of 48 | |
+| H, O | 40 | 40 of 40 | every planned alert right |
+| N | 32 | 32 of 32 | was 30 |
+| E | 20 | 20 of 20 | 9 misread, all held |
+| J, P | 31 | 29 of 31 | two hard documents misread and held |
+| Q | 22 | 19 of 22 | two hard photos misread and held; one mistake in the set |
+| R | 37 | 35 of 37 | two now accepted, their invoices not yet read |
+| S | 24 | 20 of 24 | four layouts held, none wrong |
+| T | 30 | 27 of 30 | the rest are the set's expectations, not the app |
+| U | 74 | 74 of 74 | alerts right at the end and at the time |
+| V | 20 | 20 of 20 | 9 wrong suggestions and 28 unmatched of 124 lines |
+| W | 32 | 26 of 32 | the six read correctly where a hold was guessed |
+
+Open: matching suggestions between near-identical products (set V); the
+four layouts that are held and not read (set S); two emailed invoices
+accepted by the fixes and not yet read (about six cents); one photo of two
+pages side by side that read 39 of its 40 rows on the re-read and was held.
+
+The runner grades a planned change two ways now: an alert open at the end
+(`expected_alert`) and one that would have opened at the time
+(`alert_at_the_time`), since an increase halfway through a year has closed
+by the end. The brief is at Version 6.

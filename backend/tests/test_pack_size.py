@@ -271,7 +271,7 @@ def test_a_35_lb_jug_of_oil_is_priced_per_gallon_through_its_weight_per_gallon()
 def test_a_can_of_ketchup_is_priced_per_gallon_through_its_weight():
     """6 x #10 (110 oz net) is 41.25 lb; at 9.5 lb/gal, 4.342 gal."""
     _, price = _apply_pack_size(parse_pack_size("6/#10 CAN"), Decimal("1"), Decimal("41.32"), "CS", _product(BaseUom.gal, Decimal("9.5")))
-    assert price == Decimal("9.5161")
+    assert price == Decimal("9.516121")
 
 
 def test_gallons_are_priced_per_pound_for_a_weight_product_with_a_density():
@@ -478,3 +478,16 @@ def test_a_line_billed_by_the_pound_is_priced_per_pound_whatever_its_pack_says(p
     assert (qty, price) == (Decimal("61.24"), Decimal("4.8900"))
     # Billed by the case, an unreadable pack still says nothing.
     assert normalize_price(pack, Decimal("2"), Decimal("140.00"), "CS", _product(BaseUom.lb)) == (None, None)
+
+
+@pytest.mark.parametrize("written", ["4x5 LB", "4X5LB", "4 x 5 LB", "4×5 LB"])
+def test_a_pack_written_with_an_x_is_the_same_pack(written):
+    """One pack written four ways in turn left a quarter of its invoices
+    unpriced: "4x5 LB" wasn't read."""
+    assert parse_pack_size(written) == parse_pack_size("4/5 LB")
+
+
+def test_a_dash_between_two_numbers_is_not_a_pack_of_packs():
+    assert parse_pack_size("6x#10 CAN") == parse_pack_size("6/#10 CAN")
+    with pytest.raises(PackSizeParseError):
+        parse_pack_size("6-5 LB")  # six of five pounds, or five to six pounds?

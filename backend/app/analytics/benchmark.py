@@ -29,7 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.enums import VolumeTier
-from app.models.price_observation import PriceObservation
+from app.models.price_observation import UNIT_PRICE_PLACES, PriceObservation
 from app.models.tenant import Tenant, account_key_column
 
 _THRESHOLDS_PATH = Path(__file__).resolve().parents[3] / "validation" / "thresholds.yaml"
@@ -87,7 +87,7 @@ def _percentile(sorted_values: list[Decimal], pct: Decimal) -> Decimal:
     lo = int(rank)
     hi = min(lo + 1, n - 1)
     frac = rank - lo
-    return (sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * frac).quantize(Decimal("0.0001"))
+    return (sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * frac).quantize(UNIT_PRICE_PLACES)
 
 
 def _percentile_rank(sorted_values: list[Decimal], value: Decimal) -> Decimal:
@@ -108,7 +108,7 @@ def _account_price(prices: list[Decimal]) -> Decimal:
     negotiation sheet's history target use it — one spot buy or promo price
     shouldn't move what this business is recorded as paying.
     """
-    return statistics.median(prices).quantize(Decimal("0.0001"))  # median sorts internally
+    return statistics.median(prices).quantize(UNIT_PRICE_PLACES)  # median sorts internally
 
 
 def _cells(

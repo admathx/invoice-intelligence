@@ -262,6 +262,9 @@ def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
     if not raw_pack_size:
         raise PackSizeParseError(f"empty or missing pack size: {raw_pack_size!r}")
     text = raw_pack_size.strip().upper()
+    # "4x5 LB" is "4/5 LB": four of five pounds. (A dash is not: "2-5 LB"
+    # is as likely a range of weights.)
+    text = re.sub(r"^(\d+)\s*[X×]\s*(?=[#\d.])", r"\1/", text)
     # "50#" and "4/5#" are pounds. But "6/10#" is as likely six #10 cans (the
     # usual can) as six 10 lb bags, so that stays unreadable.
     counted_can = re.match(r"^\d+\s*/\s*(10)\s*#$", text)

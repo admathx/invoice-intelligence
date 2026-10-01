@@ -26,7 +26,7 @@ from app.ingest.render import (
     tile_tops,
 )
 from app.main import app
-from app.models import Account, Invoice, InvoiceLineItem, Tenant
+from app.models import Account, Invoice, InvoiceLineItem, PriceObservation, Tenant
 from app.models.enums import InvoiceStatus, ReviewStatus, VolumeTier
 from app.storage import page_names, read_uri
 from app.workers.tasks import process_invoice
@@ -549,7 +549,8 @@ def test_a_credit_memo_with_its_invoices_number_is_not_a_copy_of_it(db_session, 
 @pytest.mark.parametrize(
     "number, base",
     [("904718271-R", "904718271"), ("904718271 REV", "904718271"), ("0088214/CORR", "88214"), ("904718271", None),
-     ("INV-4410", None), ("904718271-A", None), ("R", None)],  # fmt: skip
+     ("INV-4410", None), ("904718271-A", None), ("R", None), ("904718242 R1", "904718242"), ("904718242-REV2", "904718242"),
+     ("904718242REV", "904718242"), ("904718242R2", "904718242"), ("904718242R", None), ("INV-2026-R12", "INV2026")],  # fmt: skip
 )
 def test_a_rebills_number_names_the_invoice_it_reissues(number, base):
     assert reissue_of(number) == base
@@ -654,3 +655,153 @@ def test_a_reading_that_doesnt_account_for_every_page_is_never_one_ready_invoice
     assert db_session.get(Invoice, invoice_id).status == InvoiceStatus.failed
     assert len(page_names(invoice_id)) == 5  # every page kept for a person
     assert db_session.scalars(select(Invoice).where(Invoice.split_from_id == invoice_id)).all() == []
+
+
+# --- What the fifth test set showed ------------------------------------------
+
+
+@pytest.mark.parametrize("number", ["WA-0070A", "WA-0070-A", "WA-0070 B", "WA-0070R"])
+def test_a_rebill_numbered_with_a_letter_is_held_when_its_total_is_the_originals(db_session, tenant, monkeypatch, number):
+    """"904718243A", the same items and total as 904718243, came out Ready
+    beside it."""
+    original = _read(monkeypatch, tenant, _pdf(["original"]), _numbered(70))
+    rebill = _read(monkeypatch, tenant, _pdf(["rebill"]), _numbered(70, invoice_number=number))
+    db_session.expire_all()
+    assert db_session.get(Invoice, rebill).duplicate_of_id == original
+    assert _detail(tenant, rebill)["duplicate_is_reissue"] is True
+
+
+def test_the_original_arriving_after_its_lettered_rebill_is_held_too(db_session, tenant, monkeypatch):
+    rebill = _read(monkeypatch, tenant, _pdf(["rebill first"]), _numbered(71, invoice_number="WA-0071A"))
+    original = _read(monkeypatch, tenant, _pdf(["original, found later"]), _numbered(71))
+    db_session.expire_all()
+    assert db_session.get(Invoice, rebill).duplicate_of_id is None
+    assert db_session.get(Invoice, original).duplicate_of_id == rebill
+
+
+def test_the_parts_of_a_split_shipment_are_separate_invoices(db_session, tenant, monkeypatch):
+    """Numbered like a lettered rebill, with their own items and totals."""
+    line = FAKE_PAYLOAD.line_items[0].model_copy(update={"quantity": "1", "unit_price": "10.00", "extended_price": "10.00"})
+    part = {"line_items": [line], "subtotal": "10.00", "tax": "0.00", "total": "10.00"}
+    first = _read(monkeypatch, tenant, _pdf(["all of it"]), _numbered(72))
+    a = _read(monkeypatch, tenant, _pdf(["part a"]), _numbered(72, invoice_number="WA-0072-A", **part))
+    b = _read(monkeypatch, tenant, _pdf(["part b"]), _numbered(72, invoice_number="WA-0072-B", **part))
+    db_session.expire_all()
+    assert [db_session.get(Invoice, i).duplicate_of_id for i in (first, a, b)] == [None, None, None]
+
+
+def test_a_name_that_only_resembles_a_big_distributors_is_not_that_distributor(db_session, tenant, monkeypatch):
+    """The reader took "Gordon's Restaurant Supply" for Gordon Food Service:
+    another company's item codes, matched against Gordon's, and Ready."""
+    from app.business_distributors import prints_as
+    from app.models import Distributor
+    from app.models.distributor import UNRECOGNIZED_SLUG
+
+    assert prints_as("gordon", "Gordon Food Service, Inc.") and prints_as("gordon", "GFS Marketplace")
+    assert prints_as("sysco", "Sysco Central Florida, Inc.") and prints_as("sysco", "Sysco Cash & Carry")
+    assert prints_as("us_foods", "US Foods, Inc. - Charlotte Division") and prints_as("us_foods", "U.S. Foodservice")
+    assert prints_as("pfg", "Performance Foodservice - Virginia") and prints_as("pfg", "Performance Food Group")
+    assert not prints_as("gordon", "Gordon's Restaurant Supply") and not prints_as("gordon", "Gordon Restaurant Depot")
+    assert not prints_as("pfg", "Performance Food Mart")
+    assert not prints_as("us_foods", "US Food Service Supply Co.")
+    # Only a name that borrows theirs is doubted: an operating company the
+    # reader placed (Reinhart is PFG) is left where it was put, as is an
+    # invoice with no name printed, and any vendor that isn't one of these.
+    assert prints_as("pfg", "Reinhart Foodservice") and prints_as("us_foods", "Columbus Foods")
+    assert prints_as("gordon", None) and prints_as("gordon", "  ") and prints_as("other", "Gordon's Anything")
+
+    lookalike = _read(
+        monkeypatch, tenant, _pdf(["lookalike"]), _numbered(73, distributor="gordon", distributor_name="Gordon's Restaurant Supply")
+    )
+    real = _read(
+        monkeypatch, tenant, _pdf(["real"]), _numbered(74, distributor="gordon", distributor_name="Gordon Food Service, Inc.")
+    )
+    db_session.expire_all()
+    slug = lambda invoice_id: db_session.get(Distributor, db_session.get(Invoice, invoice_id).distributor_id).slug  # noqa: E731
+    assert slug(lookalike) == UNRECOGNIZED_SLUG and slug(real) == "gordon"
+    assert db_session.get(Invoice, lookalike).status == InvoiceStatus.needs_review
+    assert "Choose the distributor." in _detail(tenant, lookalike)["check"]["reasons"]
+    lines = db_session.scalars(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == lookalike)).all()
+    assert all(line.canonical_sku_id is None for line in lines)
+
+
+def test_a_name_with_a_word_more_than_the_restaurants_is_another_business(db_session, tenant, monkeypatch):
+    """"Harbor Pine Kitchen & Bar", in another city, was filed at Harbor &
+    Pine Kitchen: every word of the restaurant's name is in it."""
+    from app.billed_to import adds_a_word
+
+    assert adds_a_word("Harbor Pine Kitchen & Bar", ["Harbor & Pine Kitchen"])
+    assert adds_a_word("Harbor & Pine Kitchen #2", ["Harbor & Pine Kitchen"])
+    assert not adds_a_word("HARBOR & PINE", ["Harbor & Pine Kitchen"])  # shorter
+    assert not adds_a_word("HARBOR & PINE KITCHN LLC", ["Harbor & Pine Kitchen"])  # misread
+    assert not adds_a_word("H.P. Hospitality", ["HP Hospitality LLC"])
+    assert not adds_a_word("Harbor & Pine Kitchen", ["Harbor & Pine", "HP Hospitality Kitchen Group"])
+
+    longer = f"{tenant.name} & Bar"
+    # A distributor's first invoices say nothing: that is how its name for them is learned.
+    first = _read(monkeypatch, tenant, _pdf(["first"]), _numbered(80, distributor="us_foods", customer_name=longer))
+    for n in range(MIN_HISTORY):
+        _read(monkeypatch, tenant, _pdf([f"usual {n}"]), _numbered(81 + n, customer_name=tenant.name.upper()))
+    shorter = _read(monkeypatch, tenant, _pdf(["shorter"]), _numbered(85, customer_name=tenant.name.split()[0]))
+    other = _read(monkeypatch, tenant, _pdf(["other"]), _numbered(86, customer_name=f"{tenant.name} Catering"))
+    db_session.expire_all()
+    held = [db_session.get(Invoice, i).billed_elsewhere for i in (first, shorter, other)]
+    assert held == [False, False, True]
+    assert any("made out to" in reason for reason in _detail(tenant, other)["check"]["reasons"])
+    # A name another distributor's invoices here already carry is one of theirs.
+    known = _read(monkeypatch, tenant, _pdf(["known"]), _numbered(87, customer_name=longer))
+    db_session.expire_all()
+    assert db_session.get(Invoice, known).billed_elsewhere is False
+
+
+def test_an_invoice_sharing_its_page_with_another_is_kept_for_a_person(db_session, tenant, monkeypatch):
+    """Two half-page tickets copied onto one sheet: the top one was read,
+    Ready, and the other was gone without a word."""
+    invoice_id = _read(monkeypatch, tenant, _pdf(["two tickets"]), _numbered(90, shares_a_page=True))
+    db_session.expire_all()
+    invoice = db_session.get(Invoice, invoice_id)
+    assert invoice.shares_page and invoice.status == InvoiceStatus.needs_review
+    assert db_session.scalars(select(PriceObservation).where(PriceObservation.tenant_id == tenant.id)).all() == []
+    detail = _detail(tenant, invoice_id)
+    assert detail["shares_page"] is True and "another invoice, which wasn't read" in detail["split_note"]
+    # Nothing is wrong with the one that was read: it can be confirmed.
+    assert detail["check"]["passes"] is True
+    resp = TestClient(app).post(f"/invoices/{invoice_id}/confirm", params={"tenant_id": str(tenant.id)})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "confirmed"
+
+    ordinary = _read(monkeypatch, tenant, _pdf(["one ticket"]), _numbered(91))
+    db_session.expire_all()
+    assert db_session.get(Invoice, ordinary).status == InvoiceStatus.extracted
+    assert _detail(tenant, ordinary)["split_note"] is None
+
+
+def test_a_unit_price_under_a_hundredth_of_a_cent_is_not_zero():
+    """A four-cent case of 1,000 came to $0.0000 each."""
+    from decimal import Decimal
+
+    from app.models.enums import BaseUom
+    from app.normalize.matcher import _apply_pack_size
+    from app.normalize.pack_size import parse_pack_size
+
+    from test_pack_size import _product
+
+    _, price = _apply_pack_size(parse_pack_size("1000 CT"), Decimal("1"), Decimal("0.04"), "CS", _product(BaseUom.each))
+    assert price == Decimal("0.000040")
+    _, price = _apply_pack_size(parse_pack_size("3000 CT"), Decimal("1"), Decimal("37.43"), "CS", _product(BaseUom.each))
+    assert price == Decimal("0.012477")
+
+
+def test_two_rebills_of_one_invoice_are_copies_of_each_other(db_session, tenant, monkeypatch):
+    """With the original deleted and "R1" in its place, "R2" came out Ready
+    beside it."""
+    original = _read(monkeypatch, tenant, _pdf(["original"]), _numbered(75))
+    first = _read(monkeypatch, tenant, _pdf(["rebill"]), _numbered(75, invoice_number="WA-0075 R1"))
+    assert TestClient(app).delete(f"/invoices/{original}", params={"tenant_id": str(tenant.id)}).status_code == 204
+    second = _read(monkeypatch, tenant, _pdf(["second rebill"]), _numbered(75, invoice_number="WA-0075 R2"))
+    # Not every invoice with no rebill suffix is a copy of every other.
+    unrelated = _read(monkeypatch, tenant, _pdf(["unrelated"]), _numbered(76))
+    db_session.expire_all()
+    assert db_session.get(Invoice, first).duplicate_of_id is None
+    assert db_session.get(Invoice, second).duplicate_of_id == first
+    assert db_session.get(Invoice, unrelated).duplicate_of_id is None

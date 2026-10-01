@@ -70,6 +70,7 @@ export type InvoiceDetail = {
   billed_elsewhere: boolean;
   // Said when the file held more than one invoice.
   split_note: string | null;
+  shares_page: boolean;
 };
 
 const DOCUMENT_LABEL: Record<string, string> = {
@@ -367,7 +368,11 @@ export default function InvoiceReview({
         </p>
       )}
 
-      {invoice.split_note && <p className="mb-3 text-sm text-gray-600">{invoice.split_note}</p>}
+      {invoice.split_note && (
+        <p className={`mb-3 text-sm ${invoice.shares_page && editable ? "font-medium text-amber-800" : "text-gray-600"}`}>
+          {invoice.split_note}
+        </p>
+      )}
 
       {editable && (
         <div
@@ -390,6 +395,8 @@ export default function InvoiceReview({
                   ? `This is made out to ${invoice.printed_customer ?? "another restaurant"}, which doesn't look like this restaurant, so nothing on it is used.`
                   : invoice.status === "failed"
                   ? "We couldn't read this invoice. Type in its items from the picture, then save."
+                  : invoice.check.passes && invoice.shares_page
+                    ? "This one adds up. Add the other invoice on its page, then confirm this one to start using its prices."
                   : invoice.check.passes
                     ? "Everything adds up now. Confirm the invoice to start using its prices."
                     : "Some numbers on this invoice don't add up, so its prices aren't being used yet."}

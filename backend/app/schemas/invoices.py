@@ -64,6 +64,8 @@ class InvoiceOut(BaseModel):
     billed_elsewhere: bool = False
     # The invoice whose file this one came out of (app/splitting.py).
     split_from_id: uuid.UUID | None = None
+    # Its page also shows another invoice, which wasn't read.
+    shares_page: bool = False
 
 
 class InvoiceCheckOut(BaseModel):

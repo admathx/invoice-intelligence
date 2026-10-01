@@ -98,3 +98,20 @@ def test_a_set_is_checked_before_anything_is_read(tmp_path):
     ):
         assert expected in problems, (expected, problems)
     assert "W-01" not in problems  # "Needs a look or Rejected" is an outcome it knows
+
+
+def test_an_increase_that_closed_before_the_end_still_alerted_at_the_time():
+    """A step in March has closed by December. Graded only on what is open
+    at the end, the plan called that a miss."""
+    from datetime import date, timedelta
+    from decimal import Decimal
+
+    from validation.test_set import alerted_at_some_point
+
+    def weekly(prices):
+        return [(date(2026, 1, 5) + timedelta(weeks=week), Decimal(price)) for week, price in enumerate(prices)]
+
+    assert alerted_at_some_point(weekly(["5.00"] * 10 + ["5.60"] * 30))
+    assert not alerted_at_some_point(weekly(["5.00"] * 40))
+    assert not alerted_at_some_point(weekly(["5.00"] * 10 + ["4.40"] * 5 + ["5.00"] * 25))  # a promotion
+    assert not alerted_at_some_point([])

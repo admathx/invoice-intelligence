@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.models.canonical_sku import CanonicalSku
 from app.models.enums import BaseUom, ReviewStatus
+from app.models.price_observation import UNIT_PRICE_PLACES
 from app.models.sku_alias import SkuAlias
 from app.models.tenant import Tenant, account_key_column
 from app.normalize.description_expansion import description_similarity, normalize_for_embedding
@@ -283,9 +284,9 @@ def _apply_pack_size(
         # One billed unit, in the pack's unit: 1 for LB against pounds, a
         # quarter for a line billed per QT against gallons.
         per_billed = billed_unit_scale(uom) * per_pack_unit
-        return quantity * per_billed, (unit_price / per_billed).quantize(Decimal("0.0001"))
+        return quantity * per_billed, (unit_price / per_billed).quantize(UNIT_PRICE_PLACES)
     base_units = pack.base_units_per_case * per_pack_unit
-    return quantity * base_units, (unit_price / base_units).quantize(Decimal("0.0001"))
+    return quantity * base_units, (unit_price / base_units).quantize(UNIT_PRICE_PLACES)
 
 
 def _unit_without_a_product(pack: ParsedPackSize, candidate: CanonicalSku | None) -> BaseUom | None:

@@ -14,6 +14,9 @@ describe("format", () => {
     expect(unitPrice("18.0618")).toBe("$18.06");
     expect(unitPrice("0.6656")).toBe("$0.6656");
     expect(unitPrice("0.5000")).toBe("$0.50");
+    expect(unitPrice("0.012477")).toBe("$0.0125");
+    expect(unitPrice("0.004167")).toBe("$0.004167");
+    expect(unitPrice("0.000040")).toBe("$0.00004");
   });
 
   it("drops padding zeros from quantities", () => {

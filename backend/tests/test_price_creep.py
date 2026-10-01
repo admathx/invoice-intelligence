@@ -287,8 +287,8 @@ def test_six_steady_invoices_or_five_of_anything_raise_nothing(db_session, tenan
 # --- What the fourth test set showed -----------------------------------------
 
 
-def _series(db, tenant, sku, distributor, prices: list[str]) -> list[PriceAlert]:
-    for week, price in enumerate(prices):
+def _series(db, tenant, sku, distributor, prices: list[str], first_week: int = 0) -> list[PriceAlert]:
+    for week, price in enumerate(prices, start=first_week):
         _add_observation(db, tenant, sku, distributor, AS_OF + timedelta(weeks=week), price)
     db.commit()
     return upsert_creep_alerts(db, tenant.id)
@@ -334,3 +334,77 @@ def test_two_odd_prices_in_a_short_history_are_not_a_trend(db_session, tenant, c
 def test_a_small_rise_across_six_invoices_waits_for_more(db_session, tenant, canonical_sku, distributor):
     prices = ["0.0659", "0.0652", "0.0685", "0.0684", "0.069", "0.071"]
     assert _series(db_session, tenant, canonical_sku, distributor, prices) == []
+
+
+# --- What the fifth test set showed ------------------------------------------
+
+
+def _weekly(start: float, weekly_rise: float, weeks: int) -> list[str]:
+    return [f"{start * (1 + weekly_rise) ** week:.4f}" for week in range(weeks)]
+
+
+def test_a_price_rising_a_little_every_week_is_caught_over_the_year(db_session, tenant, canonical_sku, distributor):
+    """0.4% a week is 23% in a year, and no thirteen purchases in a row show
+    more than 3% of it: twelve products rose that way and none ever alerted."""
+    prices = _weekly(2.00, 0.004, 52)
+    # Not yet at half a year: 7% is what food does by itself.
+    assert _series(db_session, tenant, canonical_sku, distributor, prices[:22]) == []
+    alerts = _series(db_session, tenant, canonical_sku, distributor, prices[22:], first_week=22)
+    assert len(alerts) == 1
+    assert alerts[0].pct_change > Decimal("0.15") and alerts[0].window_start == AS_OF
+
+
+def test_a_step_that_was_news_at_the_time_is_not_news_again_later(db_session, tenant, canonical_sku, distributor):
+    """Up 12% in one go, then steady for months: an alert when it happened,
+    and not another for being 12% above last year."""
+    assert len(_series(db_session, tenant, canonical_sku, distributor, ["5.00"] * 10 + ["5.60"] * 6)) == 1
+    assert _series(db_session, tenant, canonical_sku, distributor, ["5.60"] * 20, first_week=16) == []
+
+
+def test_a_slow_rise_after_a_step_is_measured_from_the_step(db_session, tenant, canonical_sku, distributor):
+    prices = ["5.00"] * 10 + ["5.60"] * 14 + _weekly(5.60, 0.004, 30)
+    alerts = _series(db_session, tenant, canonical_sku, distributor, prices)
+    assert len(alerts) == 1
+    # From $5.60, not from $5.00.
+    assert alerts[0].baseline_price == Decimal("5.60") and alerts[0].pct_change < Decimal("0.15")
+
+
+@pytest.mark.parametrize("weeks_back", range(1, 9))
+def test_a_price_back_from_a_promotion_is_not_an_increase(db_session, tenant, canonical_sku, distributor, weeks_back):
+    """Napkins cut 10% for six weeks and then restored read as an 11%
+    increase, for two purchases."""
+    prices = ["37.43"] * 20 + ["33.69"] * 6 + ["37.43"] * weeks_back
+    assert _series(db_session, tenant, canonical_sku, distributor, prices) == []
+
+
+def test_a_price_that_comes_back_higher_than_before_the_cut_is_an_increase(db_session, tenant, canonical_sku, distributor):
+    prices = ["37.43"] * 20 + ["33.69"] * 6 + ["40.50"] * 5
+    assert len(_series(db_session, tenant, canonical_sku, distributor, prices)) == 1
+
+
+def test_a_price_that_eased_a_little_and_then_climbed_is_climbing(db_session, tenant, canonical_sku, distributor):
+    """Not a cut and a return: skirt steak down 2% over two months and then
+    up 7% is an increase, though it is barely above where it started."""
+    prices = ["7.2185", "7.2029", "7.2282", "7.1804", "7.1769", "7.0836", "7.0411", "7.0152", "6.9954", "7.0122",
+              "6.9212", "7.2125", "7.2744", "7.5055", "7.6683", "7.8714"]  # fmt: skip
+    assert len(_series(db_session, tenant, canonical_sku, distributor, prices)) == 1
+
+
+def test_a_price_of_a_fraction_of_a_cent_keeps_its_increase(db_session, tenant, canonical_sku, distributor):
+    """One napkin of a 3,000 case: at four decimal places $0.012477 and
+    $0.013101 were $0.0125 and $0.0131, 4.8% apart, under the bar."""
+    alerts = _series(db_session, tenant, canonical_sku, distributor, ["0.012477"] * 8 + ["0.013101"] * 5)
+    assert len(alerts) == 1 and alerts[0].current_price == Decimal("0.013101")
+    assert alerts[0].pct_change == Decimal("0.0500")
+
+
+def test_a_promotion_a_year_ago_is_not_a_rise_since():
+    """When the year's oldest prices are the promotion's, the price before
+    it is what counts: the old price coming back isn't news a year later."""
+    from app.analytics.price_creep import _recent_move, _slow_move
+
+    for cut, weeks in (("33.69", 8), ("29.94", 8), ("29.94", 5), ("33.69", 3)):
+        prices = ["37.43"] * 10 + [cut] * weeks + ["37.43"] * 50
+        points = [(AS_OF + timedelta(weeks=week), Decimal(price)) for week, price in enumerate(prices)]
+        for n in range(1, len(points) + 1):
+            assert _recent_move(points[:n]) is None and _slow_move(points[:n]) is None, (cut, weeks, n)
