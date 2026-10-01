@@ -13,10 +13,12 @@ browser / mail provider ──https──> caddy ──> frontend (Next.js) ─�
 
 ## 1. Before you start
 
-- A server with Docker and the compose plugin. 2 GB RAM is enough for the
-  default (the API with its matching model, about 1 GB, and two invoice
-  readers, about 0.4 GB each); allow 4 GB to read four invoices at once
-  (`EXTRACTION_WORKERS`, in `.env.production`).
+- A server with Docker and the compose plugin, with 4 GB RAM. Measured on a
+  running deployment: the API about 0.8 GB, the scheduler 0.35 GB, each
+  invoice reader 0.4 GB once it has read something, Postgres and the rest
+  0.2 GB; about 2.1 GB with the default two readers, 2.9 GB with four
+  (`EXTRACTION_WORKERS`, in `.env.production`). On a 2 GB server set
+  `EXTRACTION_WORKERS=1`.
 - A hostname for the dashboard (`DOMAIN`) with a DNS A/AAAA record pointing
   at the server, and ports 80 and 443 open (Caddy needs 80 to get the
   certificate).
@@ -159,7 +161,8 @@ their page images disappear from the review screen.
 The `backup` service backs up the database every night (from
 `BACKUP_HOUR_UTC`, default 07:00 UTC) into the `backups` volume, checks each
 one reads back, and keeps two weeks (`BACKUP_KEEP_DAYS`). A new deployment
-gets its first backup as soon as it starts. With `STORAGE_BACKEND=s3`, the
+gets its first backup as soon as it starts (of a still-empty database: the
+first one worth having is the next night's, or one you take by hand, below). With `STORAGE_BACKEND=s3`, the
 scheduler also copies each new backup to the bucket under `backups/` (the
 newest 30), so losing the server doesn't lose them. With local storage,
 copy them off the server yourself, and back up the `uploads` volume

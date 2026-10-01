@@ -2677,3 +2677,14 @@ suggestions and entering set K's missing pack sizes as Match items asks.
   delivery date either; set H's restaurant appears in no other set.
 
 Backend 516; frontend 56; matching and creep gates pass.
+
+### Staging dry run in Docker
+
+The production compose file, run locally as project `ii-staging`
+(`DOMAIN=localhost`, emails off): builds, applies all 23 migrations to a
+fresh database, seeds the catalog, and serves over HTTPS. Signed in, added
+a location, uploaded an invoice (read by a worker in 3.8 cents: Sysco, 24
+items, all priced), had the same file refused, accepted suggestions, loaded
+the page image, Spending and every page. No errors in any service's logs.
+Measured memory put the guide's "2 GB is enough" right: about 2.1 GB with
+two readers, so it now says 4 GB (or `EXTRACTION_WORKERS=1` on 2 GB).
