@@ -33,7 +33,7 @@ from app import audit, business_distributors
 from app.analytics.price_creep import upsert_creep_alerts
 from app.api.deps import get_tenant_or_404
 from app.auth import current_user, get_db_for_tenant
-from app.duplicates import BEING_READ, find_original
+from app.duplicates import BEING_READ, find_original, number_key
 from app.extract.charges import is_charge
 from app.extract.dates import dated_ahead
 from app.packs import apply_to_item, needs_pack, remember
@@ -98,6 +98,9 @@ class InvoiceCheck:
     # The "copy" is the invoice this one's pages were taken from: more of
     # that invoice's pages, counted as another invoice (app/splitting.py).
     more_pages_of_it: bool = False
+    # Its number is that invoice's with a rebill suffix: a reissue, of which
+    # one should be kept.
+    reissue: bool = False
     not_an_invoice: str | None = None
     billed_to: str | None = None
     # Dated after it arrived: a mistyped year, or a due date.
@@ -112,6 +115,11 @@ class InvoiceCheck:
             out.append(
                 f"These look like more pages of {self.copy_of}, which came in the same file. Delete this, and add "
                 "anything missing to that invoice; or tell us it's a different invoice."
+            )
+        elif self.copy_of and self.reissue:
+            out.append(
+                f"It looks like a reissue of {self.copy_of}, so only one should count. Delete this one, or delete "
+                "that one and this takes its place; or tell us they're separate invoices."
             )
         elif self.copy_of:
             out.append(f"It looks like a copy of {self.copy_of}. Delete it, or tell us it's a different invoice.")
@@ -203,6 +211,7 @@ def check_stored_invoice(
         no_line_items=not lines,
         copy_of=invoice_label(original) if original is not None else None,
         more_pages_of_it=original is not None and original.id == invoice.split_from_id,
+        reissue=original is not None and number_key(original.invoice_number) != number_key(invoice.invoice_number),
         not_an_invoice=(
             _DOCUMENT_LABEL.get(invoice.document_type, "something else") if invoice.document_type else None
         ),
@@ -267,6 +276,7 @@ def build_invoice_detail(db: Session, invoice: Invoice) -> InvoiceDetailOut:
         distributor_name=distributor.name if distributor else None,
         duplicate_of_label=invoice_label(original) if original is not None else None,
         duplicate_is_same_file=check.more_pages_of_it,
+        duplicate_is_reissue=check.reissue,
         split_note=_split_note(db, invoice),
         line_items=[
             LineItemOut.model_validate(line).model_copy(update={"canonical_sku_name": product.get(line.canonical_sku_id)})

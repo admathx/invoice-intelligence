@@ -557,8 +557,6 @@ def _summarize(results: dict, series: dict) -> None:
 # The second set's restaurants share a city apart from the demo businesses, so
 # price comparisons use only them.
 TEST_METRO = "Test City (test set)"
-# Set O's last invoice of week 10 (the midweek delivery).
-DISMISS_AFTER = "O-11-"
 # The domain the sets' forwarding addresses are at.
 INBOX_DOMAIN = "invoices.example.com"
 
@@ -733,9 +731,10 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
                 db.expire_all()
                 bind_tenant(db, tenant_id)
         result["accepted"] = _accept_suggestions(client, db, tenant_id, invoice_id)
-        if name.startswith(DISMISS_AFTER):
-            # Set O: the person deals with the alerts open after week 10; the
-            # two-stage riser's should come back when it climbs again.
+        if result.get("set") == "O" and not any(d["dismissed"] for d in dismissed):
+            # Set O: the person deals with the two-stage riser's alert the
+            # first time it's open; it should come back when the price climbs
+            # again.
             db.expire_all()
             bind_tenant(db, tenant_id)
             two_stage = set(
@@ -746,11 +745,11 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
                 )
             )
             for alert in db.scalars(select(PriceAlert).where(PriceAlert.tenant_id == tenant_id, PriceAlert.status == AlertStatus.open)):
-                entry_ = {"sku": str(alert.canonical_sku_id), "at": str(alert.current_price), "dismissed": False}
                 if alert.canonical_sku_id in two_stage:
                     resp = client.post(f"/insights/{alert.id}/dismiss", params={"tenant_id": str(tenant_id)})
-                    entry_["dismissed"] = resp.status_code == 204
-                dismissed.append(entry_)
+                    dismissed.append(
+                        {"sku": str(alert.canonical_sku_id), "at": str(alert.current_price), "after": name, "dismissed": resp.status_code == 204}
+                    )
         if result.get("set") == "K":
             # The person fills in each missing pack size as Match items asks:
             # once per item, the first time it can't be priced.
@@ -792,7 +791,7 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
                 result["app_outcome"] = "Refused as a copy"
                 continue
             outcomes = []
-            attachments = [k for k, e in gate.items() if e.get("email") == name]
+            attachments = [k for k, e in gate.items() if e.get("email") == name and e.get("kind") == "attachment"]
             for invoice_id in ingest.invoice_ids:
                 bind_tenant(db, tenant_id)
                 stored = db.get(Invoice, invoice_id)
@@ -1047,7 +1046,7 @@ def _summarize_v2(report: dict) -> None:
             detail = "; ".join(f"{a['product']} {float(a['pct']):+.1%} ({a['status']})" for a in c["alerts"])
             print(f"  {mark} {behavior}: expected {c['expected_alert']}, got {got}; {c['priced']}/{c['lines']} lines priced; products {c['products']}; {detail}")
         print(f"  alerts on steady items: {report['changes']['stable']['alerts']}")
-        print(f"  open after week 10: {[(a['product'], 'dismissed' if a['dismissed'] else 'left') for a in report['changes']['open_after_week_10']]}")
+        print(f"  dismissed along the way: {[(a['product'], a['after'], a['at']) for a in report['changes']['open_after_week_10']]}")
     k = report["packs"]
     print(
         f"\nSet K: {k['entered']} pack sizes entered by hand; {k['priced']}/{k['lines']} lines priced, "

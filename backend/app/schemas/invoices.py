@@ -85,6 +85,8 @@ class InvoiceDetailOut(InvoiceOut):
     # That invoice is the one this was split out of: these are likely more
     # of its pages, not a copy.
     duplicate_is_same_file: bool = False
+    # Its number is that invoice's plus a rebill suffix ("-R").
+    duplicate_is_reissue: bool = False
     # Said on the screen when the file held more than one invoice.
     split_note: str | None = None
     line_items: list[LineItemOut] = []

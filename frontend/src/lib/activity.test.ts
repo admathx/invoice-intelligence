@@ -156,6 +156,9 @@ describe("the realistic test set's actions", () => {
     expect(describeEvent(event("invoice.kept", { billed_to: "BLUE OAK KITCHEN" }))).toBe(
       "said the invoice is this restaurant's",
     );
+    expect(describeEvent(event("invoice.extracted", { line_count: 2, counted_as_credits: true, status: "extracted" }))).toBe(
+      "read 2 items; a credit memo printed with positive amounts, so they count as credits",
+    );
     expect(describeEvent(event("invoice.split_out", { pages: [3, 4] }))).toBe(
       "found this invoice in a file with others, and added it on its own",
     );

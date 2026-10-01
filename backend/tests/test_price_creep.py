@@ -282,3 +282,55 @@ def test_six_steady_invoices_or_five_of_anything_raise_nothing(db_session, tenan
     for i, price in enumerate(["10.00", "10.00", "13.00", "13.00", "13.00"]):  # five: too few to judge
         _add_observation(db_session, tenant, other, distributor, AS_OF - timedelta(weeks=4 - i), price)
     assert upsert_creep_alerts(db_session, tenant.id) == []
+
+
+# --- What the fourth test set showed -----------------------------------------
+
+
+def _series(db, tenant, sku, distributor, prices: list[str]) -> list[PriceAlert]:
+    for week, price in enumerate(prices):
+        _add_observation(db, tenant, sku, distributor, AS_OF + timedelta(weeks=week), price)
+    db.commit()
+    return upsert_creep_alerts(db, tenant.id)
+
+
+AVOCADOS = ["1.259", "1.486", "1.032", "1.536", "0.982", "1.448", "1.108", "1.562", "1.007", "1.385", "1.158", "1.511", "1.07", "1.284"]  # fmt: skip
+
+
+@pytest.mark.parametrize("weeks", range(6, len(AVOCADOS) + 1))
+def test_produce_that_swings_every_week_is_not_creeping(db_session, tenant, canonical_sku, distributor, weeks):
+    """Avocados a quarter up or down from week to week opened and closed an
+    alert eight times in fourteen weeks, whenever the dear weeks happened to
+    sit in the recent window."""
+    assert _series(db_session, tenant, canonical_sku, distributor, AVOCADOS[:weeks]) == []
+
+
+def test_a_price_that_stepped_up_and_stayed_is_still_an_increase(db_session, tenant, canonical_sku, distributor):
+    """The swing rule is about prices that come back down. One that went up
+    15% and stayed there has not, however long ago it rose."""
+    alerts = _series(db_session, tenant, canonical_sku, distributor, ["2.905"] * 5 + ["3.34"] * 9)
+    assert len(alerts) == 1 and alerts[0].current_price == Decimal("3.34")
+
+
+def test_one_earlier_spike_does_not_hide_a_later_rise(db_session, tenant, canonical_sku, distributor):
+    prices = ["4.00", "4.00", "5.20", "4.00", "4.00", "4.00", "4.00", "4.00", "4.40", "4.40", "4.40", "4.40", "4.40"]
+    assert len(_series(db_session, tenant, canonical_sku, distributor, prices)) == 1
+
+
+def test_a_steady_climb_across_six_invoices_is_caught_by_its_trend(db_session, tenant, canonical_sku, distributor):
+    """Mozzarella from a second distributor, up 19% over six invoices: the
+    newest three against the oldest three measured 4.7%, under the bar."""
+    alerts = _series(db_session, tenant, canonical_sku, distributor, ["3.2155", "3.4155", "3.5175", "3.478", "3.576", "3.8245"])
+    assert len(alerts) == 1
+
+
+def test_two_odd_prices_in_a_short_history_are_not_a_trend(db_session, tenant, canonical_sku, distributor):
+    """A spot buy at half again the price, and the two after it a little up:
+    not creep, and the trend rule mustn't make it so."""
+    prices = ["20.2765", "20.3185", "20.642", "20.4023", "29.9389", "21.2532", "21.1313"]
+    assert _series(db_session, tenant, canonical_sku, distributor, prices) == []
+
+
+def test_a_small_rise_across_six_invoices_waits_for_more(db_session, tenant, canonical_sku, distributor):
+    prices = ["0.0659", "0.0652", "0.0685", "0.0684", "0.069", "0.071"]
+    assert _series(db_session, tenant, canonical_sku, distributor, prices) == []

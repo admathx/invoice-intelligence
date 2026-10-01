@@ -98,6 +98,34 @@ class CreepFinding:
     baseline_observation_count: int
 
 
+def _highs_it_came_back_from(baseline: list[Decimal], recent: list[Decimal]) -> list[Decimal]:
+    """Earlier prices that were followed by a clearly lower one: levels the
+    price reached and then left. A price that stepped up and stayed has
+    none (it never came back down); neither does ordinary noise, which
+    stays inside MIN_PCT_CHANGE."""
+    later = baseline[1:] + recent
+    return [
+        price
+        for i, price in enumerate(baseline)
+        if any(after < price * (1 - MIN_PCT_CHANGE) for after in later[i:])
+    ]
+
+
+# How much stronger than the usual threshold a short history's trend must be
+# before it alerts with the medians short of it.
+SHORT_HISTORY_TREND_FACTOR = 2
+
+
+def _trend(prices: list[Decimal]) -> Decimal:
+    """How far the price has moved from the first to the last of `prices`,
+    going by the typical step between any two of them (the median of every
+    pair's slope, which one or two odd prices can't drag)."""
+    slopes = [
+        (prices[j] - prices[i]) / (j - i) for i in range(len(prices)) for j in range(i + 1, len(prices))
+    ]
+    return statistics.median(slopes) * (len(prices) - 1)
+
+
 def detect_price_creep(db: Session, tenant_id: uuid.UUID) -> list[CreepFinding]:
     """One finding per (tenant, canonical_sku, distributor) whose recent-vs-
     baseline median move clears the larger of the two thresholds above.
@@ -136,7 +164,8 @@ def detect_price_creep(db: Session, tenant_id: uuid.UUID) -> list[CreepFinding]:
     for (sku_id, distributor_id), points in by_series.items():
         recent = points[-RECENT_WINDOW_SIZE:]
         baseline = points[-(RECENT_WINDOW_SIZE + BASELINE_WINDOW_SIZE) : -RECENT_WINDOW_SIZE]
-        if len(baseline) < MIN_OBSERVATIONS_PER_WINDOW:
+        short_history = len(baseline) < MIN_OBSERVATIONS_PER_WINDOW
+        if short_history:
             # A short history (six or seven prices): the newest few against
             # the ones before. Per distributor, a second distributor often has
             # this few, and a 12% rise across six US Foods invoices went
@@ -146,32 +175,54 @@ def detect_price_creep(db: Session, tenant_id: uuid.UUID) -> list[CreepFinding]:
         if len(recent) < MIN_OBSERVATIONS_PER_WINDOW or len(baseline) < MIN_OBSERVATIONS_PER_WINDOW:
             continue
 
-        recent_median = statistics.median(p for _, p in recent)
-        baseline_median = statistics.median(p for _, p in baseline)
-        if baseline_median <= 0:
+        recent_prices = [p for _, p in recent]
+        baseline_prices = [p for _, p in baseline]
+        current_price = statistics.median(recent_prices)
+        baseline_price = statistics.median(baseline_prices)
+        if baseline_price <= 0:
             # A $0 baseline (e.g. a promo/free-case line) makes both a
             # percentage move and the price-tiered floor below undefined —
             # skip rather than divide by zero computing pct_change.
             continue
-        delta = recent_median - baseline_median
+        # Not above where the price has already been and come back from:
+        # produce that swings a quarter either way from week to week
+        # (avocados, limes) isn't creeping when a run of dear weeks lands in
+        # the recent window. On a realistic series that opened and closed an
+        # alert eight times in fourteen weeks, each one an email. Twice or
+        # more, because a single spike says nothing about the usual range;
+        # and only levels it came back from, so a price that stepped up and
+        # stayed is still an increase for as long as it was.
+        left_behind = _highs_it_came_back_from(baseline_prices, recent_prices)
+        if len(left_behind) >= 2 and current_price <= max(left_behind):
+            continue
 
-        floor = min(MIN_ABS_CHANGE_USD, ABS_FLOOR_CAP_FRACTION * baseline_median)
-        threshold = max(MIN_PCT_CHANGE * baseline_median, floor)
+        delta = current_price - baseline_price
+        floor = min(MIN_ABS_CHANGE_USD, ABS_FLOOR_CAP_FRACTION * baseline_price)
+        threshold = max(MIN_PCT_CHANGE * baseline_price, floor)
         # Increases only. A price coming down is good news, and every place
         # alerts are shown ("Price alerts", the weekly email, the price-
         # increase email) presents them as increases: a -15% alert read as
         # "▲ -15%" under "price increases". Any open alert on a price that
         # has since fallen back is resolved below, like any other.
         if delta < threshold:
-            continue
+            # On a short history the two medians sit only three prices apart,
+            # so a steady climb shows as a fraction of itself: mozzarella up
+            # 19% across six invoices measured 4.7%, and went unflagged. The
+            # trend across the whole history is looked at instead, and has to
+            # be clearly stronger (SHORT_HISTORY_TREND_FACTOR) to count.
+            if not short_history or delta <= 0:
+                continue
+            rise = _trend(baseline_prices + recent_prices)
+            if rise < SHORT_HISTORY_TREND_FACTOR * threshold:
+                continue
 
         findings.append(
             CreepFinding(
                 canonical_sku_id=sku_id,
                 distributor_id=distributor_id,
-                baseline_price=baseline_median,
-                current_price=recent_median,
-                pct_change=(delta / baseline_median).quantize(Decimal("0.0001")),
+                baseline_price=baseline_price,
+                current_price=current_price,
+                pct_change=(delta / baseline_price).quantize(Decimal("0.0001")),
                 window_start=baseline[0][0],
                 window_end=recent[-1][0],
                 recent_observation_count=len(recent),

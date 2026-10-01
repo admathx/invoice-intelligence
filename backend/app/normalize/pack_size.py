@@ -354,21 +354,33 @@ def pack_from_description(description: str | None, uom: str | None = None) -> Pa
 def pack_for_line(raw_pack_size: str | None, uom: str, description: str | None = None) -> ParsedPackSize:
     """The pack a line's price is for. As printed; or, when none is printed:
     - billed by weight or volume ("LB", "GAL"), one of that unit: salmon at
-      $9.70 billed LB is $9.70 a pound;
+      $9.70 billed LB is $9.70 a pound (also when a pack is printed but can't
+      be read);
     - otherwise, a pack written into the description, if there's a clear
       one (pack_from_description), for pricing only against a product it
       converts to.
     A count or a case with neither still says nothing about the amount, so
     that stays unreadable."""
+    unit = billed_unit_token(uom)
+    # One billed unit: a pound, or for a line billed per KG, 2.2 of them.
+    by_measure = (
+        ParsedPackSize(unit=unit, base_units_per_case=billed_unit_scale(uom)) if unit in ("lb", "oz", "gal") else None
+    )
     if not (raw_pack_size or "").strip():
-        unit = billed_unit_token(uom)
-        if unit in ("lb", "oz", "gal"):
-            # One billed unit: a pound, or for a line billed per KG, 2.2 of them.
-            return ParsedPackSize(unit=unit, base_units_per_case=billed_unit_scale(uom))
+        if by_measure is not None:
+            return by_measure
         described = pack_from_description(description, uom)
         if described is not None:
             return described
-    return parse_pack_size(raw_pack_size)
+    try:
+        return parse_pack_size(raw_pack_size)
+    except PackSizeParseError:
+        # A pack that can't be read ("2/30 LB AVG", "CASE WTS 20.10 20.60")
+        # on a line billed by the pound: the price is per pound all the same.
+        # Catch-weight meat prints exactly these, and went unpriced.
+        if by_measure is not None and (raw_pack_size or "").strip():
+            return by_measure
+        raise
 
 
 def _positive(parsed: ParsedPackSize, raw_pack_size: str) -> ParsedPackSize:

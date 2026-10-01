@@ -38,6 +38,22 @@ def number_key(number: str | None) -> str:
     return re.sub(r"[^A-Z0-9]", "", (number or "").upper()).lstrip("0")
 
 
+# How a reissued invoice is numbered: the original's number and a suffix.
+_REISSUE = re.compile(r"(.*\d)\s*[-/. ]\s*(R|RB|REV|REVISED|REBILL|CORR|CORRECTED)")
+
+
+def reissue_of(number: str | None) -> str | None:
+    """The key of the invoice number this one reissues ("904718271-R" is a
+    rebill of 904718271), or None. A rebill came out Ready beside its
+    original, and the delivery was counted twice."""
+    match = _REISSUE.fullmatch((number or "").strip().upper())
+    return number_key(match.group(1)) or None if match else None
+
+
+def _is_credit(invoice: Invoice) -> bool:
+    return invoice.total is not None and invoice.total < 0
+
+
 def one_at_a_time(db: Session, tenant_id) -> None:
     """Hold this location's copy check until the caller's transaction ends.
 
@@ -52,12 +68,16 @@ def one_at_a_time(db: Session, tenant_id) -> None:
 
 def find_original(db: Session, invoice: Invoice) -> Invoice | None:
     """The earliest invoice added before this one that it looks like a copy
-    of: same location, same distributor, same number. None without a number or a
-    distributor to go on. For an unattributed invoice, the printed
-    distributor name has to match as well."""
+    of: same location, same distributor, same number (or the number this one
+    reissues). None without a number or a distributor to go on. For an
+    unattributed invoice, the printed distributor name has to match as well.
+
+    A credit and a charge are never copies of each other: a credit memo
+    often carries the number of the invoice it credits."""
     key = number_key(invoice.invoice_number)
     if not key or invoice.distributor_id is None:
         return None
+    keys = [key, *([reissue_of(invoice.invoice_number)] if reissue_of(invoice.invoice_number) else [])]
     stored_key = func.ltrim(func.regexp_replace(func.upper(Invoice.invoice_number), "[^A-Z0-9]", "", "g"), "0")
     candidates = db.scalars(
         select(Invoice)
@@ -71,7 +91,7 @@ def find_original(db: Session, invoice: Invoice) -> Invoice | None:
                 and_(Invoice.created_at == invoice.created_at, Invoice.id < invoice.id),
             ),
             Invoice.distributor_id == invoice.distributor_id,
-            stored_key == key,
+            stored_key.in_(keys),
             Invoice.status != InvoiceStatus.failed,
             # The original, not another copy of it.
             Invoice.duplicate_of_id.is_(None),
@@ -82,4 +102,5 @@ def find_original(db: Session, invoice: Invoice) -> Invoice | None:
     if distributor is not None and distributor.slug == UNRECOGNIZED_SLUG:
         printed = name_key(invoice.printed_distributor or "")
         candidates = [c for c in candidates if printed and name_key(c.printed_distributor or "") == printed]
+    candidates = [c for c in candidates if _is_credit(c) == _is_credit(invoice)]
     return candidates[0] if candidates else None

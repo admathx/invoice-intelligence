@@ -25,9 +25,15 @@ Rules:
 - confidence (0.0-1.0) reflects how legible and unambiguous this specific line was to read, not your
   general confidence in the invoice — a clear, sharp line gets a high score even on a noisy page; a
   smudged or ambiguous one gets a low score even on an otherwise clean page.
-- quantity is the number the price multiplies to give the line total. A catch-weight line prints both a
-  count of cases and a weight, with a price per pound (2 CS, 61.24 LB, 4.89 per LB, total 299.46): its
-  quantity is the weight ("61.24") and its uom is LB, not the case count.
+- quantity is how many were delivered: the number in the quantity (shipped) column. unit_price is the
+  number in the price column and extended_price the line's amount. Take each from its own column, and never
+  move a number from one column to another.
+- The one exception is a catch-weight line. It prints a count of cases AND a weight (in a weight column, or
+  on a row beneath the item), and its amount is the weight times a price per pound (2 CS, 61.24 LB, 4.89 per
+  LB, amount 299.46). There, quantity is the weight ("61.24") and uom is LB, not the case count. Where each
+  case's weight is listed instead of their total ("20.10 20.60 20.54"), quantity is their sum ("61.24").
+  A line with no weight printed is never one of these, even on an invoice that has a weight column: its
+  quantity stays the count ("3") and its unit_price the printed price ("116.82").
 - uom is the unit the quantity is counted in, from the invoice's unit column (CS, EA, LB, BG, GAL, DZ, CT...).
   If the invoice has no unit column, use CS, or LB for a line whose quantity is a weight priced per pound.
   Never put the pack size in uom: "4/10 LB" is a pack size, not a unit.
@@ -43,7 +49,9 @@ Rules:
 - document_type says what this is: "invoice" (a bill for goods delivered, including a cash-and-carry
   receipt), "credit_memo" (a credit for returned or damaged goods), "statement" (a list of invoices and
   balances owed, not goods), "price_list" (an order guide or price list, with no quantities bought or
-  totals), or "other". Read statements and price lists the same way, but say what they are.
+  totals), or "other" (a packing slip, a quote, an order confirmation, a form). Anything marked NOT AN
+  INVOICE is "other", however much it looks like one. Read statements and price lists the same way, but
+  say what they are.
 - If the invoice has multiple pages, line items continue across pages in order — do not restart
   line_number at 1 on each page.
 - A long receipt may be shown as several images that overlap, each starting with the last few rows of the

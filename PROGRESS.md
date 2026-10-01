@@ -2756,3 +2756,69 @@ from the second test set to see nothing got worse.
 
 Not yet run: the split through the running app with real reads (the worker's
 side is covered by tests with a canned reader).
+
+## The fourth test set (269 documents, sets A–R)
+
+Read for $8.45 (271 files, some holding several invoices), plus $0.86 of
+re-reads to check changed reading instructions. The runner
+(`validation/test_set.py`) now handles files with several invoices (a key
+per invoice, the parts read in a second pass), `upload_to` and `certainty`,
+and set O's planned behaviors.
+
+Reading: 95% of documents with every amount right; every document read with
+a wrong amount was held. After the fixes below, 201 of 206 documents with a
+known expected outcome came out as expected; the five that didn't are three
+honest misreads that were held (a hurried handwritten ticket, an upside-down
+scanned page, one quantity on a clean PDF), the two-photo email (held), and
+a vendor known at another restaurant only.
+
+What the new sets showed working: every restaurant in set I sees 13 local
+comparisons (none last time); all 13 planned behaviors in set O alert or
+don't as planned, including the shrinking pack, the 1%-a-week rise, an item
+code changing mid-rise and a dismissed alert coming back when the price
+climbs again; quarts, pints and metric packs priced per gallon or pound; the
+totals-block variations all Ready; a stack of three invoices, a statement in
+front of two invoices, and two photographed invoices in one email each
+separated; zips and a forwarded-as-attachment email taken; an invoice sent
+to the wrong restaurant held; the tall receipt read whole.
+
+### Fixed from this set
+
+- **Catch weights, reworded.** On one layout the reader, told that "quantity
+  is the number the price multiplies", put the *price* of four ordinary lines
+  (blank weight cell) in the quantity. Worse, on a second wording it then
+  made up prices so each line multiplied out: a quantity and a price swapped
+  pass the arithmetic check. The instruction now says each number comes from
+  its own column, and that only a line printing a weight is a catch weight.
+  Re-read: that invoice, four other catch-weight layouts and 14 others, all
+  right. Case weights listed without a total are summed.
+- **"NOT AN INVOICE"** (a quote, an order confirmation) is read as not an
+  invoice and held; it came out Ready.
+- **A credit memo printed with positive amounts** counts as a credit
+  (`app/extract/credit_memo.py`); it was $157.72 of spending.
+- **A rebill** (`904718271-R`) is held against its original as a reissue;
+  deleting the original lets it take its place. It was counted twice.
+- **A credit memo carrying its invoice's number** is no longer a "copy" of
+  it: a credit and a charge are never copies of each other.
+- **Price alerts on a short history** also look at the trend across all six
+  or seven prices (the median of every pair's slope), needing twice the usual
+  move: mozzarella up 19% over six invoices measured 4.7% between the two
+  medians and went unflagged. A plain average did this too but raised a
+  false alert on the gate's corpus (two odd prices), so wasn't used.
+- **Produce that swings every week** no longer opens alerts: a price not
+  above levels it has already reached and come back from, twice or more,
+  isn't creeping. Avocados and limes opened and closed an alert eight times
+  in fourteen weeks. A price that stepped up and stayed is unaffected.
+- **A PDF that won't open** (a download cut off) is refused when added,
+  with a reason, not accepted and then "Couldn't read".
+- Also: a line billed by the pound is priced per pound even when its pack
+  column can't be read ("2/30 LB AVG"); empties going back ("EMPTY KEG
+  RETURN") aren't products.
+
+Backend 608 tests; frontend 56; matching 98.8% auto, 0 false; price alerts
+95.1% recall, 0 false positives.
+
+Known and left: a quantity and price swapped by the reader can't be caught by
+arithmetic (the reworded instruction fixed the layout that showed it); a
+rebill that arrives before its original isn't linked; `2 EA` out of a
+`6/1 GAL` case stays unpriced (one jug, or the case?).

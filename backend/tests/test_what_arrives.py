@@ -405,3 +405,95 @@ def test_a_copy_from_another_file_is_still_called_a_copy(db_session, tenant, mon
     detail = _detail(tenant, again)
     assert detail["duplicate_of_id"] == str(first) and detail["duplicate_is_same_file"] is False
     assert any("copy of invoice WA-0051" in reason for reason in detail["check"]["reasons"])
+
+
+# --- Credits, reissues and damaged files (the fourth test set) ------------------
+
+from decimal import Decimal  # noqa: E402
+
+from app.duplicates import reissue_of  # noqa: E402
+from app.extract.charges import is_charge  # noqa: E402
+from app.extract.credit_memo import as_credits  # noqa: E402
+
+
+def test_a_credit_memo_printed_with_positive_amounts_counts_as_a_credit(db_session, tenant, monkeypatch):
+    """Read as printed, it was $142.50 of spending."""
+    memo = _numbered(60, document_type="credit_memo")
+    invoice_id = _read(monkeypatch, tenant, _pdf(["credit memo"]), memo)
+    db_session.expire_all()
+    invoice = db_session.get(Invoice, invoice_id)
+    assert invoice.status == InvoiceStatus.extracted
+    assert (invoice.subtotal, invoice.total) == (Decimal("-142.50"), Decimal("-142.50"))
+    lines = db_session.scalars(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id)).all()
+    assert all(line.quantity < 0 and line.extended_price < 0 and line.unit_price > 0 for line in lines)
+
+
+def test_a_credit_memo_already_negative_or_an_invoice_is_left_as_printed():
+    assert as_credits(FAKE_PAYLOAD) is None  # an invoice
+    negative = FAKE_PAYLOAD.model_copy(update={"document_type": "credit_memo", "total": "-142.50", "subtotal": "-142.50"})
+    assert as_credits(negative) is None
+    mixed = FAKE_PAYLOAD.model_copy(
+        update={
+            "document_type": "credit_memo",
+            "line_items": [FAKE_PAYLOAD.line_items[0], FAKE_PAYLOAD.line_items[1].model_copy(update={"extended_price": "-47.50"})],
+        }
+    )
+    assert as_credits(mixed) is None
+
+
+def test_a_credit_memo_with_its_invoices_number_is_not_a_copy_of_it(db_session, tenant, monkeypatch):
+    invoice_id = _read(monkeypatch, tenant, _pdf(["invoice"]), _numbered(61))
+    credit = _numbered(61, document_type="credit_memo", subtotal="-142.50", total="-142.50")
+    credit = credit.model_copy(
+        update={"line_items": [li.model_copy(update={"quantity": f"-{li.quantity}", "extended_price": f"-{li.extended_price}"}) for li in credit.line_items]}
+    )
+    credit_id = _read(monkeypatch, tenant, _pdf(["its credit memo"]), credit)
+    db_session.expire_all()
+    assert db_session.get(Invoice, credit_id).duplicate_of_id is None
+    assert db_session.get(Invoice, credit_id).status == InvoiceStatus.extracted
+    # A second copy of the credit memo is still a copy of the first.
+    again = _read(monkeypatch, tenant, _pdf(["the credit memo, rescanned"]), credit)
+    db_session.expire_all()
+    assert db_session.get(Invoice, again).duplicate_of_id == credit_id
+    assert db_session.get(Invoice, invoice_id).duplicate_of_id is None
+
+
+@pytest.mark.parametrize(
+    "number, base",
+    [("904718271-R", "904718271"), ("904718271 REV", "904718271"), ("0088214/CORR", "88214"), ("904718271", None),
+     ("INV-4410", None), ("904718271-A", None), ("R", None)],  # fmt: skip
+)
+def test_a_rebills_number_names_the_invoice_it_reissues(number, base):
+    assert reissue_of(number) == base
+
+
+def test_a_rebill_is_held_against_its_original_and_takes_its_place_when_that_is_deleted(db_session, tenant, monkeypatch):
+    """Ready beside its original, the delivery was counted twice."""
+    original = _read(monkeypatch, tenant, _pdf(["original"]), _numbered(62))
+    rebill = _read(monkeypatch, tenant, _pdf(["rebill"]), _numbered(62, invoice_number="WA-0062-R"))
+    db_session.expire_all()
+    assert db_session.get(Invoice, rebill).duplicate_of_id == original
+    detail = _detail(tenant, rebill)
+    assert detail["duplicate_is_reissue"] is True
+    assert any("reissue of invoice WA-0062" in reason for reason in detail["check"]["reasons"])
+
+    resp = TestClient(app).delete(f"/invoices/{original}", params={"tenant_id": str(tenant.id)})
+    assert resp.status_code == 204, resp.text
+    detail = _detail(tenant, rebill)
+    assert detail["duplicate_of_id"] is None and not any("reissue" in r for r in detail["check"]["reasons"])
+
+
+def test_a_pdf_cut_off_partway_is_refused_when_added(db_session, tenant):
+    """Accepted, it failed a minute later as "Couldn't read", with nothing to say why."""
+    whole = _pdf(["an invoice"] * 3)
+    resp = TestClient(app).post(
+        f"/invoices?tenant_id={tenant.id}", files={"file": ("a.pdf", whole[: len(whole) // 2], "application/pdf")}
+    )
+    assert resp.status_code == 415
+    assert "damaged" in resp.json()["detail"]
+    assert db_session.scalars(select(Invoice).where(Invoice.tenant_id == tenant.id)).all() == []
+
+
+def test_empties_going_back_are_not_products():
+    assert is_charge("EMPTY KEG RETURN", None) and is_charge("KEG RETURN", None) and is_charge("BOTTLE RETURN", "")
+    assert not is_charge("PALE ALE KEG", None) and not is_charge("RETURN ENVELOPE #10", None)

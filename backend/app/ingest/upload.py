@@ -46,26 +46,36 @@ def validate_invoice_bytes(data: bytes) -> None:
         )
     if not is_pdf_bytes(data):
         raise InvalidInvoiceFileError("That file isn't a PDF.")
-    if is_password_protected(data):
+    problem = _why_it_wont_open(data)
+    if problem == "password":
         raise InvalidInvoiceFileError(
             "That PDF is password-protected, so we can't read it. Open it, save a copy without the password, "
             "and add that instead."
         )
+    if problem:
+        # The renderer opens it the same way, so it would only fail there:
+        # accepted, then "Couldn't read" a minute later with nothing to say
+        # why. A download cut off partway is the usual cause.
+        raise InvalidInvoiceFileError(
+            "That PDF is damaged and can't be opened. Download or save it again, and add that instead."
+        )
 
 
-def is_password_protected(data: bytes) -> bool:
-    """A PDF that won't open without a password. It used to be accepted and
-    then fail to render, landing as "Couldn't read" with nothing to say why.
-    Only the password error counts; a PDF that's otherwise damaged is left
-    for the renderer, which may still manage it."""
+def _why_it_wont_open(data: bytes) -> str | None:
+    """"password", "damaged", or None for a PDF that opens."""
     import pypdfium2
 
     with PDFIUM_LOCK:  # app/ingest/pdfium_lock.py
         try:
             pypdfium2.PdfDocument(data).close()
         except pypdfium2.PdfiumError as exc:
-            return "password" in str(exc).lower()
-    return False
+            return "password" if "password" in str(exc).lower() else "damaged"
+    return None
+
+
+def is_password_protected(data: bytes) -> bool:
+    """A PDF that won't open without a password."""
+    return _why_it_wont_open(data) == "password"
 
 
 def invoice_pdf_from_upload(files: list[bytes]) -> tuple[bytes, bool]:

@@ -465,3 +465,12 @@ def test_a_bare_g_is_grams_only_where_it_cannot_be_gallons():
     assert pack_from_description("BLEACH 4/1 G", "CS") is None
     # And as a billing unit it's neither.
     assert normalize_price(None, Decimal("2"), Decimal("5.00"), "G", _product(BaseUom.gal)) == (None, None)
+
+
+@pytest.mark.parametrize("pack", ["2/30 LB AVG", "CASE WTS 20.10 20.60 20.54 LB", "2-5LB AVG"])
+def test_a_line_billed_by_the_pound_is_priced_per_pound_whatever_its_pack_says(pack):
+    """Catch-weight meat prints packs like these, and went unpriced."""
+    qty, price = normalize_price(pack, Decimal("61.24"), Decimal("4.89"), "LB", _product(BaseUom.lb))
+    assert (qty, price) == (Decimal("61.24"), Decimal("4.8900"))
+    # Billed by the case, an unreadable pack still says nothing.
+    assert normalize_price(pack, Decimal("2"), Decimal("140.00"), "CS", _product(BaseUom.lb)) == (None, None)

@@ -61,6 +61,7 @@ export type InvoiceDetail = {
   duplicate_of_id: string | null;
   duplicate_of_label: string | null;
   duplicate_is_same_file: boolean;
+  duplicate_is_reissue: boolean;
   document_type: string | null;
   // The distributor's name as printed, offered when adding one.
   printed_distributor: string | null;
@@ -379,6 +380,8 @@ export default function InvoiceReview({
           <p className={`font-medium ${invoice.check.passes ? "text-brand-900" : "text-amber-900"}`}>
             {held === "copy" && invoice.duplicate_is_same_file
               ? `These look like more pages of ${invoice.duplicate_of_label ?? "an invoice"} from the same file, so nothing here is used. Delete this and add anything missing to that invoice.`
+              : held === "copy" && invoice.duplicate_is_reissue
+              ? `This looks like a reissue of ${invoice.duplicate_of_label ?? "an invoice you already added"}, so nothing on it is used until one of the two is deleted. Delete this one, or open that one and delete it: this then takes its place.`
               : held === "copy"
               ? `This looks like a copy of ${invoice.duplicate_of_label ?? "an invoice you already added"}, so nothing on it is used.`
               : held === "document"
@@ -397,7 +400,13 @@ export default function InvoiceReview({
                 Delete it
               </button>
               <button type="button" onClick={() => void send("POST", "/keep")} disabled={busy} className="btn-secondary btn-sm">
-                {held === "copy" ? "It's a different invoice" : held === "elsewhere" ? "It's ours" : "It is an invoice"}
+                {held === "copy"
+                  ? invoice.duplicate_is_reissue
+                    ? "They're separate invoices"
+                    : "It's a different invoice"
+                  : held === "elsewhere"
+                    ? "It's ours"
+                    : "It is an invoice"}
               </button>
             </div>
           )}

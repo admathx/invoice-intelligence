@@ -16,6 +16,7 @@ from app.extract.client import AnthropicExtractorClient, ExtractionFailedError, 
 from app.duplicates import file_hash, find_original, one_at_a_time
 from app.extract.charges import is_charge
 from app.extract.confidence import assess_extraction
+from app.extract.credit_memo import as_credits
 from app.extract.schema import DOCUMENT_TYPES, PRICED_DOCUMENT_TYPES
 from app.extract.amounts import parse_amount
 from app.extract.dates import dated_ahead, parse_invoice_date
@@ -158,6 +159,11 @@ def process_invoice(invoice_id: str) -> None:
             for number in sorted(others):
                 _split_out(db, invoice, original_pdf, others[number], split_ids)
             other_pages = [page.path.name for page in pages if page.pdf_page not in own_pages]
+
+        # A credit memo printed with positive amounts counts as the credit it
+        # is (app/extract/credit_memo.py).
+        credited = as_credits(extracted)
+        extracted = credited or extracted
 
         distributor = db.scalar(select(Distributor).where(Distributor.slug == extracted.distributor))
         invoice.printed_distributor = (extracted.distributor_name or "").strip() or None
@@ -320,6 +326,7 @@ def process_invoice(invoice_id: str) -> None:
             duplicate_of=invoice.duplicate_of_id,
             billed_to=invoice.printed_customer if invoice.billed_elsewhere else None,
             other_invoices_in_file=len(split_ids) or None,
+            counted_as_credits=True if credited else None,
             line_count=len(extracted.line_items),
             extraction_model=invoice.extraction_model,
             extraction_cost_usd=invoice.extraction_cost_usd,
