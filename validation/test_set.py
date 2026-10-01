@@ -588,14 +588,26 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
             result["held_as"] = "copy" if invoice.duplicate_of_id else invoice.document_type
             client.delete(f"/invoices/{invoice_id}", params={"tenant_id": str(tenant_id)})
             return result
-        if distributor is not None and distributor.slug == "other" and invoice.printed_distributor:
-            added = client.post(
-                "/distributors", params={"tenant_id": str(tenant_id)}, json={"name": invoice.printed_distributor}
-            ).json()
-            client.patch(f"/invoices/{invoice_id}", params={"tenant_id": str(tenant_id)}, json={"distributor_id": added["id"]})
-            result["distributor_added"] = added["name"]
-            db.expire_all()
-            bind_tenant(db, tenant_id)
+        if distributor is not None and distributor.slug == "other":
+            # What a person looking at the page does: choose the big
+            # distributor it's from when the name couldn't be read (a crumpled
+            # scan printed "Virginia Foods - Forwarding Foods" for PFG), or add
+            # the local vendor whose name it prints.
+            big = db.scalar(select(Distributor).where(Distributor.slug == result.get("distributor")))
+            if big is not None and big.slug != "other":
+                chosen = {"id": str(big.id), "name": big.name}
+                result["distributor_chosen"] = big.name
+            elif invoice.printed_distributor:
+                chosen = client.post(
+                    "/distributors", params={"tenant_id": str(tenant_id)}, json={"name": invoice.printed_distributor}
+                ).json()
+                result["distributor_added"] = chosen["name"]
+            else:
+                chosen = None
+            if chosen:
+                client.patch(f"/invoices/{invoice_id}", params={"tenant_id": str(tenant_id)}, json={"distributor_id": chosen["id"]})
+                db.expire_all()
+                bind_tenant(db, tenant_id)
         result["accepted"] = _accept_suggestions(client, db, tenant_id, invoice_id)
         if result.get("set") == "K":
             # The person fills in each missing pack size as Match items asks:
