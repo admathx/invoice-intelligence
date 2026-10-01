@@ -2957,3 +2957,55 @@ own number, so each of those arrives as two halves, both held for a person
 group their pages correctly.
 
 Backend 634 tests.
+
+## The fifth test set (450 documents, sets A–W)
+
+Read for $14.12 (460 files, 21 of them invoices found inside stacks). No
+document read with a wrong amount came out Ready, and no line anywhere had
+its quantity and price exchanged. 258 of 265 documents with a known
+expected outcome came out as expected; the seven that didn't are four
+honest misreads that were held, two invoices in an owner's company name
+held once by design, and one the set itself got wrong (a vendor's first
+invoice at a restaurant).
+
+The new hard sets:
+
+- **S, numbers that try to fool the checks (24).** 20 Ready with every
+  number right, including the blank-weight-column layouts that caused the
+  swap last time, price before quantity, no headings, misleading headings,
+  nine numbers on a row and an item table in two columns. Four held: cells
+  holding words (FREE, MKT, TBD), prices per hundred, a deposit folded into
+  each amount, and the 300-row invoice (two quantities misread out of 300,
+  caught by arithmetic). European-format numbers were held, not read as
+  1.23.
+- **T, copies and look-alikes (30).** Rescans with the number half hidden
+  or misread were held as copies; "Sysko" and "US Food Service Supply" were
+  not taken for the big distributors, but "Gordon's Restaurant Supply" and
+  "Performance Food Mart" were. A different business with a near-identical
+  name in another city was not noticed.
+- **U, a year in random order (74).** The alerts at the end are what the
+  prices call for whatever order the invoices came in. Changes that
+  happened mid-year (a contract reset, a shrunk pack, a return after a gap)
+  alert at the time in date order and have closed by the end, as designed.
+  Twelve items rising 0.4% a week, 23% over the year, never alert at all.
+- **V, matching traps (124 lines).** No wrong automatic match. 86 matched
+  to the true product, 28 left for a person, 9 wrong suggestions waiting
+  for a person (mozzarella block offered shredded, medium eggs offered
+  large, 12 oz cups offered 16 oz).
+- **W, hostile files (32).** Instructions printed on invoices (plain, tiny,
+  white on white) were ignored and the true numbers read; a hidden text
+  layer was ignored for what is visible; the renewal notice and the
+  impostor were held; oversized, truncated and mislabelled files were
+  refused with reasons; nothing raised an error.
+
+Fixed during the run: one photo holding both pages of an invoice was
+refused as "several invoices that couldn't be told apart" (a guard added
+the day before applied to a single image); the runner took owners only
+from the manifest and counted "tomatoes" as a different word from "tomato".
+
+Open, from this set: slow inflation never alerts; two look-alike
+distributor names accepted; two tickets on one sheet read as the first
+alone; rebills numbered "R1" or with a letter not linked; a bounce's
+returned invoice taken in; a tagged forwarding address (`+sysco`) not
+recognized; a zip inside a zip and a forward five deep not opened; a
+return from a promotion alerts for two purchases.

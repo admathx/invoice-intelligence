@@ -228,8 +228,8 @@ def check_set(set_dir: Path) -> list[str]:
         for behavior, values in expected.items():
             if len(values) > 1:
                 problems.append(f"{plan}: {behavior} rows disagree on expected_alert ({sorted(values)}); they are graded apart")
-            if values - {"yes", "no"}:
-                problems.append(f"{plan}: {behavior} has expected_alert {sorted(values - {'yes', 'no'})}; it must be yes or no")
+            if values - {"yes", "no", "find_out"}:
+                problems.append(f"{plan}: {behavior} has expected_alert {sorted(values - {'yes', 'no', 'find_out'})}; it must be yes, no or find_out")
     for plan, column in (("year_plan.csv", "invoice_file"), ("changes_plan.csv", "invoice_file"), ("products_plan.csv", "invoice_file")):
         missing = sorted({row[column] for row in _plan(set_dir, plan) if row.get(column) and row[column] not in by_file})
         if missing:
@@ -746,8 +746,10 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     # Set V: what each line was matched to before a person touched it.
     as_matched: dict[str, list[dict]] = {}
     owners: dict[str, set] = defaultdict(set)
-    for row in manifest:
-        if row["account"] and row["customer"]:
+    # From the manifest and from restaurants.csv: a restaurant that only
+    # ever receives another's invoices (upload_to) is billed in no row.
+    for row in [*manifest, *_plan(set_dir, "restaurants.csv")]:
+        if row.get("account") and row.get("customer") and row["customer"] in tenants:
             owners[row["account"]].add(row["customer"])
     shared = {number: names for number, names in owners.items() if len(names) > 1}
     for number, names in shared.items():
@@ -1174,7 +1176,12 @@ _PRODUCT_NOISE = {"and", "of", "the", "a", "with", "in", "for", "fresh", "pack",
 
 def _product_words(name: str) -> set[str]:
     words = re.findall(r"[a-z]+|\d+(?:\.\d+)?%?", (name or "").lower())
-    return {w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w for w in words} - _PRODUCT_NOISE
+    def singular(word: str) -> str:
+        if len(word) > 4 and word.endswith("oes"):
+            return word[:-2]  # tomatoes, potatoes
+        return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+
+    return {singular(w) for w in words} - _PRODUCT_NOISE
 
 
 def same_product(matched: str | None, true: str) -> bool:
@@ -1333,7 +1340,7 @@ def _summarize_v2(report: dict) -> None:
             if not isinstance(c, dict) or behavior == "stable":
                 continue
             got = "yes" if c["open_alert"] else "no"
-            mark = "ok " if got == c["expected_alert"] else "DIFF"
+            mark = "ok " if got == c["expected_alert"] else "?  " if c["expected_alert"] not in ("yes", "no") else "DIFF"
             detail = "; ".join(f"{a['product']} {float(a['pct']):+.1%} ({a['status']})" for a in c["alerts"])
             unmatched = f"; {c['unmatched_lines']} lines unmatched" if c["unmatched_lines"] else ""
             print(

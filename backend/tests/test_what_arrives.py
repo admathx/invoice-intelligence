@@ -191,6 +191,15 @@ def test_several_invoices_that_cant_be_divided_are_not_read_as_the_first_alone(d
     assert db_session.scalars(select(Invoice).where(Invoice.split_from_id == invoice_id)).all() == []
 
 
+def test_two_numbers_for_one_photo_of_two_pages_side_by_side_is_still_one_invoice(db_session, tenant, monkeypatch):
+    """Both pages of an invoice in a single photo: the reader answered [1, 1]
+    for the one image and read every row. It was refused as "several
+    invoices that couldn't be told apart"."""
+    invoice_id = _read(monkeypatch, tenant, _pdf(["both pages, side by side"]), _numbered(72, page_invoices=[1, 1]))
+    db_session.expire_all()
+    assert db_session.get(Invoice, invoice_id).status == InvoiceStatus.extracted
+
+
 def test_pages_can_be_taken_out_of_a_pdf():
     assert _page_count(pdf_of_pages(_pdf(["a", "b", "c"]), [1, 2])) == 2
 

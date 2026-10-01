@@ -16,6 +16,7 @@ def test_a_product_is_the_same_only_when_one_names_words_are_all_in_the_others()
     assert not same_product("Unsalted Butter", "Salted butter")
     assert not same_product("Ground Beef 80/20", "Ground beef 90/10")
     assert not same_product(None, "Chicken breast")
+    assert same_product("Tomato Roma", "Roma tomatoes") and same_product("Potato Russet", "Russet potatoes")
 
 
 def _line(code, description, product, status="auto"):
@@ -92,7 +93,7 @@ def test_a_set_is_checked_before_anything_is_read(tmp_path):
         "year_plan: 1 files without one whole-number upload_order",
         "year_plan: two files share an upload_order",
         "inflation rows disagree on expected_alert",
-        "promo has expected_alert ['maybe']",
+        "promo has expected_alert ['maybe']; it must be yes, no or find_out",
         "year_plan.csv: 1 files not in the manifest",
     ):
         assert expected in problems, (expected, problems)

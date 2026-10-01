@@ -164,7 +164,10 @@ def process_invoice(invoice_id: str) -> None:
         # a file that was itself split out: one level is all a real stack
         # needs, and it can't then go on dividing.
         pdf_pages = [page.pdf_page for page in pages]
-        if invoice.split_from_id is None and extracted.page_invoices and splitting.cannot_be_separated(
+        # One page image can't be divided, so its page list decides nothing:
+        # shown both pages of an invoice side by side in one photo, the
+        # reader gave two numbers for the one image and read it correctly.
+        if len(pages) > 1 and invoice.split_from_id is None and extracted.page_invoices and splitting.cannot_be_separated(
             extracted.page_invoices, pdf_pages
         ):
             # Several invoices by the reading, and no way to divide them:
