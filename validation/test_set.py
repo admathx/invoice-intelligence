@@ -317,7 +317,12 @@ def _accept_suggestions(client, db, tenant_id, invoice_id) -> int:
     for line_id in pending:
         res = client.post(f"/review/{line_id}/confirm?tenant_id={tenant_id}")
         if res.status_code == 409:
-            continue  # settled already, as a repeat of one confirmed just before
+            # Fine only if it was settled as a repeat of one confirmed just
+            # before; any other conflict is a failure to hear about.
+            db.expire_all()
+            bind_tenant(db, tenant_id)
+            if db.get(InvoiceLineItem, line_id).review_status != ReviewStatus.pending:
+                continue
         if res.status_code != 200:
             raise RuntimeError(f"confirm failed: {res.status_code} {res.text[:200]}")
         done += 1
@@ -490,7 +495,6 @@ def _summarize(results: dict, series: dict) -> None:
 # The second set's restaurants share a city apart from the demo businesses, so
 # price comparisons use only them.
 TEST_METRO = "Test City (test set)"
-HARBOR_MAILBOX = "harbor-and-pine@invoices.example.com"
 
 
 def app_run_v2(work_dir: Path, set_dir: Path) -> None:
@@ -508,7 +512,7 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     from app.auth import CSRF_HEADER, CSRF_HEADER_VALUE, current_user
     from app.db import SessionLocal, bind_tenant
     from app.duplicates import file_hash
-    from app.ingest.email_stub import ingest_email_bytes
+    from app.ingest.email_stub import ingest_email_bytes, parse_email
     from app.main import app
     from app.models import Account, Distributor, Invoice, InvoiceLineItem
     from app.storage import read_uri
@@ -521,11 +525,11 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     tasks.extractor = replay
     queue_module.invoice_queue.enqueue = lambda *a, **k: None  # read here, not by a worker
 
-    by_hash = {
-        file_hash(pdf.read_bytes()): pdf.stem
-        for pdf in work_dir.glob("*.pdf")
-        if (work_dir / f"{pdf.stem}.extracted.json").exists()
-    }
+    # Byte-identical documents share a hash, so each hash keeps every name.
+    by_hash: dict[str, list[str]] = defaultdict(list)
+    for pdf in sorted(work_dir.glob("*.pdf")):
+        if (work_dir / f"{pdf.stem}.extracted.json").exists():
+            by_hash[file_hash(pdf.read_bytes())].append(pdf.stem)
 
     db = SessionLocal()
     reviewer = _reviewer(db)
@@ -551,7 +555,12 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
         db.flush()
         for name in names:
             tenants[name].account_id = account.id
-    tenants["Harbor & Pine Kitchen"].inbox_address = HARBOR_MAILBOX
+    # Each emailed-to restaurant gets the address its emails are sent to.
+    for entry in gate.values():
+        if entry.get("kind") == "email":
+            to = parse_email((set_dir / entry["files"][0]).read_bytes()).recipients
+            if to and tenants[entry["customer"]].inbox_address is None:
+                tenants[entry["customer"]].inbox_address = to[0]
     db.commit()
     tenant_ids = {c: t.id for c, t in tenants.items()}
 
@@ -650,7 +659,10 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
             for invoice_id in ingest.invoice_ids:
                 bind_tenant(db, tenant_id)
                 stored = db.get(Invoice, invoice_id)
-                att = by_hash.get(file_hash(read_uri(stored.original_file_uri)))
+                same_file = by_hash.get(file_hash(read_uri(stored.original_file_uri)), [])
+                # This email's own attachment first, when the same file also
+                # exists under another name in the set.
+                att = next((n for n in same_file if n in attachments), same_file[0] if same_file else None)
                 if att is None and len(attachments) == 1 and len(ingest.invoice_ids) == 1:
                     # Photos become a PDF afresh each time (not byte-identical);
                     # one invoice from one attachment is that attachment.

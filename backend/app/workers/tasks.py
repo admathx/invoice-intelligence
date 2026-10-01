@@ -13,7 +13,7 @@ from app.analytics.price_creep import upsert_creep_alerts
 from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS, SessionLocal, bind_tenant
 from app.extract.client import AnthropicExtractorClient, ExtractionFailedError, get_extractor
-from app.duplicates import find_original
+from app.duplicates import find_original, one_at_a_time
 from app.extract.charges import is_charge
 from app.extract.confidence import assess_extraction
 from app.extract.schema import DOCUMENT_TYPES, PRICED_DOCUMENT_TYPES
@@ -156,6 +156,7 @@ def process_invoice(invoice_id: str) -> None:
         # held for its numbers not adding up.
         kind = (extracted.document_type or "invoice").strip().lower()
         invoice.document_type = kind if kind in DOCUMENT_TYPES and kind not in PRICED_DOCUMENT_TYPES else None
+        one_at_a_time(db, invoice.tenant_id)  # until the commit below
         original = find_original(db, invoice)
         invoice.duplicate_of_id = original.id if original is not None else None
         held = invoice.document_type is not None or original is not None

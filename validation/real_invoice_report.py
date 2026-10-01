@@ -33,7 +33,7 @@ import argparse
 import json
 import sys
 import tempfile
-import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -57,21 +57,32 @@ def _paths(pdf: Path, fake: bool) -> tuple[Path, Path]:
     return pdf.with_name(f"{pdf.stem}.{prefix}extracted.json"), pdf.with_name(f"{pdf.stem}.{prefix}truth.json")
 
 
-_RENDER_LOCK = threading.Lock()
+# Long enough for a per-minute rate limit to ease.
+RETRY_AFTER_SECONDS = 20
 
 
-def _extract_one(pdf: Path, extractor, fake: bool) -> None:
+def _extract_one(pdf: Path, extractor, fake: bool) -> bool:
+    """Read one document and save the result. False when the API itself
+    failed (a rate limit, the network) even after one more try: nothing is
+    saved, so the next run reads it again, and the others carry on."""
     extracted_path, truth_path = _paths(pdf, fake)
     with tempfile.TemporaryDirectory() as scratch:
-        # pdfium isn't thread-safe (rendering two at once segfaults); it's
-        # quick next to the API call, which is what runs in parallel.
-        with _RENDER_LOCK:
-            pages = render_pdf_to_pngs(pdf.read_bytes(), Path(scratch))
-        try:
-            extracted, cost = extractor.extract(pages)
-            failed = None
-        except ExtractionFailedError as exc:
-            extracted, cost, failed = None, exc.cost_usd, str(exc)
+        # Rendering takes the app's pdfium lock (app/ingest/pdfium_lock.py):
+        # pdfium isn't thread-safe. The API call is what runs in parallel.
+        pages = render_pdf_to_pngs(pdf.read_bytes(), Path(scratch))
+        for attempt in (1, 2):
+            try:
+                extracted, cost = extractor.extract(pages)
+                failed = None
+                break
+            except ExtractionFailedError as exc:
+                extracted, cost, failed = None, exc.cost_usd, str(exc)
+                break
+            except Exception as exc:  # not about this document: the API or the network
+                if attempt == 2:
+                    print(f"  {pdf.name}: NOT READ ({type(exc).__name__}: {exc}); run again to retry", flush=True)
+                    return False
+                time.sleep(RETRY_AFTER_SECONDS)
     record = {
         "cost_usd": cost,
         "failed": failed,
@@ -85,6 +96,7 @@ def _extract_one(pdf: Path, extractor, fake: bool) -> None:
         truth_path.write_text(json.dumps({"_reviewed": False, **template}, indent=2))
     status = f"FAILED: {failed}" if failed else f"{len(extracted.line_items)} lines"
     print(f"  {pdf.name}: ${cost:.4f} {status}", flush=True)
+    return True
 
 
 def extract_folder(folder: Path, extractor, *, fake: bool, limit: int | None, workers: int = 1) -> list[Path]:
@@ -95,13 +107,13 @@ def extract_folder(folder: Path, extractor, *, fake: bool, limit: int | None, wo
     if limit is not None:
         pending = pending[:limit]
     if workers <= 1:
-        for pdf in pending:
-            _extract_one(pdf, extractor, fake)
-        return pending
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for future in [pool.submit(_extract_one, pdf, extractor, fake) for pdf in pending]:
-            future.result()
-    return pending
+        done = [_extract_one(pdf, extractor, fake) for pdf in pending]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            done = list(pool.map(lambda pdf: _extract_one(pdf, extractor, fake), pending))
+    if not all(done):
+        print(f"{done.count(False)} document(s) weren't read (API errors). Run again to read them.")
+    return [pdf for pdf, ok in zip(pending, done) if ok]
 
 
 def _money_mistake(extracted: ExtractedInvoice, truth: ExtractedInvoice) -> bool:

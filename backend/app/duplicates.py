@@ -38,6 +38,18 @@ def number_key(number: str | None) -> str:
     return re.sub(r"[^A-Z0-9]", "", (number or "").upper()).lstrip("0")
 
 
+def one_at_a_time(db: Session, tenant_id) -> None:
+    """Hold this location's copy check until the caller's transaction ends.
+
+    With several workers, an invoice and a rescan of it can finish reading
+    at the same moment; each would look for the other before either was
+    saved, find nothing, and both would be kept. Taking this first makes the
+    second wait for the first to commit, and then see it. An advisory lock
+    on the location: nothing else contends for it, and it lasts only for
+    the saving, not the reading."""
+    db.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(f"duplicates|{tenant_id}", 0))))
+
+
 def find_original(db: Session, invoice: Invoice) -> Invoice | None:
     """The earliest invoice added before this one that it looks like a copy
     of: same location, same distributor, same number. None without a number or a

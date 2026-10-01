@@ -474,6 +474,11 @@ export default function InvoiceReview({
                   <button type="button" onClick={() => setAddingDistributor(false)} className="text-xs font-medium text-gray-600 hover:underline">
                     Cancel
                   </button>
+                  {/* The name is what we read off the page, which on a
+                      crumpled or faxed invoice can be wrong. */}
+                  <span className="basis-full text-xs text-gray-500">
+                    Check the name against the picture. If it&rsquo;s one already in the list, choose that instead.
+                  </span>
                 </span>
               )}
               {!recognized && !addingDistributor && invoice.printed_distributor && (

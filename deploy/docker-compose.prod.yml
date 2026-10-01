@@ -74,9 +74,16 @@ services:
       redis:
         condition: service_healthy
 
+  # Reads invoices, one at a time each. Reading is mostly waiting on the
+  # Anthropic API, so several side by side read several times as fast: a
+  # new customer's 300 old invoices take about 3 hours with one, and every
+  # other customer's new ones wait behind them. Each loads the matching
+  # model (about 0.4 GB). Two by default; EXTRACTION_WORKERS sets it.
   worker:
     <<: *backend
     command: ["python", "scripts/run_worker.py"]
+    deploy:
+      replicas: ${EXTRACTION_WORKERS:-2}
     healthcheck:
       disable: true
     depends_on:

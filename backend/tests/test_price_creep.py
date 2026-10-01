@@ -258,3 +258,27 @@ def test_an_alert_from_before_distributors_is_replaced_by_a_per_distributor_one(
     assert alert.id != legacy.id and alert.distributor_id == distributor.id
     # Not news: dated as the alert it replaces, so no email announces it again.
     assert alert.created_at == legacy_opened
+
+
+def test_a_rise_across_only_six_invoices_is_caught(db_session, tenant, canonical_sku, distributor):
+    """A second distributor often has a short history. US Foods eggs rising
+    12% across six invoices went unflagged for want of eight prices."""
+    for i, price in enumerate(["32.27", "33.04", "33.82", "34.59", "35.37", "36.14"]):
+        _add_observation(db_session, tenant, canonical_sku, distributor, AS_OF - timedelta(weeks=5 - i), price)
+
+    [alert] = upsert_creep_alerts(db_session, tenant.id)
+
+    assert alert.baseline_price == Decimal("33.0400") and alert.current_price == Decimal("35.3700")
+
+
+def test_six_steady_invoices_or_five_of_anything_raise_nothing(db_session, tenant, canonical_sku, distributor):
+    for i, price in enumerate(["33.00", "33.40", "32.80", "33.10", "33.30", "32.90"]):
+        _add_observation(db_session, tenant, canonical_sku, distributor, AS_OF - timedelta(weeks=5 - i), price)
+    assert upsert_creep_alerts(db_session, tenant.id) == []
+
+    other = CanonicalSku(name=f"Creep Alert Short SKU {uuid.uuid4().hex[:8]}", category="test", base_uom=BaseUom.lb)
+    db_session.add(other)
+    db_session.commit()
+    for i, price in enumerate(["10.00", "10.00", "13.00", "13.00", "13.00"]):  # five: too few to judge
+        _add_observation(db_session, tenant, other, distributor, AS_OF - timedelta(weeks=4 - i), price)
+    assert upsert_creep_alerts(db_session, tenant.id) == []

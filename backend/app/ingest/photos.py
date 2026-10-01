@@ -29,6 +29,8 @@ try:  # HEIC/HEIF: what iPhones save by default.
 except ImportError:  # pragma: no cover - the requirement is pinned; this is belt and braces
     pillow_heif = None
 
+from app.ingest.pdfium_lock import PDFIUM_LOCK  # noqa: E402 (after the HEIC opener is registered)
+
 MAX_PHOTOS = 10
 MAX_LONG_EDGE = 3000
 PAGE_LONG_EDGE_INCHES = 11
@@ -102,19 +104,23 @@ def photos_to_pdf(photos: list[bytes]) -> bytes:
     # Each page saved on its own, at its own resolution, then joined: Pillow's
     # multi-page save applies the first page's resolution to every page, so a
     # second photo from a different camera came out a different paper size.
-    merged = pdfium.PdfDocument.new()
-    try:
-        for i, data in enumerate(photos, start=1):
-            page = _page(data, i)
-            single = io.BytesIO()
-            page.save(single, format="PDF", resolution=max(page.size) / PAGE_LONG_EDGE_INCHES, quality=JPEG_QUALITY)
-            source = pdfium.PdfDocument(single.getvalue())
-            try:
-                merged.import_pages(source)
-            finally:
-                source.close()
-        out = io.BytesIO()
-        merged.save(out)
-        return out.getvalue()
-    finally:
-        merged.close()
+    pages = []
+    for i, data in enumerate(photos, start=1):
+        page = _page(data, i)
+        single = io.BytesIO()
+        page.save(single, format="PDF", resolution=max(page.size) / PAGE_LONG_EDGE_INCHES, quality=JPEG_QUALITY)
+        pages.append(single.getvalue())
+    with PDFIUM_LOCK:  # app/ingest/pdfium_lock.py; the photo work above runs unlocked
+        merged = pdfium.PdfDocument.new()
+        try:
+            for single_pdf in pages:
+                source = pdfium.PdfDocument(single_pdf)
+                try:
+                    merged.import_pages(source)
+                finally:
+                    source.close()
+            out = io.BytesIO()
+            merged.save(out)
+            return out.getvalue()
+        finally:
+            merged.close()

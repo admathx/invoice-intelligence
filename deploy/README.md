@@ -13,8 +13,10 @@ browser / mail provider ──https──> caddy ──> frontend (Next.js) ─�
 
 ## 1. Before you start
 
-- A server with Docker and the compose plugin (2 GB RAM is enough; the
-  embedding model and two API workers use about 1 GB).
+- A server with Docker and the compose plugin. 2 GB RAM is enough for the
+  default (the API with its matching model, about 1 GB, and two invoice
+  readers, about 0.4 GB each); allow 4 GB to read four invoices at once
+  (`EXTRACTION_WORKERS`, in `.env.production`).
 - A hostname for the dashboard (`DOMAIN`) with a DNS A/AAAA record pointing
   at the server, and ports 80 and 443 open (Caddy needs 80 to get the
   certificate).

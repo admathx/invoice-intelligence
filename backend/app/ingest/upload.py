@@ -1,6 +1,7 @@
 import uuid
 
 from app.config import settings
+from app.ingest.pdfium_lock import PDFIUM_LOCK
 from app.ingest.photos import MAX_PHOTOS, UnreadablePhotoError, image_kind, photos_to_pdf
 from app.storage import get_storage, original_key
 
@@ -59,10 +60,11 @@ def is_password_protected(data: bytes) -> bool:
     for the renderer, which may still manage it."""
     import pypdfium2
 
-    try:
-        pypdfium2.PdfDocument(data).close()
-    except pypdfium2.PdfiumError as exc:
-        return "password" in str(exc).lower()
+    with PDFIUM_LOCK:  # app/ingest/pdfium_lock.py
+        try:
+            pypdfium2.PdfDocument(data).close()
+        except pypdfium2.PdfiumError as exc:
+            return "password" in str(exc).lower()
     return False
 
 

@@ -136,6 +136,13 @@ def detect_price_creep(db: Session, tenant_id: uuid.UUID) -> list[CreepFinding]:
     for (sku_id, distributor_id), points in by_series.items():
         recent = points[-RECENT_WINDOW_SIZE:]
         baseline = points[-(RECENT_WINDOW_SIZE + BASELINE_WINDOW_SIZE) : -RECENT_WINDOW_SIZE]
+        if len(baseline) < MIN_OBSERVATIONS_PER_WINDOW:
+            # A short history (six or seven prices): the newest few against
+            # the ones before. Per distributor, a second distributor often has
+            # this few, and a 12% rise across six US Foods invoices went
+            # unflagged for want of eight. Each side still has the minimum.
+            recent = points[-MIN_OBSERVATIONS_PER_WINDOW:]
+            baseline = points[:-MIN_OBSERVATIONS_PER_WINDOW][-BASELINE_WINDOW_SIZE:]
         if len(recent) < MIN_OBSERVATIONS_PER_WINDOW or len(baseline) < MIN_OBSERVATIONS_PER_WINDOW:
             continue
 

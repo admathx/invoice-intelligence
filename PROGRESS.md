@@ -2647,3 +2647,33 @@ suggestions and entering set K's missing pack sizes as Match items asks.
 - Set I: no restaurant was shown a local comparison. Six restaurants are
   five businesses, and a comparison needs five *other* businesses, so each
   sees four. Every product fell back to the national comparison.
+
+### What the second set taught, and review fixes
+
+- **PDFium is not thread-safe.** The parallel read segfaulted rendering two
+  PDFs at once, and the API does the same when two uploads arrive together
+  (sync endpoints run on a thread pool). Every pdfium call now takes one
+  lock (`app/ingest/pdfium_lock.py`); a test hammers it from eight threads
+  and crashes the run if the lock is removed.
+- **Several invoice readers in production.** Reading parallelizes cleanly
+  (150 invoices in 9.5 minutes at six at once, about an hour serially), so
+  the worker runs as `EXTRACTION_WORKERS` replicas, two by default. The copy
+  check takes a per-location advisory lock so two workers reading an invoice
+  and its rescan at the same moment can't both miss the other.
+- **A short price history is compared too.** With alerts per distributor, a
+  second distributor often has fewer than the eight prices the windows
+  need; six or seven are now split newest three against the rest. A 12%
+  rise across six invoices alerts. The synthetic gate improved to 95.1%
+  recall (78 of 82), still zero false positives.
+- **Adding a distributor** says to check the name against the picture and to
+  choose from the list when it's already there (a crumpled scan read PFG as
+  "Virginia Foods - Forwarding Foods").
+- Validation tools: a failed API call no longer ends a parallel run (one
+  retry, then left for the next run); the replay takes mailboxes from the
+  emails, handles byte-identical documents, and skips a 409 only when the
+  line really was settled as a repeat.
+- The brief (version 3): set I needs eight restaurants in seven businesses
+  (a comparison needs five *other* businesses); the no-date invoice prints no
+  delivery date either; set H's restaurant appears in no other set.
+
+Backend 516; frontend 56; matching and creep gates pass.
