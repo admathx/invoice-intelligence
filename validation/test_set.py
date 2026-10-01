@@ -1,25 +1,35 @@
 """Run a generated test set (documents + answer keys + manifest.csv) through
-the app: python -m validation.test_set prepare|app SET_DIR WORK_DIR
+the app. In order (each: PYTHONPATH=backend:. python -m validation.test_set ...):
 
-1. prepare: puts every document through the same gate an upload goes
-   through (app/ingest/upload.py): photos become one PDF per invoice (a
-   multi-photo set, NAME-p1.jpg, NAME-p2.jpg..., is one invoice), and
-   anything the app refuses or can't open is recorded as that outcome
-   instead of being sent to the model. What's left is written to WORK_DIR as
-   NAME.pdf beside its answer key NAME.truth.json, the layout
-   validation/real_invoice_report.py reads:
+    prepare SET_DIR WORK_DIR       free: the gate, and a check of the set itself
+    python -m validation.real_invoice_report WORK_DIR --extract --workers 6    costs API money
+    split WORK_DIR                 free: the other invoices found inside files
+    python -m validation.real_invoice_report WORK_DIR --extract --workers 6    the few split out
+    score WORK_DIR                 free: readings against the answer keys
+    app2 WORK_DIR SET_DIR          free: the replay through the app
+    cleanup                        removes the test locations
 
-       python -m validation.real_invoice_report WORK_DIR --extract   # costs API money, once
-       python -m validation.real_invoice_report WORK_DIR             # accuracy, free
+prepare puts every document through the same gate an upload goes through
+(app/ingest/upload.py): photos become one PDF per invoice (a multi-photo
+set, NAME-p1.jpg, NAME-p2.jpg..., is one invoice), an email is read from its
+attachments as intake takes them, and anything the app refuses or can't
+open is recorded as that outcome instead of being sent to the model. What's
+left is written to WORK_DIR as NAME.pdf beside its answer key
+NAME.truth.json. It prints what reading will cost, and what in the set's
+own files would mislead (check_set).
 
-2. app: replays those saved extractions through the app's real pipeline
-   (worker, arithmetic check, matcher, price observations, alerts) into
-   test locations, without calling the model again, and compares each
-   invoice's outcome with the manifest's expected_outcome. Set H (a weekly
-   series) goes into its own location, and its price alerts are compared
-   with series_plan.csv. Writes WORK_DIR/app_results.json.
+app2 replays the saved readings through the app's real pipeline (upload
+endpoint, email intake, worker, arithmetic check, matcher, price history,
+alerts) as a business would use it: a location per restaurant, a person
+deleting held copies, adding local vendors and accepting suggestions. It
+compares each document's outcome with the manifest's expected_outcome
+(known and find-out cases apart), and checks the planned sets against their
+plans: price alerts (series_plan.csv, changes_plan.csv, and year_plan.csv,
+whose invoices are added in its upload_order), comparisons with other
+restaurants (peers_plan.csv), pack sizes (packs_plan.csv) and matching
+(products_plan.csv). Every plan is optional. Writes WORK_DIR/app_results.json.
 
-   python -m validation.test_set cleanup   # removes the test locations
+`app` is the first set's simpler replay, kept for that set.
 """
 import argparse
 import csv
@@ -40,6 +50,13 @@ from app.ingest.upload import InvalidInvoiceFileError, invoice_pdf_from_upload  
 
 _PAGE = re.compile(r"^(?P<stem>.+)-p(?P<n>\d+)$")
 TEST_LOCATION_PREFIX = "Test Set "
+# A document that renders to more page images than this isn't sent to the
+# model by this runner (a 500-page PDF in the hostile set): it would cost
+# dollars to learn what is already known, that the app has no page limit.
+MAX_PAGES_TO_READ = 100
+# What a read has cost per document, for the estimate prepare prints.
+USD_PER_DOCUMENT = 0.032
+OUTCOMES = {"Ready", "Needs a look", "Couldn't read", "Rejected", "Refused as a copy"}
 
 
 def _groups(set_dir: Path) -> dict[str, list[dict]]:
@@ -69,7 +86,10 @@ def _prepare_email(set_dir: Path, work_dir: Path, name: str, entry: dict, gate: 
     # separate out of one attachment (two invoices photographed together).
     for key in sorted(set_dir.glob(f"{name}-att*.truth.json")):
         shutil.copyfile(key, work_dir / key.name)
-    parsed = parse_email((set_dir / entry["files"][0]).read_bytes())
+    try:
+        parsed = parse_email((set_dir / entry["files"][0]).read_bytes())
+    except Exception:
+        return  # a message that can't be parsed: intake rejects it; nothing to read
     pdfs = [a.content for a in parsed.pdf_attachments]
     if not pdfs and parsed.photo_attachments:
         try:
@@ -117,12 +137,22 @@ def prepare(set_dir: Path, work_dir: Path) -> None:
             entry.update(outcome="Rejected", reason=str(exc))
             gate[name] = entry
             continue
+        except Exception as exc:
+            # Not a refusal: the upload itself broke, which a person would see
+            # as an error page. A bug to hear about, whatever was expected.
+            entry.update(outcome="Error", reason=f"adding it raised {type(exc).__name__}: {exc}"[:200])
+            gate[name] = entry
+            continue
         try:
             with tempfile.TemporaryDirectory() as scratch:
                 pages = len(render_pdf_to_pngs(pdf, Path(scratch)))
         except Exception as exc:
             # The worker marks these failed: "Couldn't read" in the app.
             entry.update(outcome="Couldn't read", reason=f"couldn't open the file: {type(exc).__name__}: {exc}"[:200])
+            gate[name] = entry
+            continue
+        if pages > MAX_PAGES_TO_READ:
+            entry.update(outcome="Not read", pages_found=pages, reason=f"{pages} page images: accepted by the app, not sent to the model by this runner")
             gate[name] = entry
             continue
         (work_dir / f"{name}.pdf").write_bytes(pdf)
@@ -140,10 +170,55 @@ def prepare(set_dir: Path, work_dir: Path) -> None:
         entry.update(outcome=None, pages=pages)
         gate[name] = entry
     (work_dir / "gate.json").write_text(json.dumps(gate, indent=2))
-    sent = sum(1 for e in gate.values() if e["outcome"] is None)
+    sent = sum(1 for e in gate.values() if e["outcome"] is None and e.get("kind") != "email")
     stopped = {k: e["outcome"] for k, e in gate.items() if e["outcome"]}
-    print(f"{len(gate)} invoices: {sent} ready to extract, {len(stopped)} stopped at the gate: {stopped}")
-    print(f"pages to extract: {sum(e.get('pages', 0) for e in gate.values())}")
+    print(f"{len(gate)} entries: {sent} documents to read, {len(stopped)} stopped before reading: {stopped}")
+    print(f"pages to read: {sum(e.get('pages', 0) for e in gate.values())}; about ${sent * USD_PER_DOCUMENT:.2f} at ${USD_PER_DOCUMENT} a document")
+    for problem in check_set(set_dir):
+        print(f"  check: {problem}")
+
+
+def check_set(set_dir: Path) -> list[str]:
+    """What in a set's own files would make its results misleading, found
+    before anything is read: a manifest row with no file or no answer key,
+    an outcome the runner doesn't know, a local vendor's first invoice at a
+    restaurant expected Ready (the app holds it for a person to add the
+    vendor), a restaurant meant to be in one set that is in two."""
+    problems: list[str] = []
+    manifest = list(csv.DictReader((set_dir / "manifest.csv").open()))
+    by_file = {row["file"]: row for row in manifest}
+    for row in manifest:
+        if not (set_dir / row["file"]).exists():
+            problems.append(f"{row['file']}: in the manifest, not in the folder")
+        for outcome in row["expected_outcome"].split(" or "):
+            if outcome.strip() not in OUTCOMES:
+                problems.append(f"{row['file']}: expected_outcome {row['expected_outcome']!r} isn't one the runner knows")
+        if (row.get("certainty") or "known") not in ("known", "find_out"):
+            problems.append(f"{row['file']}: certainty {row['certainty']!r}")
+    for name, rows in _groups(set_dir).items():
+        row = rows[0]
+        keyed = (set_dir / f"{name}.truth.json").exists() or any(set_dir.glob(f"{name}.*.truth.json")) or any(set_dir.glob(f"{name}-att*.truth.json"))
+        if not keyed and "Ready" in row["expected_outcome"] and not row["file"].endswith(".eml"):
+            problems.append(f"{name}: expected {row['expected_outcome']} but has no answer key")
+    for row in _plan(set_dir, "vendors_plan.csv"):
+        first = by_file.get(row.get("first_invoice_file", ""))
+        if first is None:
+            problems.append(f"vendors_plan: {row.get('first_invoice_file')!r} isn't in the manifest")
+        elif "Needs a look" not in first["expected_outcome"]:
+            problems.append(
+                f"{first['file']}: {row.get('vendor')}'s first invoice at {row.get('restaurant')} is expected "
+                f"{first['expected_outcome']}; the app holds a new vendor's first invoice"
+            )
+    alone = {"H", "K", "O", "U", "V"}
+    for row in _plan(set_dir, "restaurants.csv"):
+        sets = {x.strip() for x in (row.get("sets") or "").replace(",", ";").split(";") if x.strip()}
+        if sets & alone and len(sets) > 1:
+            problems.append(f"{row.get('customer')}: in sets {sorted(sets)}, but a set {sorted(sets & alone)} restaurant should be in no other")
+    for plan, column in (("year_plan.csv", "invoice_file"), ("changes_plan.csv", "invoice_file"), ("products_plan.csv", "invoice_file")):
+        missing = sorted({row[column] for row in _plan(set_dir, plan) if row.get(column) and row[column] not in by_file})
+        if missing:
+            problems.append(f"{plan}: {len(missing)} files not in the manifest, e.g. {missing[:3]}")
+    return problems
 
 
 def split(work_dir: Path) -> None:
@@ -241,7 +316,8 @@ def score(work_dir: Path) -> dict:
         row["lines_truth"], row["lines_read"], row["lines_matched"] = len(t_lines), len(g_lines), len(both)
         fields = {f: [0, 0] for f in _TEXT_FIELDS + _MONEY_FIELDS + ("raw_description_loose",)}
         wrong_money_lines = 0
-        for n in both:
+        swapped: list[int] = []
+        for n in sorted(both):
             t, g = t_lines[n], g_lines[n]
             for f in _TEXT_FIELDS:
                 if f == "uom" and not t.get(f):
@@ -259,12 +335,29 @@ def score(work_dir: Path) -> dict:
                 fields[f][0] += ok
                 line_ok &= ok
             wrong_money_lines += not line_ok
+            # The misreading arithmetic can't catch: the two numbers that
+            # multiply, each in the other's place.
+            if (
+                not _same_money(t.get("quantity"), t.get("unit_price"))
+                and _same_money(g.get("quantity"), t.get("unit_price"))
+                and _same_money(g.get("unit_price"), t.get("quantity"))
+            ):
+                swapped.append(n)
         row["fields"] = fields
+        row["swapped_lines"] = swapped
         row["wrong_money_lines"] = wrong_money_lines
         # Wrong in a way that matters to the numbers: a total, a price or
         # quantity, or a missing or extra line.
+        # The same rows in another order (pages scanned out of order, read
+        # in the order they came) are not a misreading.
+        def rows(lines) -> list:
+            return sorted(tuple(str(_num(li.get(f))) for f in _MONEY_FIELDS) for li in lines)
+
+        row["same_rows_any_order"] = rows(truth["line_items"]) == rows(got["line_items"])
         row["money_mistake"] = (
-            not row["header_money_right"] or wrong_money_lines > 0 or len(t_lines) != len(g_lines)
+            not row["header_money_right"]
+            or (wrong_money_lines > 0 and not row["same_rows_any_order"])
+            or len(t_lines) != len(g_lines)
         )
         per_invoice[name] = row
     (work_dir / "score.json").write_text(json.dumps(per_invoice, indent=2, default=str))
@@ -587,7 +680,7 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     from app.duplicates import file_hash
     from app.ingest.email_stub import ingest_email_bytes, parse_email
     from app.main import app
-    from app.models import Account, AuditEvent, Distributor, Invoice, InvoiceLineItem, PriceAlert
+    from app.models import Account, AuditEvent, CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceAlert
     from app.models.enums import AlertStatus
     from app.storage import read_uri
     from app.workers import tasks
@@ -622,6 +715,14 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     series_customer = next((r["customer"] for r in manifest if r["set"] == "H"), None)
     packs_customer = next((r["customer"] for r in manifest if r["set"] == "K"), None)
     changes_customer = next((r["customer"] for r in manifest if r["set"] == "O"), None)
+    year_customer = next((r["customer"] for r in manifest if r["set"] == "U"), None)
+    # Set U arrives in the order its plan says (a year of paperwork out of
+    # a box), every other document in order of its name.
+    upload_order = {
+        Path(r["invoice_file"]).stem: int(r["upload_order"]) for r in _plan(set_dir, "year_plan.csv") if r.get("upload_order")
+    }
+    # Set V: what each line was matched to before a person touched it.
+    as_matched: dict[str, list[dict]] = {}
     owners: dict[str, set] = defaultdict(set)
     for row in manifest:
         if row["account"] and row["customer"]:
@@ -739,6 +840,29 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
                 client.patch(f"/invoices/{invoice_id}", params={"tenant_id": str(tenant_id)}, json={"distributor_id": chosen["id"]})
                 db.expire_all()
                 bind_tenant(db, tenant_id)
+        if result.get("set") == "V":
+            # Matching traps: the app's own decision is what's judged, so no
+            # one accepts its suggestions here.
+            db.expire_all()
+            bind_tenant(db, tenant_id)
+            products = dict(db.execute(select(CanonicalSku.id, CanonicalSku.name)).all())
+            as_matched[name] = [
+                {
+                    "item_code": (line.raw_sku or "").strip(),
+                    "description": line.raw_description,
+                    "status": line.review_status.value,
+                    "product": products.get(line.canonical_sku_id),
+                    "confidence": str(line.match_confidence) if line.match_confidence is not None else None,
+                    "pack": line.raw_pack_size,
+                    "uom": line.uom,
+                    "price_per_unit": str(line.normalized_unit_price) if line.normalized_unit_price is not None else None,
+                    "unit": line.base_uom.value if line.base_uom else None,
+                }
+                for line in db.scalars(
+                    select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id).order_by(InvoiceLineItem.line_number)
+                )
+            ]
+            return result
         result["accepted"] = _accept_suggestions(client, db, tenant_id, invoice_id)
         if result.get("set") == "O" and not any(d["dismissed"] for d in dismissed):
             # Set O: the person deals with the two-stage riser's alert the
@@ -777,7 +901,11 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
                         packs_entered.add(line.raw_sku)
         return result
 
-    for name, entry in sorted(gate.items()):
+    def arrival(item) -> tuple:
+        name, entry = item
+        return (entry.get("set") or name[:1], upload_order.get(name, 0), name)
+
+    for name, entry in sorted(gate.items(), key=arrival):
         if entry.get("kind") in ("attachment", "part"):
             continue  # read when its email, or the file it's in, arrives
         if entry.get("outcome"):
@@ -845,7 +973,13 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     if packs_customer:
         report["packs"] = _packs_v2(db, tenant_ids[packs_customer], packs_plan, invoice_names, len(packs_entered))
     if changes_customer:
-        report["changes"] = _changes(db, set_dir, tenant_ids[changes_customer], dismissed)
+        report["changes"] = _changes(db, _plan(set_dir, "changes_plan.csv"), tenant_ids[changes_customer], dismissed)
+    if year_customer:
+        report["year"] = _changes(db, _plan(set_dir, "year_plan.csv"), tenant_ids[year_customer], [])
+        report["year"]["added_in_order"] = [n for n, _ in sorted(upload_order.items(), key=lambda kv: kv[1])][:5]
+    if as_matched:
+        report["matching"] = _matching(_plan(set_dir, "products_plan.csv"), as_matched)
+    report["errors"] = {k: r["error"] for k, r in results.items() if r.get("error")}
     score_path = work_dir / "score.json"
     if score_path.exists():
         scores = json.loads(score_path.read_text())
@@ -854,6 +988,11 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
             k: results.get(k, {}).get("app_outcome")
             for k, v in scores.items()
             if isinstance(v, dict) and (v.get("money_mistake") or v.get("header_money_right") is False)
+        }
+        report["swapped"] = {
+            k: {"lines": v["swapped_lines"], "outcome": results.get(k, {}).get("app_outcome")}
+            for k, v in scores.items()
+            if isinstance(v, dict) and v.get("swapped_lines")
         }
     app.dependency_overrides.pop(current_user, None)
     db.close()
@@ -924,39 +1063,59 @@ def _peers_v2(db, set_dir: Path, tenants: dict, gate: dict) -> dict:
     return out
 
 
-def _changes(db, set_dir: Path, tenant_id, open_after_week_10: list[dict]) -> dict:
-    """Set O: for each planned behavior, whether its product has an open
-    alert at the end, against changes_plan.csv's expected_alert."""
+def _changes(db, plan_rows: list[dict], tenant_id, dismissed: list[dict]) -> dict:
+    """A planned series (set O's changes_plan.csv, set U's year_plan.csv):
+    for each planned behavior, whether each of its products has an open
+    alert from its distributor at the end, against the plan's
+    expected_alert. Also whether the alerts that are open are the ones the
+    prices as they now stand call for, whatever order the invoices came in."""
     from sqlalchemy import select
 
+    from app.analytics.price_creep import detect_price_creep
     from app.db import bind_tenant
-    from app.models import CanonicalSku, InvoiceLineItem, PriceAlert
+    from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceAlert
 
     plan: dict[str, dict] = {}
-    for row in csv.DictReader((set_dir / "changes_plan.csv").open()):
+    for row in plan_rows:
         b = plan.setdefault(row["behavior"], {"expected_alert": row["expected_alert"], "codes": set(), "descriptions": set()})
         b["codes"].add(row["item_code"])
         b["descriptions"].add(row["description"])
     bind_tenant(db, tenant_id)
-    lines = list(db.scalars(select(InvoiceLineItem).where(InvoiceLineItem.tenant_id == tenant_id)))
+    lines = db.execute(
+        select(InvoiceLineItem, Invoice.distributor_id)
+        .join(Invoice, Invoice.id == InvoiceLineItem.invoice_id)
+        .where(InvoiceLineItem.tenant_id == tenant_id)
+    ).all()
     alerts = list(db.scalars(select(PriceAlert).where(PriceAlert.tenant_id == tenant_id)))
     names = dict(db.execute(select(CanonicalSku.id, CanonicalSku.name)).all())
+    distributors = dict(db.execute(select(Distributor.id, Distributor.name)).all())
+
+    def of(series: set) -> list:
+        # An alert from before alerts had a distributor covers the product.
+        return [a for a in alerts if (a.canonical_sku_id, a.distributor_id) in series or (a.distributor_id is None and a.canonical_sku_id in {s for s, _ in series})]
+
     out: dict[str, dict] = {}
     special: set = set()
     for behavior, b in plan.items():
         if behavior == "stable":
             continue
-        mine = [li for li in lines if (li.raw_sku or "").strip() in b["codes"]]
-        skus = {li.canonical_sku_id for li in mine if li.canonical_sku_id}
-        special |= skus
-        theirs = [a for a in alerts if a.canonical_sku_id in skus]
+        mine = [(li, d) for li, d in lines if (li.raw_sku or "").strip() in b["codes"]]
+        series = {(li.canonical_sku_id, d) for li, d in mine if li.canonical_sku_id}
+        special |= series
+        theirs = of(series)
+        alerting = {(a.canonical_sku_id, a.distributor_id) for a in theirs if a.status.value == "open"}
+        expected = b["expected_alert"]
         out[behavior] = {
-            "expected_alert": b["expected_alert"],
+            "expected_alert": expected,
             "items": sorted(b["descriptions"]),
             "lines": len(mine),
-            "priced": sum(1 for li in mine if li.normalized_unit_price is not None),
-            "products": sorted(names[sku] for sku in skus),
-            "open_alert": any(a.status.value == "open" for a in theirs),
+            "priced": sum(1 for li, _ in mine if li.normalized_unit_price is not None),
+            "unmatched_lines": sum(1 for li, _ in mine if li.canonical_sku_id is None),
+            "products": sorted(f"{names[sku]} ({distributors.get(d)})" for sku, d in series),
+            "products_alerting": len(alerting),
+            # As planned: every product alerting where one is expected, none
+            # where none is.
+            "open_alert": bool(series) and len(alerting) == len(series) if expected == "yes" else bool(alerting),
             "alerts": [
                 {"product": names[a.canonical_sku_id], "status": a.status.value, "pct": str(a.pct_change),
                  "from": str(a.baseline_price), "to": str(a.current_price)}
@@ -968,10 +1127,75 @@ def _changes(db, set_dir: Path, tenant_id, open_after_week_10: list[dict]) -> di
         "alerts": [
             {"product": names[a.canonical_sku_id], "status": a.status.value, "pct": str(a.pct_change)}
             for a in alerts
-            if a.canonical_sku_id not in special
+            if (a.canonical_sku_id, a.distributor_id) not in special and a.status.value == "open"
         ],
     }
-    out["open_after_week_10"] = [{**a, "product": names.get(uuid.UUID(a["sku"]))} for a in open_after_week_10]
+    out["open_after_week_10"] = [{**a, "product": names.get(uuid.UUID(a["sku"]))} for a in dismissed]
+    # The same alerts as a fresh look at the prices gives: what order the
+    # invoices arrived in, and what was open along the way, left no trace.
+    fresh = {(f.canonical_sku_id, f.distributor_id) for f in detect_price_creep(db, tenant_id)}
+    standing = {(a.canonical_sku_id, a.distributor_id) for a in alerts if a.status.value in ("open", "dismissed")}
+    open_now = {(a.canonical_sku_id, a.distributor_id) for a in alerts if a.status.value == "open"}
+    out["matches_a_fresh_look"] = open_now <= fresh <= standing
+    return out
+
+
+# Words that don't tell one product from another.
+_PRODUCT_NOISE = {"and", "of", "the", "a", "with", "in", "for", "fresh", "pack", "case"}
+
+
+def _product_words(name: str) -> set[str]:
+    words = re.findall(r"[a-z]+|\d+(?:\.\d+)?%?", (name or "").lower())
+    return {w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w for w in words} - _PRODUCT_NOISE
+
+
+def same_product(matched: str | None, true: str) -> bool:
+    """Whether the catalog product a line was matched to is the product the
+    plan says it is: one name's words all in the other's. "Chicken Breast
+    Boneless Skinless" is "chicken breast"; it is not "chicken thigh
+    boneless skinless", though they share three words of four."""
+    a, b = _product_words(matched or ""), _product_words(true)
+    return bool(a) and bool(b) and (a <= b or b <= a)
+
+
+def _matching(plan_rows: list[dict], as_matched: dict[str, list[dict]]) -> dict:
+    """Set V against products_plan.csv: each line matched to its true
+    product, left for a person, or matched to something else. A wrong match
+    made automatically is the failure; a wrong suggestion waits for a person
+    who may catch it. `true_product` none means it's in no catalog."""
+    plan = {}
+    for row in plan_rows:
+        name = Path(row["invoice_file"]).stem
+        plan[(name, (row.get("item_code") or "").strip())] = row
+        plan[(name, " ".join((row.get("description") or "").upper().split()))] = row
+    out = {"lines": 0, "right": 0, "left_for_a_person": 0, "wrong_automatic": [], "wrong_suggested": [], "not_in_plan": 0,
+           "unclear_pack_priced": [], "packs": []}  # fmt: skip
+    for name, lines in sorted(as_matched.items()):
+        for line in lines:
+            row = plan.get((name, line["item_code"])) if line["item_code"] else None
+            row = row or plan.get((name, " ".join((line["description"] or "").upper().split())))
+            if row is None:
+                out["not_in_plan"] += 1
+                continue
+            out["lines"] += 1
+            true = (row.get("true_product") or "").strip()
+            said = f"{name}: {line['description']!r} is {true or 'none'}, matched to {line['product']!r} ({line['status']}, {line['confidence']})"
+            if line["status"] == "not_product":
+                out["right" if true.lower() in ("", "none") else "left_for_a_person"] += 1
+            elif line["product"] is None:
+                out["left_for_a_person"] += 1
+            elif true.lower() not in ("", "none") and same_product(line["product"], true):
+                out["right"] += 1
+            else:
+                out["wrong_automatic" if line["status"] == "auto" else "wrong_suggested"].append(said)
+            true_pack = (row.get("true_pack") or "").strip()
+            if true_pack:
+                out["packs"].append(
+                    {"file": name, "pack": line["pack"], "uom": line["uom"], "true_pack": true_pack,
+                     "priced": f"{line['price_per_unit']}/{line['unit']}" if line["price_per_unit"] else None}
+                )  # fmt: skip
+                if true_pack.lower() == "unclear" and line["price_per_unit"]:
+                    out["unclear_pack_priced"].append(f"{name}: {line['description']!r} [{line['pack']}] priced {line['price_per_unit']}/{line['unit']}")
     return out
 
 
@@ -1038,27 +1262,60 @@ def _summarize_v2(report: dict) -> None:
         f"{ {k: r['distributor_name'] for k, r in results.items() if r.get('distributor') == 'other' and r.get('distributor_name') not in (None, 'Other') and not r.get('distributor_added') and not r.get('held_as')} }"
     )
     print(f"fee lines kept off Match items: {sum(r.get('fees', 0) for r in results.values())}")
-    print(f"\nSet H alerts ({len(report.get('series', {}).get('alerts', []))}):")
+    if "series" in report:
+        print(f"\nSet H alerts ({len(report['series']['alerts'])}):")
     for a in report.get("series", {}).get("alerts", []):
         print(f"  {a['product']} from {a['distributor']}: {a['from']} -> {a['to']} ({float(a['pct_change']):+.1%})")
-    print("\nSet I, what each restaurant is shown:")
+    if "peers" in report:
+        print("\nSet I, what each restaurant is shown:")
     for customer, rows in report.get("peers", {}).items():
         scopes = Counter(r["scope"] for r in rows)
         high = [r["product"] for r in rows if r["percentile"] and float(r["percentile"]) >= 0.9 and r["scope"] == "metro"]
         print(f"  {customer}: {dict(scopes)}; paying the most nearby for: {high}")
     if "misread" in report:
         print(f"\nDocuments read with a wrong amount, and what the app did: {report['misread']}")
-    if "changes" in report:
-        print("\nSet O, an open alert at the end, by planned behavior:")
-        for behavior, c in report["changes"].items():
-            if behavior in ("stable", "open_after_week_10"):
+    if report.get("errors"):
+        print(f"\nReading these raised an error (the invoice is marked Couldn't read): {report['errors']}")
+    wrong_and_ready = {k: v for k, v in report.get("misread", {}).items() if v == "Ready"}
+    print(f"\nRead with a wrong amount and still Ready (the failure that matters): {wrong_and_ready or 'none'}")
+    if report.get("swapped"):
+        print(f"Quantity and price exchanged on a line: {report['swapped']}")
+    for key, title in (("changes", "Set O"), ("year", "Set U, a year added in random order")):
+        if key not in report:
+            continue
+        print(f"\n{title}: an open alert at the end, by planned behavior:")
+        for behavior, c in report[key].items():
+            if not isinstance(c, dict) or behavior == "stable":
                 continue
             got = "yes" if c["open_alert"] else "no"
             mark = "ok " if got == c["expected_alert"] else "DIFF"
             detail = "; ".join(f"{a['product']} {float(a['pct']):+.1%} ({a['status']})" for a in c["alerts"])
-            print(f"  {mark} {behavior}: expected {c['expected_alert']}, got {got}; {c['priced']}/{c['lines']} lines priced; products {c['products']}; {detail}")
-        print(f"  alerts on steady items: {report['changes']['stable']['alerts']}")
-        print(f"  dismissed along the way: {[(a['product'], a['after'], a['at']) for a in report['changes']['open_after_week_10']]}")
+            unmatched = f"; {c['unmatched_lines']} lines unmatched" if c["unmatched_lines"] else ""
+            print(
+                f"  {mark} {behavior}: expected {c['expected_alert']}, got {got} ({c['products_alerting']} of {len(c['products'])} "
+                f"products alerting); {c['priced']}/{c['lines']} lines priced{unmatched}; {c['products']}; {detail}"
+            )
+        print(f"  alerts on steady items: {report[key]['stable']['alerts']}")
+        if report[key]["open_after_week_10"]:
+            print(f"  dismissed along the way: {[(a['product'], a['after'], a['at']) for a in report[key]['open_after_week_10']]}")
+        print(f"  open alerts are what a fresh look at the prices gives: {'yes' if report[key]['matches_a_fresh_look'] else 'NO'}")
+    if "matching" in report:
+        m = report["matching"]
+        print(
+            f"\nSet V, matching traps: {m['lines']} planned lines; {m['right']} matched to the true product, "
+            f"{m['left_for_a_person']} left for a person, {len(m['wrong_suggested'])} wrong suggestions, "
+            f"{len(m['wrong_automatic'])} WRONG AUTOMATIC MATCHES ({m['not_in_plan']} lines not in the plan)"
+        )
+        for line in m["wrong_automatic"]:
+            print(f"  wrong, automatic: {line}")
+        for line in m["wrong_suggested"][:25]:
+            print(f"  wrong suggestion: {line}")
+        for line in m["unclear_pack_priced"]:
+            print(f"  priced though the pack is unclear: {line}")
+        if m["packs"]:
+            print("  packs as read (pack, unit -> price per unit | what it truly is):")
+            for pk in m["packs"]:
+                print(f"    {str(pk['pack']):16} {str(pk['uom']):4} -> {str(pk['priced']):18} | {pk['true_pack']}")
     if "packs" not in report:
         return
     k = report["packs"]

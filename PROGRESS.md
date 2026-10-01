@@ -2857,3 +2857,27 @@ exchanging quantity and price, which arithmetic can't catch), T (copies and
 look-alikes), U (a year of invoices added in random order), V (matching
 traps, with a products plan) and W (hostile files and emails: instructions
 printed on an invoice, hidden text, oversized and malformed files).
+
+### Runner ready for the version 5 set
+
+`validation/test_set.py` now: adds set U's invoices in `year_plan.csv`'s
+`upload_order` and checks each planned behavior per product and
+distributor, plus that the open alerts are what a fresh look at the prices
+gives; judges set V's matches against `products_plan.csv` (right, left for
+a person, wrong suggestion, wrong automatic match) without accepting
+suggestions; counts lines where quantity and price were exchanged, and
+lists anything read wrong that still came out Ready; checks the set's own
+files before anything is read (`check_set`: missing files and keys, unknown
+outcomes, a vendor's first invoice expected Ready, a one-set restaurant in
+two sets); records an upload that raises as an error instead of stopping;
+and doesn't send a document of more than 100 page images to the model.
+
+Tried free on a stand-in set made from the fourth set's readings: set O's
+eighteen invoices added in shuffled order gave the same thirteen results as
+in date order, and the open alerts matched a fresh look. Along the way, in
+shuffled order, a lime alert opened and closed twice on a partial history:
+a backlog upload can raise passing alerts that an in-order history would
+not.
+
+Known before the set runs: the app has no limit on pages (a 500-page PDF
+would be rendered and sent whole).
