@@ -41,6 +41,37 @@ _UNIT_TO_TOKEN = {
     "EACH": "ea",
 }
 
+# Units written another way, read into the pounds and gallons everything
+# else is compared in: a "12/1 QT" case is 3 gallons, a "12/500 G" case
+# 13.2 lb. Dairy comes in quarts and pints, imported goods in metric, and
+# none of them could be priced per pound or gallon before. FLOZ is "FL OZ"
+# (parse_pack_size joins it): unlike a bare OZ, never weight. Not GR, which
+# is as often a gross.
+_SCALED_UNITS: dict[str, tuple[str, Decimal]] = {
+    "QT": ("gal", Decimal("0.25")),
+    "QTS": ("gal", Decimal("0.25")),
+    "PT": ("gal", Decimal("0.125")),
+    "PTS": ("gal", Decimal("0.125")),
+    "FLOZ": ("gal", Decimal(1) / 128),
+    "L": ("gal", Decimal("0.264172")),
+    "LT": ("gal", Decimal("0.264172")),
+    "LTR": ("gal", Decimal("0.264172")),
+    "ML": ("gal", Decimal("0.000264172")),
+    "KG": ("lb", Decimal("2.20462")),
+    "KGS": ("lb", Decimal("2.20462")),
+    "GM": ("lb", Decimal("0.00220462")),
+}
+# A bare G is grams in "12/500 G" and gallons in "4/1 G", which distributors
+# also write. Grams from this size up; below it, unreadable rather than
+# guessed. Only in a pack size: as a billing unit it's never taken as either.
+_GRAMS = ("lb", Decimal("0.00220462"))
+_MIN_SIZE_IN_GRAMS = Decimal(20)
+
+# A keg is a fraction of a 31 gallon barrel: "1/2 BBL" is 15.5 gallons, not
+# one container of two.
+_BARREL_GALLONS = Decimal(31)
+_BARREL_UNITS = {"BBL", "BARREL", "KEG"}
+
 _TOKEN_TO_BASE_UOMS: dict[str, set[BaseUom]] = {
     "lb": {BaseUom.lb},
     "oz": {BaseUom.oz, BaseUom.fl_oz},  # genuinely ambiguous — see module docstring
@@ -116,14 +147,32 @@ CASE_UNITS = {"CS", "CASE", "CA", "CTN", "CARTON"}
 # against a pack of several ("4/5 LB" billed BG: one bag, or the case?).
 CONTAINER_UNITS = {
     "BG", "BAG", "BX", "BOX", "PK", "PKG", "PAIL", "PL", "JG", "JUG", "TB", "TUB",
-    "BKT", "BUCKET", "CN", "CAN", "BTL", "BOTTLE", "SK", "SACK", "RL", "ROLL",
+    "BKT", "BUCKET", "CN", "CAN", "BTL", "BOTTLE", "SK", "SACK", "RL", "ROLL", "KEG",
 }  # fmt: skip
+
+
+def _unit(unit_raw: str) -> tuple[str | None, Decimal]:
+    """A written unit as (the unit it's compared in, how many of those one
+    is): LB is ("lb", 1), QT is ("gal", 0.25). (None, 1) if it names none."""
+    if unit_raw in _SCALED_UNITS:
+        return _SCALED_UNITS[unit_raw]
+    return _UNIT_TO_TOKEN.get(unit_raw), Decimal(1)
 
 
 def billed_unit_token(uom: str) -> str | None:
     """The physical unit a line's billing UOM names, or None if it names none
     (a container such as BG, BX or PK, whose size the invoice doesn't state)."""
-    return _UNIT_TO_TOKEN.get(uom.strip().upper())
+    return _unit(_join_fl_oz(uom.strip().upper()))[0]
+
+
+def billed_unit_scale(uom: str) -> Decimal:
+    """How many of billed_unit_token's unit one billed unit is: a line
+    billed per QT is a quarter gallon each."""
+    return _unit(_join_fl_oz(uom.strip().upper()))[1]
+
+
+def _join_fl_oz(text: str) -> str:
+    return re.sub(r"\bFL\.?\s*OZ\b\.?", "FLOZ", text)
 
 
 @dataclass(frozen=True)
@@ -192,6 +241,21 @@ class ParsedPackSize:
 _CAN_PATTERN = re.compile(r"^(\d+)\s*/\s*#\s*(\d+(?:\.\d+)?)\s*CAN$", re.IGNORECASE)
 _CASE_PATTERN = re.compile(r"^(\d+)\s*/\s*(\d+(?:\.\d+)?)\s*([A-Za-z]+)$")
 _BARE_PATTERN = re.compile(r"^(\d+(?:\.\d+)?)\s*([A-Za-z]+)$")
+_KEG_PATTERN = re.compile(r"^(\d+)\s*/\s*(\d+)\s*(?:%s)$" % "|".join(sorted(_BARREL_UNITS)))
+
+
+def _pack_unit(unit_raw: str, size: str, raw_pack_size: str) -> tuple[str, Decimal]:
+    """A pack size's unit as (the unit it's compared in, how many of those
+    one is)."""
+    if unit_raw == "G":
+        if Decimal(size) < _MIN_SIZE_IN_GRAMS:
+            raise PackSizeParseError(f"{raw_pack_size!r} could be grams or gallons")
+        return _GRAMS
+    unit, per_unit = _unit(unit_raw)
+    unit = unit or _PACK_COUNT_UNITS.get(unit_raw)
+    if unit is None:
+        raise PackSizeParseError(f"unknown unit {unit_raw!r} in {raw_pack_size!r}")
+    return unit, per_unit
 
 
 def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
@@ -203,7 +267,14 @@ def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
     counted_can = re.match(r"^\d+\s*/\s*(10)\s*#$", text)
     if counted_can:
         raise PackSizeParseError(f"{raw_pack_size!r} could be #{counted_can.group(1)} cans or pounds")
-    text = re.sub(r"(\d)\s*#$", r"\1 LB", text)
+    text = _join_fl_oz(re.sub(r"(\d)\s*#$", r"\1 LB", text))
+
+    m = _KEG_PATTERN.match(text)
+    if m:
+        part, whole = Decimal(m.group(1)), Decimal(m.group(2))
+        if not 0 < part < whole:
+            raise PackSizeParseError(f"{raw_pack_size!r} isn't a fraction of a barrel")
+        return ParsedPackSize(unit="gal", base_units_per_case=_BARREL_GALLONS * part / whole)
 
     m = _CAN_PATTERN.match(text)
     if m:
@@ -222,11 +293,10 @@ def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
         count, size, unit_raw = m.groups()
         if unit_raw in _LENGTHS:
             return _positive(ParsedPackSize(unit="ea", base_units_per_case=Decimal(count), count=Decimal(count)), raw_pack_size)
-        unit = _UNIT_TO_TOKEN.get(unit_raw) or _PACK_COUNT_UNITS.get(unit_raw)
-        if unit is None:
-            raise PackSizeParseError(f"unknown unit {unit_raw!r} in {raw_pack_size!r}")
+        unit, per_unit = _pack_unit(unit_raw, size, raw_pack_size)
         return _positive(
-            ParsedPackSize(unit=unit, base_units_per_case=Decimal(count) * Decimal(size), count=Decimal(count)), raw_pack_size
+            ParsedPackSize(unit=unit, base_units_per_case=Decimal(count) * Decimal(size) * per_unit, count=Decimal(count)),
+            raw_pack_size,
         )
 
     m = _BARE_PATTERN.match(text)
@@ -234,10 +304,8 @@ def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
         size, unit_raw = m.groups()
         if unit_raw in _LENGTHS:
             return ParsedPackSize(unit="ea", base_units_per_case=Decimal(1))
-        unit = _UNIT_TO_TOKEN.get(unit_raw) or _PACK_COUNT_UNITS.get(unit_raw)
-        if unit is None:
-            raise PackSizeParseError(f"unknown unit {unit_raw!r} in {raw_pack_size!r}")
-        return _positive(ParsedPackSize(unit=unit, base_units_per_case=Decimal(size)), raw_pack_size)
+        unit, per_unit = _pack_unit(unit_raw, size, raw_pack_size)
+        return _positive(ParsedPackSize(unit=unit, base_units_per_case=Decimal(size) * per_unit), raw_pack_size)
 
     raise PackSizeParseError(f"unrecognized pack size format: {raw_pack_size!r}")
 
@@ -255,7 +323,9 @@ def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
 #   priced a tub of sour cream at four times its price per pound;
 # - never a bare OZ ("CHICKEN BREAST 6OZ", "CUPS 16 OZ"), a count ("120CT"
 #   slices), or "6/10#" (six #10 cans, or six 10 lb bags).
-_DESCRIBED_CASE = re.compile(r"(?<![\d/.])([2-9]|[1-9]\d+)\s*/\s*(\d+(?:\.\d+)?)\s*(LBS?|GAL|DZ|DOZ|OZ)(?![A-Z0-9])")
+_DESCRIBED_CASE = re.compile(
+    r"(?<![\d/.])([2-9]|[1-9]\d+)\s*/\s*(\d+(?:\.\d+)?)\s*(LBS?|GAL|DZ|DOZ|OZ|QT|PT|KG|ML|L|G)(?![A-Z0-9])"
+)
 _DESCRIBED_BARE = re.compile(r"(?<![\d/.])(\d+(?:\.\d+)?)\s*(LBS?|#|GAL|DZ|DOZ)(?![A-Z0-9])")
 
 
@@ -293,7 +363,8 @@ def pack_for_line(raw_pack_size: str | None, uom: str, description: str | None =
     if not (raw_pack_size or "").strip():
         unit = billed_unit_token(uom)
         if unit in ("lb", "oz", "gal"):
-            return ParsedPackSize(unit=unit, base_units_per_case=Decimal(1))
+            # One billed unit: a pound, or for a line billed per KG, 2.2 of them.
+            return ParsedPackSize(unit=unit, base_units_per_case=billed_unit_scale(uom))
         described = pack_from_description(description, uom)
         if described is not None:
             return described

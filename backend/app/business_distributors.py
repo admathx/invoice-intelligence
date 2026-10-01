@@ -26,11 +26,15 @@ from app.models.distributor import UNRECOGNIZED_SLUG
 _NOISE = re.compile(r"\b(INC|INCORPORATED|LLC|LTD|CO|COMPANY|CORP|CORPORATION|THE|AND)\b")
 
 
+def name_words(name: str) -> list[str]:
+    """A name's words, without punctuation, case or company suffixes."""
+    return _NOISE.sub(" ", re.sub(r"[^A-Z0-9 ]+", " ", name.upper())).split()
+
+
 def name_key(name: str) -> str:
     """A name reduced to what identifies it: letters and digits, no
     punctuation, case or company suffixes. Stored as Distributor.name_key."""
-    words = _NOISE.sub(" ", re.sub(r"[^A-Z0-9 ]+", " ", name.upper()))
-    return "".join(words.split())
+    return "".join(name_words(name))
 
 
 def _keys(db: Session, tenant_id: uuid.UUID) -> list[uuid.UUID]:

@@ -546,3 +546,182 @@ def test_a_wide_banner_is_not_a_page(db_session, inbox, tenant):
     path = _write_eml(inbox, to=tenant.inbox_address, attachments=[("banner.jpg", "jpeg", _photo((2400, 640)))])
     result = ingest_email_file(db_session, path, inbox)
     assert result.status == "quarantined"
+
+
+# --- zips, forwarded messages, tall receipts ---------------------------------
+
+
+def _zip(files: dict[str, bytes], password_flag: bool = False) -> bytes:
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zipped:
+        for name, data in files.items():
+            zipped.writestr(name, data)
+    data = buf.getvalue()
+    if password_flag:
+        # Set the "encrypted" bit on every entry, as a password-protected zip has.
+        import struct
+
+        out = bytearray(data)
+        for signature, offset in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+            start = 0
+            while (start := out.find(signature, start)) != -1:
+                flags = struct.unpack_from("<H", out, start + offset)[0]
+                struct.pack_into("<H", out, start + offset, flags | 0x1)
+                start += 4
+        data = bytes(out)
+    return data
+
+
+def _write_raw(inbox, message: EmailMessage, name: str = "mail.eml"):
+    path = inbox / name
+    path.write_bytes(message.as_bytes())
+    return path
+
+
+def _message(to: str, subject: str = "Invoices") -> EmailMessage:
+    message = EmailMessage()
+    message["From"] = "owner@restaurant.example.com"
+    message["To"] = to
+    message["Subject"] = subject
+    message["Message-ID"] = f"<{uuid.uuid4().hex}@test>"
+    message.set_content("See attached.")
+    return message
+
+
+def test_a_zip_of_invoices_becomes_an_invoice_each(db_session, inbox, tenant, no_real_queue):
+    message = _message(tenant.inbox_address)
+    archive = _zip({"week/inv-1.pdf": _pdf_bytes("one"), "week/inv-2.pdf": _pdf_bytes("two"), "week/notes.txt": b"hello"})
+    message.add_attachment(archive, maintype="application", subtype="zip", filename="invoices.zip")
+    result = ingest_email_file(db_session, _write_raw(inbox, message), inbox)
+    assert result.status == "ingested", result.reason
+    assert len(_invoices_for(db_session, tenant)) == 2
+    assert len(no_real_queue) == 2
+
+
+def test_a_zip_with_no_invoice_in_it_is_quarantined_by_name(db_session, inbox, tenant):
+    message = _message(tenant.inbox_address)
+    message.add_attachment(_zip({"notes.txt": b"hello"}), maintype="application", subtype="zip", filename="stuff.zip")
+    result = ingest_email_file(db_session, _write_raw(inbox, message), inbox)
+    assert result.status == "quarantined"
+    assert "stuff.zip" in result.reason
+    assert _invoices_for(db_session, tenant) == []
+
+
+def test_a_password_protected_zip_says_so(db_session, inbox, tenant):
+    message = _message(tenant.inbox_address)
+    archive = _zip({"inv.pdf": _pdf_bytes()}, password_flag=True)
+    message.add_attachment(archive, maintype="application", subtype="zip", filename="locked.zip")
+    result = ingest_email_file(db_session, _write_raw(inbox, message), inbox)
+    assert result.status == "quarantined"
+    assert "locked.zip (password-protected)" in result.reason
+
+
+def test_a_zip_cannot_unpack_into_more_than_the_upload_limit(db_session, inbox, tenant, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "max_upload_bytes", 2000)
+    message = _message(tenant.inbox_address)
+    bomb = _zip({"big.pdf": b"%PDF-1.4\n" + b"0" * 500_000})  # compresses to a few hundred bytes
+    message.add_attachment(bomb, maintype="application", subtype="zip", filename="big.zip")
+    result = ingest_email_file(db_session, _write_raw(inbox, message), inbox)
+    assert result.status == "quarantined"
+    assert "big.zip (a file in it is too big)" in result.reason
+
+
+def test_a_word_file_is_not_opened_for_the_pictures_inside_it(db_session, inbox, tenant):
+    """A .docx is a zip; the picture in it is a letterhead, not an invoice."""
+    message = _message(tenant.inbox_address)
+    docx = _zip({"word/media/image1.jpeg": _photo(), "word/document.xml": b"<w/>"})
+    message.add_attachment(
+        docx,
+        maintype="application",
+        subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename="letter.docx",
+    )
+    result = ingest_email_file(db_session, _write_raw(inbox, message), inbox)
+    assert result.status == "quarantined"
+    assert _invoices_for(db_session, tenant) == []
+
+
+def test_an_invoice_inside_a_message_forwarded_as_an_attachment_is_found(db_session, inbox, tenant, no_real_queue):
+    """Outlook's "forward as attachment": the distributor's email, PDF and
+    all, attached to the one that arrives."""
+    original = EmailMessage()
+    original["From"] = "billing@sysco.example.com"
+    original["To"] = "owner@restaurant.example.com"
+    original["Subject"] = "Invoice 904718233"
+    original.set_content("Your invoice is attached.")
+    original.add_attachment(_pdf_bytes("forwarded"), maintype="application", subtype="pdf", filename="INV.PDF")
+
+    message = _message(tenant.inbox_address, subject="FW: Invoice 904718233")
+    message.add_attachment(original)  # message/rfc822
+    result = ingest_email_file(db_session, _write_raw(inbox, message), inbox)
+    assert result.status == "ingested", result.reason
+    assert len(_invoices_for(db_session, tenant)) == 1
+
+
+def test_an_eml_file_attached_as_a_plain_file_is_opened_too(db_session, inbox, tenant):
+    original = EmailMessage()
+    original["From"] = "billing@sysco.example.com"
+    original["Subject"] = "Invoice"
+    original.set_content("Attached.")
+    original.add_attachment(_pdf_bytes("as a file"), maintype="application", subtype="pdf", filename="inv.pdf")
+
+    message = _message(tenant.inbox_address)
+    message.add_attachment(original.as_bytes(), maintype="application", subtype="octet-stream", filename="Invoice.eml")
+    parsed = parse_email(message.as_bytes())
+    assert [a.filename for a in parsed.pdf_attachments] == ["inv.pdf"]
+
+
+def test_forwarded_messages_are_followed_only_so_deep():
+    from app.ingest.email_stub import MAX_FORWARD_DEPTH
+
+    inner = EmailMessage()
+    inner["Subject"] = "innermost"
+    inner.set_content("Attached.")
+    inner.add_attachment(_pdf_bytes(), maintype="application", subtype="pdf", filename="deep.pdf")
+    for _ in range(MAX_FORWARD_DEPTH + 1):
+        outer = EmailMessage()
+        outer["Subject"] = "FW"
+        outer.set_content("See attached.")
+        outer.add_attachment(inner)
+        inner = outer
+    assert parse_email(inner.as_bytes()).pdf_attachments == []
+
+
+def test_a_tall_photo_of_a_till_receipt_is_an_invoice(db_session, inbox, tenant, no_real_queue):
+    """Turned away as "no photo of an invoice" by the rule that keeps banners out."""
+    path = _write_eml(inbox, to=tenant.inbox_address, attachments=[("receipt.jpg", "jpeg", _photo((800, 3400)))])
+    result = ingest_email_file(db_session, path, inbox)
+    assert result.status == "ingested", result.reason
+    assert len(_invoices_for(db_session, tenant)) == 1
+
+
+def test_a_photo_stored_sideways_is_judged_the_way_it_is_seen(db_session, inbox, tenant):
+    """Phones store photos unrotated and flag the turn: a tall receipt can
+    arrive as a wide image."""
+    from PIL import Image
+
+    image = Image.effect_noise((3400, 800), 60).convert("RGB")
+    exif = Image.Exif()
+    exif[0x0112] = 6  # rotate 90 to view
+    buf = io.BytesIO()
+    image.save(buf, "JPEG", quality=80, exif=exif)
+    path = _write_eml(inbox, to=tenant.inbox_address, attachments=[("receipt.jpg", "jpeg", buf.getvalue())])
+    assert ingest_email_file(db_session, path, inbox).status == "ingested"
+
+
+def test_a_zip_holding_more_than_it_may_takes_what_fits_and_no_cut_file(db_session, inbox, tenant, monkeypatch):
+    """Whatever is over the total isn't taken cut short as if it were whole."""
+    from app.config import settings
+    from app.ingest.email_stub import EmailAttachment, _unzipped
+
+    pdf = _pdf_bytes("fits")
+    monkeypatch.setattr(settings, "max_upload_bytes", len(pdf) + 10)
+    padded = [(f"inv-{i}.pdf", pdf + bytes([i]) * 5) for i in range(8)]  # eight files; four fit the total
+    archive = EmailAttachment("many.zip", "application/zip", _zip(dict(padded)))
+    taken = _unzipped(archive)
+    assert 1 <= len(taken) < 8
+    assert all(a.content in {data for _, data in padded} for a in taken)

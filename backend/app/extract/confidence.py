@@ -1,7 +1,8 @@
 """SPEC.md §5: arithmetic validation is the confidence signal that actually works.
 
 For each line: quantity * unit_price ~= extended_price, within a cent. Then line
-extendeds must sum to subtotal, and subtotal + tax ~= total. Any failure routes
+extendeds must sum to subtotal, and subtotal + tax ~= total (with no subtotal
+printed: the lines + tax ~= total). Any failure routes
 the invoice to needs_review rather than extracted — this catches OCR digit
 errors far more reliably than asking the model how sure it is.
 """
@@ -79,13 +80,23 @@ def check_arithmetic(
     ]
 
     extended_values = [extended for _, _, _, extended in lines]
-    if subtotal is not None and all(v is not None for v in extended_values):
-        lines_sum_to_subtotal = abs(sum(extended_values, Decimal(0)) - subtotal) <= ARITHMETIC_TOLERANCE
-    else:
+    items_total = sum(extended_values, Decimal(0)) if all(v is not None for v in extended_values) else None
+    if items_total is None:
         lines_sum_to_subtotal = False
+    elif subtotal is None:
+        # No subtotal to check against: a short invoice or a till receipt
+        # prints only a total. The items are then checked against the total
+        # below, which is as strict; requiring a subtotal held every such
+        # invoice however well it was read.
+        lines_sum_to_subtotal = True
+    else:
+        lines_sum_to_subtotal = abs(items_total - subtotal) <= ARITHMETIC_TOLERANCE
 
-    if lines_sum_to_subtotal and tax is not None and total is not None:
-        totals_reconcile = abs(subtotal + tax - total) <= ARITHMETIC_TOLERANCE
+    if lines_sum_to_subtotal and total is not None:
+        # No tax line is no tax. A tax that was printed but couldn't be read
+        # still fails here, since the total includes it.
+        before_tax = items_total if subtotal is None else subtotal
+        totals_reconcile = abs(before_tax + (tax or Decimal(0)) - total) <= ARITHMETIC_TOLERANCE
     else:
         totals_reconcile = False
 

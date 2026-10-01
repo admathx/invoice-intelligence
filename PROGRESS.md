@@ -2688,3 +2688,49 @@ items, all priced), had the same file refused, accepted suggestions, loaded
 the page image, Spending and every page. No errors in any service's logs.
 Measured memory put the guide's "2 GB is enough" right: about 2.1 GB with
 two readers, so it now says 4 GB (or `EXTRACTION_WORKERS=1` on 2 GB).
+
+## Seven gaps the next test set would have found
+
+Writing version 4 of the test brief (sets L–R: what real restaurants send
+that neither set contained) meant reading the code for what each new case
+would do. Seven would have gone wrong; all are fixed before the set exists,
+so it tests the fixes.
+
+- **Catch weights as distributors print them.** A meat line prints a case
+  count and a weight, and the price multiplies the weight. The reading
+  instructions now say the quantity is the number the price multiplies, and
+  the unit LB. *Not yet checked against the real model* (below).
+- **Quarts, pints, metric, kegs.** `12/1 QT` is 3 gallons, `12/500 G`
+  13.2 lb, `1/2 BBL` 15.5 gallons (it parsed as one container of two),
+  `FL OZ` is never weight. A line billed per QT or KG is priced per gallon
+  or pound. A bare `G` is grams only from 20 up (`4/1 G` is gallon jugs on
+  some invoices), otherwise unreadable.
+- **No subtotal printed.** The items are checked against the total instead
+  (items + tax = total), and a missing tax line is no tax. Short invoices
+  and till receipts were all held.
+- **Several invoices in one file or email.** The reader says which invoice
+  each page belongs to and reads the first; the others become invoices of
+  their own from their own pages (`app/splitting.py`, `split_from_id`),
+  queued and read like any other. Blank backs, terms pages and retakes
+  belong to none. Guarded against dividing one invoice wrongly: the first
+  keeps every page on its review screen unless its numbers add up, and a
+  split-off part with the same invoice number says "more pages of invoice
+  X", not "a copy".
+- **Zips and forwarded-as-attachment emails.** A zip's PDFs and photos are
+  taken as if attached (sizes never trusted: each file read up to the upload
+  limit, all of them up to four times it; Word and Excel files not opened);
+  a message attached to a message is followed, three deep.
+- **Long till receipts.** Email intake turned away anything over 3:1 either
+  way, a rule meant for banners. Tall is now allowed to 10:1. And a tall
+  page was rendered 400 pixels wide: pages over 2.5:1 are rendered at a
+  sheet's width and cut into overlapping sheet-sized images; tall photos
+  keep 2,000 pixels of width.
+- **Dates and addressee.** An invoice dated more than a week after it
+  arrived is held until the date is corrected. An invoice made out to the
+  owner's other restaurant, or to a name the same distributor has never
+  used for this restaurant (after two invoices), is held: "Delete it" or
+  "It's ours" (`app/billed_to.py`). A new distributor using a new name is
+  never held: legal names differ from the name over the door too often.
+
+Migration 0024. Backend 578 tests; frontend 56; matching gate unchanged
+(98.8% auto, 0 false).

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.models import Distributor, Invoice, InvoiceLineItem
 from app.models.distributor import UNRECOGNIZED_SLUG
 from app.models.enums import ReviewStatus
+from app.models.invoice import not_held
 from app.normalize.description_expansion import description_similarity
 from app.normalize.matcher import MIN_ALIAS_DESCRIPTION_SIMILARITY
 
@@ -22,10 +23,10 @@ def waiting_to_match():
         InvoiceLineItem.review_status == ReviewStatus.pending,
         # No catalog to match against until the distributor is known.
         Distributor.slug != UNRECOGNIZED_SLUG,
-        # Held as a likely copy, or as not an invoice: nothing on it is used
-        # until a person decides, so there's nothing to match yet either.
-        Invoice.duplicate_of_id.is_(None),
-        Invoice.document_type.is_(None),
+        # Held as a likely copy, as not an invoice, or as another
+        # restaurant's: nothing on it is used until a person decides, so
+        # there's nothing to match yet either.
+        *not_held(),
     )
 
 

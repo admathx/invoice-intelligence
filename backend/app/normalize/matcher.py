@@ -27,6 +27,7 @@ from app.normalize.pack_size import (
     CASE_UNITS,
     CONTAINER_UNITS,
     ProductUnitMismatchError,
+    billed_unit_scale,
     billed_unit_token,
     pack_for_line,
 )
@@ -279,7 +280,10 @@ def _apply_pack_size(
             raise BilledUnitMismatchError(
                 f"line billed per {uom!r} against a pack of {pack.base_units_per_case}: one piece or the case?"
             )
-        return quantity * per_pack_unit, (unit_price / per_pack_unit).quantize(Decimal("0.0001"))
+        # One billed unit, in the pack's unit: 1 for LB against pounds, a
+        # quarter for a line billed per QT against gallons.
+        per_billed = billed_unit_scale(uom) * per_pack_unit
+        return quantity * per_billed, (unit_price / per_billed).quantize(Decimal("0.0001"))
     base_units = pack.base_units_per_case * per_pack_unit
     return quantity * base_units, (unit_price / base_units).quantize(Decimal("0.0001"))
 

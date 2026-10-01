@@ -30,9 +30,16 @@ except ImportError:  # pragma: no cover - the requirement is pinned; this is bel
     pillow_heif = None
 
 from app.ingest.pdfium_lock import PDFIUM_LOCK  # noqa: E402 (after the HEIC opener is registered)
+from app.ingest.render import TALL_PAGE_ASPECT  # noqa: E402
 
 MAX_PHOTOS = 10
 MAX_LONG_EDGE = 3000
+# A till receipt photographed whole is several times as tall as it is wide.
+# Held to MAX_LONG_EDGE it kept 750 pixels of width for its small print; a
+# tall photo keeps this much width instead, up to a longer limit, and the
+# renderer reads it in sheet-sized slices (app/ingest/render.py).
+TALL_SHORT_EDGE = 2000
+MAX_TALL_LONG_EDGE = 9000
 PAGE_LONG_EDGE_INCHES = 11
 JPEG_QUALITY = 85
 # What may be decoded, after a JPEG's reduced-size decode (below): ~150 MB of
@@ -91,7 +98,11 @@ def _page(data: bytes, position: int) -> Image.Image:
     elif image.mode != "RGB":
         image = image.convert("RGB")
 
-    image.thumbnail((MAX_LONG_EDGE, MAX_LONG_EDGE), Image.Resampling.LANCZOS)
+    short, long = sorted(image.size)
+    long_edge = MAX_LONG_EDGE
+    if short and long / short > TALL_PAGE_ASPECT:
+        long_edge = max(MAX_LONG_EDGE, min(MAX_TALL_LONG_EDGE, round(TALL_SHORT_EDGE * long / short)))
+    image.thumbnail((long_edge, long_edge), Image.Resampling.LANCZOS)
     return image
 
 

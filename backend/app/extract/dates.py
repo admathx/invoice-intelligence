@@ -7,7 +7,7 @@ worker, which only accepted YYYY-MM-DD, would have marked every one of them
 "Couldn't read". US distributors print month first, so "04/06/2026" is
 April 6.
 """
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 _FORMATS = (
     "%Y-%m-%d",
@@ -41,3 +41,15 @@ def parse_invoice_date(text: str | None) -> date | None:
         # invoice's prices in the wrong place on every chart.
         return parsed if 2000 <= parsed.year <= date.today().year + 1 else None
     return None
+
+
+# A date this far past the day the invoice arrived isn't one: a mistyped
+# year ("2027" for "2026"), or a due date read as the invoice date. A few
+# days' grace, since some distributors date an invoice for its delivery.
+MAX_DAYS_AHEAD = 7
+
+
+def dated_ahead(invoice_date: date | None, received: date) -> bool:
+    """Whether the invoice is dated after it arrived. Left in, its prices
+    would sit at the end of every price history until that day came."""
+    return invoice_date is not None and invoice_date > received + timedelta(days=MAX_DAYS_AHEAD)

@@ -58,6 +58,12 @@ class InvoiceOut(BaseModel):
     duplicate_of_id: uuid.UUID | None = None
     document_type: str | None = None
     printed_distributor: str | None = None
+    # Made out to what looks like another restaurant (app/billed_to.py):
+    # also held.
+    printed_customer: str | None = None
+    billed_elsewhere: bool = False
+    # The invoice whose file this one came out of (app/splitting.py).
+    split_from_id: uuid.UUID | None = None
 
 
 class InvoiceCheckOut(BaseModel):
@@ -76,6 +82,11 @@ class InvoiceDetailOut(InvoiceOut):
     distributor_name: str | None = None
     # The invoice this looks like a copy of, as the screen names it.
     duplicate_of_label: str | None = None
+    # That invoice is the one this was split out of: these are likely more
+    # of its pages, not a copy.
+    duplicate_is_same_file: bool = False
+    # Said on the screen when the file held more than one invoice.
+    split_note: str | None = None
     line_items: list[LineItemOut] = []
     page_image_urls: list[str] = []
     check: InvoiceCheckOut

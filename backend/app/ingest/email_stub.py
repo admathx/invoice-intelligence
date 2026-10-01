@@ -22,6 +22,7 @@ import io
 import re
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from email import message_from_bytes, policy
 from email.message import EmailMessage
@@ -69,6 +70,17 @@ INBOX_SETTLE_SECONDS = 2.0
 MIN_PHOTO_BYTES = 30 * 1024
 MIN_PHOTO_SHORT_SIDE = 600
 MAX_PHOTO_ASPECT = 3.0
+# Taller than wide is a different matter: a till receipt photographed or
+# cropped whole is easily four or five times as tall as it is wide, and the
+# rule above (which is about banners) turned those away as "no photo of an
+# invoice attached".
+MAX_TALL_PHOTO_ASPECT = 10.0
+
+# How far a forwarded message is followed into the messages attached to it,
+# and how many files are taken from a zip.
+MAX_FORWARD_DEPTH = 3
+MAX_ZIP_FILES = 50
+_ZIP_TYPES = {"application/zip", "application/x-zip-compressed", "application/x-zip"}
 
 
 @dataclass
@@ -103,13 +115,18 @@ class EmailAttachment:
         try:
             from PIL import Image
 
-            width, height = Image.open(io.BytesIO(self.content)).size
+            image = Image.open(io.BytesIO(self.content))
+            width, height = image.size
+            # Phones store most photos sideways and flag the rotation.
+            if image.getexif().get(0x0112) in (5, 6, 7, 8):
+                width, height = height, width
         except Exception:
             # Not something we can open: leave it for the upload path to
             # refuse with a reason, rather than guessing here.
             return True
-        short, long = sorted((width, height))
-        return short >= MIN_PHOTO_SHORT_SIDE and long / short <= MAX_PHOTO_ASPECT
+        if min(width, height) < MIN_PHOTO_SHORT_SIDE:
+            return False
+        return width / height <= MAX_PHOTO_ASPECT and height / width <= MAX_TALL_PHOTO_ASPECT
 
 
 @dataclass
@@ -154,21 +171,7 @@ def parse_email(raw: bytes) -> ParsedEmail:
         header_pairs.extend((header, value) for value in message.get_all(header, []))
     recipients = [addr.lower() for _, addr in getaddresses([str(v) for _, v in header_pairs]) if addr]
 
-    attachments: list[EmailAttachment] = []
-    for part in message.iter_attachments():
-        filename = part.get_filename()
-        payload = part.get_payload(decode=True)
-        if payload is None:
-            continue
-        attachments.append(
-            EmailAttachment(
-                filename=filename or "attachment",
-                content_type=(part.get_content_type() or "").lower(),
-                content=payload,
-                disposition=part.get_content_disposition(),
-                content_id=part.get("content-id"),
-            )
-        )
+    attachments = _attachments(message)
 
     return ParsedEmail(
         recipients=recipients,
@@ -176,6 +179,95 @@ def parse_email(raw: bytes) -> ParsedEmail:
         message_id=message.get("message-id"),
         attachments=attachments,
     )
+
+
+def _attachments(message: EmailMessage, depth: int = 0) -> list[EmailAttachment]:
+    """What's attached to a message, including what's inside a message
+    attached to it and inside a zip.
+
+    "Forward as attachment" (how Outlook forwards several messages at once)
+    puts the distributor's email, PDF and all, inside the one that arrives;
+    and a week's invoices are often sent zipped. Both used to be turned away
+    as "no PDF or photo attached"."""
+    found: list[EmailAttachment] = []
+    for part in message.iter_attachments():
+        filename = part.get_filename() or "attachment"
+        content_type = (part.get_content_type() or "").lower()
+        inner = None
+        if content_type == "message/rfc822":
+            parts = part.get_payload()
+            inner = parts[0] if isinstance(parts, list) and parts else None
+        elif filename.lower().endswith(".eml"):
+            # Some mail programs attach it as a plain file.
+            data = part.get_payload(decode=True)
+            try:
+                inner = message_from_bytes(data, policy=policy.default) if data else None
+            except Exception:
+                inner = None
+        if isinstance(inner, EmailMessage):
+            inside = _attachments(inner, depth + 1) if depth < MAX_FORWARD_DEPTH else []
+            # With nothing in it, the message itself, so a rejection names it.
+            found.extend(inside or [EmailAttachment(filename=filename, content_type=content_type, content=b"")])
+            continue
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            continue
+        attachment = EmailAttachment(
+            filename=filename,
+            content_type=content_type,
+            content=payload,
+            disposition=part.get_content_disposition(),
+            content_id=part.get("content-id"),
+        )
+        if _is_zip(attachment):
+            found.extend(_unzipped(attachment))
+        else:
+            found.append(attachment)
+    return found
+
+
+def _is_zip(attachment: EmailAttachment) -> bool:
+    # By name or type as well as by its bytes: Word and Excel files are zips
+    # too, and the pictures inside those are logos, not invoices.
+    labelled = attachment.filename.lower().endswith(".zip") or attachment.content_type in _ZIP_TYPES
+    return labelled and attachment.content.startswith(b"PK")
+
+
+def _unzipped(archive: EmailAttachment) -> list[EmailAttachment]:
+    """The PDFs and pictures in a zip, as if each had been attached. When
+    there are none it can use, the zip itself, so a rejection names it."""
+    limit = settings.max_upload_bytes
+    files: list[EmailAttachment] = []
+    problem = None
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive.content)) as zipped:
+            # Never trusting the sizes the zip claims: each file is read up
+            # to the upload limit and no further, and all of them together
+            # up to a few times that, so a small zip can't unpack into
+            # gigabytes of memory.
+            budget = 4 * limit
+            for info in zipped.infolist():
+                if info.is_dir() or len(files) >= MAX_ZIP_FILES or budget <= 0:
+                    continue
+                if info.flag_bits & 0x1:
+                    problem = "password-protected"
+                    continue
+                allowed = min(limit, budget)
+                with zipped.open(info) as member:
+                    data = member.read(allowed + 1)
+                budget -= len(data)
+                if len(data) > allowed:
+                    # Cut short, so not the file it was.
+                    problem = problem or ("a file in it is too big" if allowed == limit else "there's too much in it")
+                    continue
+                if is_pdf_bytes(data) or image_kind(data) is not None:
+                    files.append(EmailAttachment(filename=Path(info.filename).name, content_type="", content=data))
+    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError, EOFError, ValueError):
+        problem = problem or "couldn't be opened"
+    if files:
+        return files
+    label = f"{archive.filename} ({problem})" if problem else archive.filename
+    return [EmailAttachment(filename=label, content_type=archive.content_type, content=b"")]
 
 
 def find_tenant_for_recipients(db: Session, recipients: list[str]) -> Tenant | None:

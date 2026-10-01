@@ -23,6 +23,7 @@ benchmarks other tenants are looking at with no trace of why.
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, func, or_, select
@@ -34,6 +35,7 @@ from app.api.deps import get_tenant_or_404
 from app.auth import current_user, get_db_for_tenant
 from app.duplicates import BEING_READ, find_original
 from app.extract.charges import is_charge
+from app.extract.dates import dated_ahead
 from app.packs import apply_to_item, needs_pack, remember
 from app.extract.confidence import check_arithmetic
 from app.storage import forget_original, get_storage, page_names, renders_prefix
@@ -93,17 +95,35 @@ class InvoiceCheck:
     # an invoice at all. Each has to be settled (delete it, or say otherwise)
     # before it can be confirmed.
     copy_of: str | None = None
+    # The "copy" is the invoice this one's pages were taken from: more of
+    # that invoice's pages, counted as another invoice (app/splitting.py).
+    more_pages_of_it: bool = False
     not_an_invoice: str | None = None
+    billed_to: str | None = None
+    # Dated after it arrived: a mistyped year, or a due date.
+    dated_ahead: date | None = None
+    # No subtotal is printed, so the items are checked against the total.
+    no_subtotal: bool = False
 
     @property
     def reasons(self) -> list[str]:
         out = []
-        if self.copy_of:
+        if self.copy_of and self.more_pages_of_it:
+            out.append(
+                f"These look like more pages of {self.copy_of}, which came in the same file. Delete this, and add "
+                "anything missing to that invoice; or tell us it's a different invoice."
+            )
+        elif self.copy_of:
             out.append(f"It looks like a copy of {self.copy_of}. Delete it, or tell us it's a different invoice.")
         if self.not_an_invoice:
             out.append(
                 f"This looks like {self.not_an_invoice}, not an invoice, so nothing on it is used. "
                 "Delete it, or tell us it is an invoice."
+            )
+        if self.billed_to:
+            out.append(
+                f"It's made out to {self.billed_to}, which doesn't look like this restaurant, so nothing on it is "
+                "used. Delete it, or tell us it's yours."
             )
         if self.no_line_items:
             out.append("There are no items yet.")
@@ -118,11 +138,17 @@ class InvoiceCheck:
         elif not self.totals_reconcile:
             # Only reported once the lines reconcile: until then the subtotal
             # itself is suspect, so this would be noise on top of the real error.
-            out.append("Subtotal plus tax doesn't equal the total.")
+            out.append(
+                "The items plus tax don't equal the total."
+                if self.no_subtotal
+                else "Subtotal plus tax doesn't equal the total."
+            )
         if self.missing_distributor:
             out.append("Choose the distributor.")
         if self.missing_invoice_date:
             out.append("Add the invoice date.")
+        if self.dated_ahead:
+            out.append(f"It's dated {self.dated_ahead}, which hasn't come yet. Correct the invoice date.")
         return out
 
     @property
@@ -176,9 +202,15 @@ def check_stored_invoice(
         missing_invoice_date=invoice.invoice_date is None,
         no_line_items=not lines,
         copy_of=invoice_label(original) if original is not None else None,
+        more_pages_of_it=original is not None and original.id == invoice.split_from_id,
         not_an_invoice=(
             _DOCUMENT_LABEL.get(invoice.document_type, "something else") if invoice.document_type else None
         ),
+        billed_to=(invoice.printed_customer or "another restaurant") if invoice.billed_elsewhere else None,
+        dated_ahead=(
+            invoice.invoice_date if dated_ahead(invoice.invoice_date, invoice.created_at.date()) else None
+        ),
+        no_subtotal=invoice.subtotal is None,
     )
 
 
@@ -197,6 +229,19 @@ def _lines(db: Session, invoice_id: uuid.UUID) -> list[InvoiceLineItem]:
             .where(InvoiceLineItem.invoice_id == invoice_id)
             .order_by(InvoiceLineItem.line_number)
         )
+    )
+
+
+def _split_note(db: Session, invoice: Invoice) -> str | None:
+    """What to say about a file that held several invoices (app/splitting.py)."""
+    if invoice.split_from_id is not None:
+        return "This came in a file with other invoices. Each was added on its own."
+    others = db.scalar(select(func.count(Invoice.id)).where(Invoice.split_from_id == invoice.id))
+    if not others:
+        return None
+    return (
+        f"The file held {others + 1} invoices. This is the first; "
+        f"the other{'s were' if others > 1 else ' was'} added on {'their' if others > 1 else 'its'} own."
     )
 
 
@@ -221,6 +266,8 @@ def build_invoice_detail(db: Session, invoice: Invoice) -> InvoiceDetailOut:
         **InvoiceOut.model_validate(invoice).model_dump(),
         distributor_name=distributor.name if distributor else None,
         duplicate_of_label=invoice_label(original) if original is not None else None,
+        duplicate_is_same_file=check.more_pages_of_it,
+        split_note=_split_note(db, invoice),
         line_items=[
             LineItemOut.model_validate(line).model_copy(update={"canonical_sku_name": product.get(line.canonical_sku_id)})
             for line in lines
@@ -544,17 +591,23 @@ def keep_invoice(
     db: Session = Depends(get_db_for_tenant),
     user: User = Depends(current_user),
 ) -> InvoiceDetailOut:
-    """"It's a different invoice" / "It is an invoice": stop holding it as a
-    likely copy or as not an invoice. Its lines, which were kept off Match
+    """"It's a different invoice" / "It is an invoice" / "It's ours": stop
+    holding it as a likely copy, as not an invoice, or as another
+    restaurant's. Its lines, which were kept off Match
     items while it was held, are matched now; the invoice still needs
     confirming like any other held one."""
     get_tenant_or_404(db, tenant_id)
     invoice = _get_reviewable_invoice(db, invoice_id, editing=True)
-    if invoice.duplicate_of_id is None and invoice.document_type is None:
-        raise HTTPException(status_code=409, detail="This invoice isn't being held as a copy or as not an invoice.")
-    held_as = {"copy_of": invoice.duplicate_of_id, "document_type": invoice.document_type}
+    if not invoice.is_held:
+        raise HTTPException(status_code=409, detail="This invoice isn't being held.")
+    held_as = {
+        "copy_of": invoice.duplicate_of_id,
+        "document_type": invoice.document_type,
+        "billed_to": invoice.printed_customer if invoice.billed_elsewhere else None,
+    }
     invoice.duplicate_of_id = None
     invoice.document_type = None
+    invoice.billed_elsewhere = False
     _match_held_lines(db, invoice)
     _take_under_review(invoice)
     audit.record(db, user, "invoice.kept", "invoice", invoice.id, tenant_id, **held_as)
@@ -621,7 +674,7 @@ def delete_invoice(
         original = find_original(db, copy)
         if original is not None:
             copy.duplicate_of_id = original.id
-        elif copy.document_type is None:
+        elif not copy.is_held:
             _match_held_lines(db, copy)
     db.commit()
 

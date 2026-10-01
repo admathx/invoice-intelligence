@@ -147,6 +147,18 @@ describe("the realistic test set's actions", () => {
     expect(describeEvent(event("invoice.extracted", { document_type: "statement" }))).toBe(
       "read it; it looks like a statement, not an invoice",
     );
+    expect(describeEvent(event("invoice.extracted", { line_count: 9, billed_to: "BLUE OAK KITCHEN" }))).toBe(
+      "read 9 items; it's made out to BLUE OAK KITCHEN, not this restaurant",
+    );
+    expect(describeEvent(event("invoice.extracted", { line_count: 9, other_invoices_in_file: 2 }))).toBe(
+      "read 9 items; the file held 2 more invoices, added on their own",
+    );
+    expect(describeEvent(event("invoice.kept", { billed_to: "BLUE OAK KITCHEN" }))).toBe(
+      "said the invoice is this restaurant's",
+    );
+    expect(describeEvent(event("invoice.split_out", { pages: [3, 4] }))).toBe(
+      "found this invoice in a file with others, and added it on its own",
+    );
     expect(describeEvent(event("invoice.deleted", { invoice_number: "88214", distributor: "Sysco", total: "142.50" }))).toBe(
       "deleted invoice 88214 from Sysco (total 142.50)",
     );

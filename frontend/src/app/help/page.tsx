@@ -97,8 +97,8 @@ export default async function HelpPage() {
             <li>
               <strong>Email it.</strong> Each location has its own invoice email address. Send or forward invoices
               there, or ask your distributor to send them there directly. You can email photos of a paper invoice
-              too: one invoice per email, a photo per page. Send only invoices there: any photo emailed to it is read
-              as an invoice.
+              too, a photo per page. Zipped files and forwarded emails with the invoice inside work as well. Send
+              only invoices there: any photo emailed to it is read as an invoice.
               {inboxes.length > 0 && (
                 <ul className="mt-1 space-y-0.5">
                   {inboxes.map((l) => (
@@ -119,6 +119,14 @@ export default async function HelpPage() {
             that was also emailed) is held so it isn&rsquo;t counted twice. Open it and press <em>Delete it</em>, or{" "}
             <em>It&rsquo;s a different invoice</em> if it isn&rsquo;t a copy. Statements and price lists are held the
             same way: they aren&rsquo;t invoices, so nothing on them is used.
+          </p>
+          <p className="mt-2">
+            Several invoices in one file (a week&rsquo;s stack scanned together, or photos of two invoices in one
+            email) are separated: each becomes its own invoice. A long till receipt can be one tall photo.
+          </p>
+          <p className="mt-2">
+            An invoice made out to a different restaurant is held too, in case it was added to the wrong location.
+            Press <em>Delete it</em> and add it where it belongs, or <em>It&rsquo;s ours</em>.
           </p>
           <p className="mt-2">
             PDFs with a password can&rsquo;t be read. Open the file, save a copy without the password, and add that.

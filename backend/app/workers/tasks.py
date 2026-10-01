@@ -8,24 +8,26 @@ from pathlib import Path
 
 from sqlalchemy import delete, select
 
-from app import audit, business_distributors, ops, packs
+from app import audit, billed_to, business_distributors, ops, packs, splitting
 from app.analytics.price_creep import upsert_creep_alerts
 from app.config import settings
 from app.db import TENANT_SCOPE_BYPASS, SessionLocal, bind_tenant
 from app.extract.client import AnthropicExtractorClient, ExtractionFailedError, get_extractor
-from app.duplicates import find_original, one_at_a_time
+from app.duplicates import file_hash, find_original, one_at_a_time
 from app.extract.charges import is_charge
 from app.extract.confidence import assess_extraction
 from app.extract.schema import DOCUMENT_TYPES, PRICED_DOCUMENT_TYPES
 from app.extract.amounts import parse_amount
-from app.extract.dates import parse_invoice_date
+from app.extract.dates import dated_ahead, parse_invoice_date
 from app.extract.units import billing_unit
-from app.ingest.render import render_pdf_to_pngs
+from app.ingest.render import pdf_of_pages, render_pages
+from app.ingest.upload import save_invoice_bytes
 from app.models import Distributor, Invoice, InvoiceLineItem, PriceObservation, Tenant, build_price_observation
 from app.models.distributor import UNRECOGNIZED_SLUG
 from app.models.enums import InvoiceStatus, ReviewStatus
 from app.normalize.matcher import apply_match, match_line_item
-from app.storage import get_storage, read_uri, render_key, renders_prefix
+from app.queue import enqueue_extraction
+from app.storage import forget_original, get_storage, read_uri, render_key, renders_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,38 @@ def _clear_prior_attempt(db, invoice_id: uuid.UUID) -> None:
     db.execute(delete(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id))
 
 
+def _split_out(db, invoice: Invoice, pdf: bytes, pages: list[int], split_ids: list[uuid.UUID]) -> Invoice:
+    """Another invoice found in this one's file (app/splitting.py), as an
+    invoice of its own from its own pages, waiting to be read."""
+    data = pdf_of_pages(pdf, pages)
+    other = Invoice(
+        id=uuid.uuid4(),
+        tenant_id=invoice.tenant_id,
+        file_sha256=file_hash(data),
+        source=invoice.source,
+        # The email it came in, so a second delivery of that email still
+        # counts as already added whichever of them is later deleted.
+        source_message_id=invoice.source_message_id,
+        status=InvoiceStatus.received,
+        original_file_uri="",
+        split_from_id=invoice.id,
+    )
+    split_ids.append(other.id)  # before the write, so a failed write is cleaned up too
+    other.original_file_uri = save_invoice_bytes(other.id, None, data)
+    db.add(other)
+    audit.record(
+        db,
+        None,
+        "invoice.split_out",
+        "invoice",
+        other.id,
+        invoice.tenant_id,
+        from_invoice=invoice.id,
+        pages=[page + 1 for page in pages],
+    )
+    return other
+
+
 def process_invoice(invoice_id: str) -> None:
     """RQ job: render -> extract -> assess -> persist.
 
@@ -71,6 +105,9 @@ def process_invoice(invoice_id: str) -> None:
     deterministic FakeExtractorClient (see app.extract.client.get_extractor).
     """
     db = SessionLocal()
+    # Invoices taken out of this one's file: their stored files are removed
+    # again if this run fails before they're saved.
+    split_ids: list[uuid.UUID] = []
     try:
         # Locked from here until the `rendering` commit below, which makes the
         # status check and the clear one step. The invoice review endpoints
@@ -95,15 +132,32 @@ def process_invoice(invoice_id: str) -> None:
         # cleared first: a retry of a shorter re-upload mustn't show stale ones.
         storage = get_storage()
         storage.delete_prefix(renders_prefix(invoice.id))
+        original_pdf = read_uri(invoice.original_file_uri)
         with tempfile.TemporaryDirectory(prefix=f"render-{invoice_id}-") as scratch:
-            page_paths = render_pdf_to_pngs(read_uri(invoice.original_file_uri), Path(scratch))
-            for page_path in page_paths:
-                storage.put(render_key(invoice.id, page_path.name), page_path.read_bytes())
+            pages = render_pages(original_pdf, Path(scratch))
+            for page in pages:
+                storage.put(render_key(invoice.id, page.path.name), page.path.read_bytes())
 
             invoice.status = InvoiceStatus.extracting
             db.commit()
 
-            extracted, cost_usd = extractor.extract(page_paths)
+            extracted, cost_usd = extractor.extract([page.path for page in pages])
+
+        # Several invoices in one file: this invoice is the first of them,
+        # and each of the others becomes its own, read separately. Not from
+        # a file that was itself split out: one level is all a real stack
+        # needs, and it can't then go on dividing.
+        others = (
+            splitting.plan(extracted.page_invoices, [page.pdf_page for page in pages])
+            if invoice.split_from_id is None
+            else None
+        )
+        other_pages: list[str] = []
+        if others:
+            own_pages = set(others.pop(min(others)))
+            for number in sorted(others):
+                _split_out(db, invoice, original_pdf, others[number], split_ids)
+            other_pages = [page.path.name for page in pages if page.pdf_page not in own_pages]
 
         distributor = db.scalar(select(Distributor).where(Distributor.slug == extracted.distributor))
         invoice.printed_distributor = (extracted.distributor_name or "").strip() or None
@@ -120,6 +174,7 @@ def process_invoice(invoice_id: str) -> None:
         # rather than failing it: everything else on it may be fine.
         invoice.invoice_date = parse_invoice_date(extracted.invoice_date)
         invoice.delivery_date = parse_invoice_date(extracted.delivery_date)
+        invoice.printed_customer = (extracted.customer_name or "").strip() or None
         # Amounts as printed ("$1,234.50", "(12.50)": app/extract/amounts.py).
         # A blank or unreadable one stays empty, and the arithmetic check
         # below then holds the invoice for a person: per SPEC.md §1, "wrong
@@ -141,16 +196,25 @@ def process_invoice(invoice_id: str) -> None:
         # that isn't `extracted`. Doing it after (as this used to) meant
         # auto-matched lines on an invoice with a misread price had already
         # written observations by the time the arithmetic caught the error.
-        invoice.status = assess_extraction(extracted, distributor_known=distributor_known).status
-        if invoice.invoice_date is None:
-            # Its prices can't be placed in time until someone adds the date
-            # (the review screen asks for it).
+        assessment = assess_extraction(extracted, distributor_known=distributor_known)
+        invoice.status = assessment.status
+        if assessment.failed_line_numbers or not assessment.totals_reconcile:
+            # Its numbers don't add up, and one way that happens is the file
+            # being divided wrongly: a page counted as another invoice that
+            # was this one's second page. Every page stays on its review
+            # screen, so whatever is missing can be typed in from the picture.
+            other_pages = []
+        if invoice.invoice_date is None or dated_ahead(invoice.invoice_date, invoice.created_at.date()):
+            # Its prices can't be placed in time until someone adds the date,
+            # or corrects one that hasn't happened yet (the review screen
+            # asks for it).
             invoice.status = InvoiceStatus.needs_review
 
         # Held, whatever its numbers say, when it isn't an invoice (a
-        # statement, a price list) or looks like a copy of one already added
-        # (app/duplicates.py). Its lines are kept, unmatched and off Match
-        # items, until a person deletes it or says otherwise.
+        # statement, a price list), looks like a copy of one already added
+        # (app/duplicates.py), or names another restaurant (app/billed_to.py).
+        # Its lines are kept, unmatched and off Match items, until a person
+        # deletes it or says otherwise.
         # Anything unrecognized is read as an invoice: holding a real one as
         # "not an invoice" hides its prices, which is worse than a statement
         # held for its numbers not adding up.
@@ -159,13 +223,16 @@ def process_invoice(invoice_id: str) -> None:
         one_at_a_time(db, invoice.tenant_id)  # until the commit below
         original = find_original(db, invoice)
         invoice.duplicate_of_id = original.id if original is not None else None
-        held = invoice.document_type is not None or original is not None
-        if held:
-            invoice.status = InvoiceStatus.needs_review
-
         # Needed for the denormalized metro/volume_tier on any price
         # observation this invoice produces (see below).
         tenant = db.get(Tenant, invoice.tenant_id)
+        invoice.billed_elsewhere = billed_to.is_elsewhere(
+            db, tenant, invoice.printed_customer, distributor.id if distributor_known else None, invoice.id
+        )
+        held = invoice.is_held
+        if held:
+            invoice.status = InvoiceStatus.needs_review
+
         wrote_any_observation = False
         # Packs a person entered for this distributor's items that print none
         # (app/packs.py), filled in below.
@@ -251,6 +318,8 @@ def process_invoice(invoice_id: str) -> None:
             printed_distributor=invoice.printed_distributor,
             document_type=invoice.document_type,
             duplicate_of=invoice.duplicate_of_id,
+            billed_to=invoice.printed_customer if invoice.billed_elsewhere else None,
+            other_invoices_in_file=len(split_ids) or None,
             line_count=len(extracted.line_items),
             extraction_model=invoice.extraction_model,
             extraction_cost_usd=invoice.extraction_cost_usd,
@@ -258,6 +327,12 @@ def process_invoice(invoice_id: str) -> None:
         db.commit()
     except Exception as exc:
         db.rollback()
+        for split_id in split_ids:
+            try:
+                forget_original(split_id)
+            except Exception:
+                logger.exception("couldn't remove the file of unsaved invoice %s", split_id)
+        split_ids = []
         invoice = _get_invoice_bypassing_tenant_scope(db, uuid.UUID(invoice_id))
         if invoice is not None:
             invoice.status = InvoiceStatus.failed
@@ -288,6 +363,23 @@ def process_invoice(invoice_id: str) -> None:
                 exc=exc,
             )
         raise
+
+    # The review screen shows this invoice's own pages, not those of the
+    # other invoices in its file. After the commit: a run that fails keeps
+    # every page for whoever types it in by hand.
+    for name in other_pages:
+        try:
+            storage.delete(render_key(invoice_id, name))
+        except Exception:
+            logger.exception("couldn't remove page %s of invoice %s", name, invoice_id)
+
+    # The other invoices in its file are saved; now they're read. Not fatal:
+    # one that can't be queued is picked up by the scheduler (app/requeue.py).
+    for split_id in split_ids:
+        try:
+            enqueue_extraction(split_id)
+        except Exception:
+            logger.exception("couldn't queue invoice %s, split out of %s", split_id, invoice_id)
 
     # Outside the failure handler on purpose. The invoice and its line items
     # are durably committed above; refreshing alerts is derived work. It used

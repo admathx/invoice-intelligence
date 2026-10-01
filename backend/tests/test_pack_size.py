@@ -381,3 +381,87 @@ def test_a_described_pack_only_prices_against_a_product_it_converts_to():
         _apply_pack_size(pack, Decimal("1"), Decimal("32.99"), "CS", _product(BaseUom.each))
     _, price = _apply_pack_size(pack_for_line(None, "CS", "BBQ SAUCE ORIGINAL 4/1 GAL"), Decimal("1"), Decimal("41.16"), "CS", _product(BaseUom.gal))
     assert price == Decimal("10.2900")
+
+
+# --- quarts, pints, metric and kegs -------------------------------------------
+
+from app.normalize.matcher import normalize_price  # noqa: E402
+from app.normalize.pack_size import pack_from_description  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "raw, unit, amount",
+    [
+        ("12/1 QT", "gal", "3"),
+        ("6/1 QT", "gal", "1.5"),
+        ("12/1 PT", "gal", "1.5"),
+        ("12/32 FL OZ", "gal", "3"),
+        ("12/32 FL. OZ.", "gal", "3"),
+        ("6/1 L", "gal", "1.585032"),
+        ("12/750 ML", "gal", "2.377548"),
+        ("1/5 KG", "lb", "11.0231"),
+        ("12/500 G", "lb", "13.22772"),
+        ("5 KG", "lb", "11.0231"),
+    ],
+)
+def test_quarts_pints_and_metric_packs_are_read_as_gallons_and_pounds(raw, unit, amount):
+    """Dairy comes in quarts, imported goods in metric; none could be priced."""
+    parsed = parse_pack_size(raw)
+    assert (parsed.unit, parsed.base_units_per_case) == (unit, Decimal(amount))
+
+
+def test_a_case_of_quarts_is_priced_per_gallon():
+    qty, price = _apply_pack_size(parse_pack_size("12/1 QT"), Decimal("2"), Decimal("48.00"), "CS", _product(BaseUom.gal))
+    assert (qty, price) == (Decimal("6"), Decimal("16.0000"))
+
+
+def test_explicit_fluid_ounces_are_never_weight():
+    assert parse_pack_size("12/32 FL OZ").convertible_base_uoms == {BaseUom.gal, BaseUom.fl_oz}
+
+
+def test_a_line_billed_per_quart_is_a_quarter_gallon_each():
+    qty, price = _apply_pack_size(pack_for_line(None, "QT"), Decimal("8"), Decimal("4.00"), "QT", _product(BaseUom.gal))
+    assert (qty, price) == (Decimal("2"), Decimal("16.0000"))
+    # And against a printed pack of quarts.
+    qty, price = _apply_pack_size(parse_pack_size("12/1 QT"), Decimal("8"), Decimal("4.00"), "QT", _product(BaseUom.gal))
+    assert (qty, price) == (Decimal("2"), Decimal("16.0000"))
+
+
+def test_a_line_billed_per_kilogram_is_priced_per_pound():
+    qty, price = normalize_price(None, Decimal("10"), Decimal("22.0462"), "KG", _product(BaseUom.lb))
+    assert qty == Decimal("22.0462") and price == Decimal("10.0000")
+
+
+def test_a_keg_is_a_fraction_of_a_barrel_not_two_barrels():
+    """"1/2 BBL" read as one container of two was 62 gallons."""
+    assert parse_pack_size("1/2 BBL").base_units_per_case == Decimal("15.5")
+    assert parse_pack_size("1/2 BBL").unit == "gal" and parse_pack_size("1/2 BBL").is_single_container
+    assert parse_pack_size("1/6 BBL").base_units_per_case == Decimal(31) / 6
+    qty, price = _apply_pack_size(parse_pack_size("1/2 BBL"), Decimal("1"), Decimal("155.00"), "KEG", _product(BaseUom.gal))
+    assert (qty, price) == (Decimal("15.5"), Decimal("10.0000"))
+    with pytest.raises(PackSizeParseError):
+        parse_pack_size("2/1 BBL")
+
+
+def test_a_gross_is_not_grams():
+    with pytest.raises(PackSizeParseError):
+        parse_pack_size("1/10 GR")
+
+
+def test_a_case_of_quarts_written_into_the_description_is_read():
+    described = pack_from_description("CREAM HVY 40% 12/1 QT", "CS")
+    assert described is not None and (described.unit, described.base_units_per_case) == ("gal", Decimal("3"))
+    assert pack_from_description("PASTA PENNE 12/500 G", "CS").unit == "lb"
+    # A size alone still isn't a case.
+    assert pack_from_description("CREAM HVY 1 QT", "CS") is None
+
+
+def test_a_bare_g_is_grams_only_where_it_cannot_be_gallons():
+    """"4/1 G" is four gallon jugs on some invoices; never guessed."""
+    assert parse_pack_size("24/85 G").unit == "lb"
+    for ambiguous in ("4/1 G", "1/5 G", "5 G"):
+        with pytest.raises(PackSizeParseError):
+            parse_pack_size(ambiguous)
+    assert pack_from_description("BLEACH 4/1 G", "CS") is None
+    # And as a billing unit it's neither.
+    assert normalize_price(None, Decimal("2"), Decimal("5.00"), "G", _product(BaseUom.gal)) == (None, None)

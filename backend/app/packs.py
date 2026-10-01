@@ -26,6 +26,7 @@ from app.analytics.benchmark import account_key_for
 from app.matching_queue import is_repeat, item_key
 from app.models import Invoice, InvoiceLineItem, PriceObservation, RememberedPack, Tenant, build_price_observation
 from app.models.enums import ReviewStatus
+from app.models.invoice import not_held
 from app.normalize.description_expansion import description_similarity
 from app.normalize.matcher import MIN_ALIAS_DESCRIPTION_SIMILARITY, _exact_match_result, apply_match, match_line_item
 from app.normalize.pack_size import PackSizeParseError, pack_for_line
@@ -186,8 +187,7 @@ def apply_to_item(db: Session, tenant: Tenant, source: InvoiceLineItem, distribu
                 InvoiceLineItem.id != source.id,
                 InvoiceLineItem.review_status != ReviewStatus.not_product,
                 Invoice.distributor_id == distributor_id,
-                Invoice.duplicate_of_id.is_(None),
-                Invoice.document_type.is_(None),
+                *not_held(),
             )
         ).all()
         if is_repeat(source, line)

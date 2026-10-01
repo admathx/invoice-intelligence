@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, Enum, ForeignKey, Index, Numeric, String
+from sqlalchemy import Boolean, Date, Enum, ForeignKey, Index, Numeric, String, false
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -53,6 +53,16 @@ class Invoice(Base, TenantScoped):
     document_type: Mapped[str | None] = mapped_column(String, nullable=True)
     # The distributor's name as printed, whatever it matched to.
     printed_distributor: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The restaurant it was delivered or billed to, as printed.
+    printed_customer: Mapped[str | None] = mapped_column(String, nullable=True)
+    # That name is another restaurant's (app/billed_to.py): held until a
+    # person deletes it or says it's theirs.
+    billed_elsewhere: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    # The invoice whose file this one was taken out of, when one file held
+    # several invoices (app/splitting.py).
+    split_from_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invoices.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     status: Mapped[InvoiceStatus] = mapped_column(
         Enum(InvoiceStatus, name="invoice_status"), nullable=False, default=InvoiceStatus.received
@@ -63,3 +73,15 @@ class Invoice(Base, TenantScoped):
     extracted_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+    @property
+    def is_held(self) -> bool:
+        """Held whatever its numbers say, with nothing on it used or matched
+        until a person settles it: a likely copy, not an invoice, or another
+        restaurant's."""
+        return self.duplicate_of_id is not None or self.document_type is not None or self.billed_elsewhere
+
+
+def not_held():
+    """Invoice.is_held, negated, as SQL conditions."""
+    return (Invoice.duplicate_of_id.is_(None), Invoice.document_type.is_(None), Invoice.billed_elsewhere.is_(False))

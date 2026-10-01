@@ -496,7 +496,7 @@ def set_pack_size(
     db.refresh(line)
     if invoice.status in BEING_READ:
         raise HTTPException(status_code=409, detail="It's still being read. Try again in a minute.")
-    if invoice.duplicate_of_id is not None or invoice.document_type is not None:
+    if invoice.is_held:
         raise HTTPException(status_code=409, detail="This invoice is on hold. Deal with that on the invoice first.")
     if line.review_status == ReviewStatus.not_product:
         raise HTTPException(status_code=409, detail="That's marked as a fee or charge, which has no pack size.")

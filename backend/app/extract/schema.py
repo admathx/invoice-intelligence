@@ -29,6 +29,12 @@ class ExtractedInvoice(BaseModel):
     # invoice".
     distributor_name: str | None = None
     document_type: Literal["invoice", "credit_memo", "statement", "price_list", "other"] = "invoice"
+    # The restaurant it was delivered or billed to, as printed.
+    customer_name: str | None = None
+    # Which invoice each page image belongs to (1, 2, 3 in order; 0 for a
+    # page that belongs to none), when one file holds several. Only the
+    # first is read into the fields here (app/splitting.py).
+    page_invoices: list[int] = []
     invoice_number: str
     invoice_date: str
     delivery_date: str | None = None

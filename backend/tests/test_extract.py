@@ -300,3 +300,37 @@ def test_the_output_cap_leaves_room_for_the_largest_invoices(extractor_client):
     extractor_client.extract([])
 
     assert stub.calls[0]["max_tokens"] >= 180 * 120
+
+
+# --- no subtotal, no tax line ------------------------------------------------
+
+
+def test_with_no_subtotal_printed_the_items_are_checked_against_the_total():
+    """A short invoice or a till receipt prints only a total; every one was held."""
+    invoice = _invoice([_line()], subtotal="", tax="1.5000", total="21.5000")
+    assessment = assess_extraction(invoice)
+    assert assessment.status == InvoiceStatus.extracted
+    assert assessment.lines_sum_to_subtotal and assessment.totals_reconcile
+
+
+def test_with_no_subtotal_a_total_the_items_do_not_reach_is_still_held():
+    invoice = _invoice([_line()], subtotal="", tax="0.0000", total="25.0000")
+    assessment = assess_extraction(invoice)
+    assert assessment.status == InvoiceStatus.needs_review
+    assert assessment.totals_reconcile is False
+
+
+def test_no_tax_line_is_no_tax():
+    invoice = _invoice([_line()], tax="")
+    assert assess_extraction(invoice).status == InvoiceStatus.extracted
+    # But a tax that was printed and couldn't be read still fails: the total includes it.
+    invoice = _invoice([_line()], tax="", total="21.5000")
+    assert assess_extraction(invoice).status == InvoiceStatus.needs_review
+
+
+def test_an_unreadable_line_total_is_not_excused_by_a_missing_subtotal():
+    invoice = _invoice([_line()], subtotal="", total="20.0000")
+    invoice.line_items[0].extended_price = ""
+    assessment = assess_extraction(invoice)
+    assert assessment.status == InvoiceStatus.needs_review
+    assert assessment.lines_sum_to_subtotal is False

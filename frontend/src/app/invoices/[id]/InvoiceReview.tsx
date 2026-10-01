@@ -60,9 +60,15 @@ export type InvoiceDetail = {
   // an invoice at all (a statement, a price list).
   duplicate_of_id: string | null;
   duplicate_of_label: string | null;
+  duplicate_is_same_file: boolean;
   document_type: string | null;
   // The distributor's name as printed, offered when adding one.
   printed_distributor: string | null;
+  // Also held: made out to what looks like another restaurant.
+  printed_customer: string | null;
+  billed_elsewhere: boolean;
+  // Said when the file held more than one invoice.
+  split_note: string | null;
 };
 
 const DOCUMENT_LABEL: Record<string, string> = {
@@ -147,7 +153,13 @@ export default function InvoiceReview({
   // Extraction's "other" is stored as a real distributor row but isn't in the
   // picker (it isn't a choice), so it reads as unrecognized here, same as NULL.
   const recognized = distributorList.some((d) => d.id === invoice.distributor_id);
-  const held = invoice.duplicate_of_id ? "copy" : invoice.document_type ? "document" : null;
+  const held = invoice.duplicate_of_id
+    ? "copy"
+    : invoice.document_type
+      ? "document"
+      : invoice.billed_elsewhere
+        ? "elsewhere"
+        : null;
   const reading = READING_STATUSES.has(invoice.status);
 
   // Only values that actually differ from what the server holds count as
@@ -354,6 +366,8 @@ export default function InvoiceReview({
         </p>
       )}
 
+      {invoice.split_note && <p className="mb-3 text-sm text-gray-600">{invoice.split_note}</p>}
+
       {editable && (
         <div
           className={`mb-4 rounded-lg border border-l-4 px-4 py-3 text-sm ${
@@ -363,11 +377,15 @@ export default function InvoiceReview({
           }`}
         >
           <p className={`font-medium ${invoice.check.passes ? "text-brand-900" : "text-amber-900"}`}>
-            {held === "copy"
+            {held === "copy" && invoice.duplicate_is_same_file
+              ? `These look like more pages of ${invoice.duplicate_of_label ?? "an invoice"} from the same file, so nothing here is used. Delete this and add anything missing to that invoice.`
+              : held === "copy"
               ? `This looks like a copy of ${invoice.duplicate_of_label ?? "an invoice you already added"}, so nothing on it is used.`
               : held === "document"
                 ? `This looks like ${DOCUMENT_LABEL[invoice.document_type ?? ""] ?? "something other than an invoice"}, so nothing on it is used.`
-                : invoice.status === "failed"
+                : held === "elsewhere"
+                  ? `This is made out to ${invoice.printed_customer ?? "another restaurant"}, which doesn't look like this restaurant, so nothing on it is used.`
+                  : invoice.status === "failed"
                   ? "We couldn't read this invoice. Type in its items from the picture, then save."
                   : invoice.check.passes
                     ? "Everything adds up now. Confirm the invoice to start using its prices."
@@ -379,7 +397,7 @@ export default function InvoiceReview({
                 Delete it
               </button>
               <button type="button" onClick={() => void send("POST", "/keep")} disabled={busy} className="btn-secondary btn-sm">
-                {held === "copy" ? "It's a different invoice" : "It is an invoice"}
+                {held === "copy" ? "It's a different invoice" : held === "elsewhere" ? "It's ours" : "It is an invoice"}
               </button>
             </div>
           )}
