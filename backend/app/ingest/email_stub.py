@@ -90,6 +90,9 @@ class EmailAttachment:
     content: bytes
     disposition: str | None = None
     content_id: str | None = None
+    # Why the whole email is turned away on its account: a zip that couldn't
+    # be taken in full (route_email).
+    problem: str | None = None
 
     @property
     def is_pdf(self) -> bool:
@@ -190,10 +193,17 @@ def _attachments(message: EmailMessage, depth: int = 0) -> list[EmailAttachment]
     and a week's invoices are often sent zipped. Both used to be turned away
     as "no PDF or photo attached"."""
     found: list[EmailAttachment] = []
+    # A delivery-failure notice carries the message that couldn't be
+    # delivered. That is something sent out coming back, not an invoice
+    # sent in.
+    bounce = message.get_content_type() == "multipart/report"
     for part in message.iter_attachments():
         filename = part.get_filename() or "attachment"
         content_type = (part.get_content_type() or "").lower()
         inner = None
+        if bounce and content_type in ("message/rfc822", "text/rfc822-headers", "message/delivery-status"):
+            found.append(EmailAttachment(filename="a delivery-failure notice", content_type=content_type, content=b""))
+            continue
         if content_type == "message/rfc822":
             parts = part.get_payload()
             inner = parts[0] if isinstance(parts, list) and parts else None
@@ -234,8 +244,12 @@ def _is_zip(attachment: EmailAttachment) -> bool:
 
 
 def _unzipped(archive: EmailAttachment) -> list[EmailAttachment]:
-    """The PDFs and pictures in a zip, as if each had been attached. When
-    there are none it can use, the zip itself, so a rejection names it."""
+    """The PDFs and pictures in a zip, as if each had been attached. A zip
+    that can't be taken in full (a password, a file too big, too many
+    files) comes back with a `problem`, which turns the whole email away:
+    taking forty invoices of sixty and saying nothing would be worse. With
+    nothing usable in it and nothing wrong, the zip itself, so a rejection
+    names it."""
     limit = settings.max_upload_bytes
     files: list[EmailAttachment] = []
     problem = None
@@ -247,27 +261,31 @@ def _unzipped(archive: EmailAttachment) -> list[EmailAttachment]:
             # gigabytes of memory.
             budget = 4 * limit
             for info in zipped.infolist():
-                if info.is_dir() or len(files) >= MAX_ZIP_FILES or budget <= 0:
+                if info.is_dir():
                     continue
                 if info.flag_bits & 0x1:
-                    problem = "password-protected"
-                    continue
+                    problem = "it's password-protected"
+                    break
+                if budget <= 0:
+                    problem = "there's too much in it"
+                    break
                 allowed = min(limit, budget)
                 with zipped.open(info) as member:
                     data = member.read(allowed + 1)
                 budget -= len(data)
                 if len(data) > allowed:
-                    # Cut short, so not the file it was.
-                    problem = problem or ("a file in it is too big" if allowed == limit else "there's too much in it")
-                    continue
+                    problem = "a file in it is too big" if allowed == limit else "there's too much in it"
+                    break
                 if is_pdf_bytes(data) or image_kind(data) is not None:
+                    if len(files) >= MAX_ZIP_FILES:
+                        problem = f"it holds more than {MAX_ZIP_FILES} invoices; send them in smaller batches"
+                        break
                     files.append(EmailAttachment(filename=Path(info.filename).name, content_type="", content=data))
     except (zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError, EOFError, ValueError):
-        problem = problem or "couldn't be opened"
-    if files:
-        return files
-    label = f"{archive.filename} ({problem})" if problem else archive.filename
-    return [EmailAttachment(filename=label, content_type=archive.content_type, content=b"")]
+        problem = "it couldn't be opened"
+    if problem:
+        return [EmailAttachment(filename=archive.filename, content_type=archive.content_type, content=b"", problem=problem)]
+    return files or [EmailAttachment(filename=archive.filename, content_type=archive.content_type, content=b"")]
 
 
 def find_tenant_for_recipients(db: Session, recipients: list[str]) -> Tenant | None:
@@ -395,6 +413,10 @@ def route_email(db: Session, raw: bytes) -> _Routed | _Rejected:
     tenant = find_tenant_for_recipients(db, parsed.recipients)
     if tenant is None:
         return _Rejected(f"no tenant for recipient address(es): {', '.join(parsed.recipients)}{context}", parsed)
+
+    for attachment in parsed.attachments:
+        if attachment.problem:
+            return _Rejected(f"attachment {attachment.filename!r} rejected: {attachment.problem}{context}", parsed, tenant)
 
     pdfs = parsed.pdf_attachments
     if not pdfs:

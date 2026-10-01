@@ -98,8 +98,8 @@ class InvoiceCheck:
     # The "copy" is the invoice this one's pages were taken from: more of
     # that invoice's pages, counted as another invoice (app/splitting.py).
     more_pages_of_it: bool = False
-    # Its number is that invoice's with a rebill suffix: a reissue, of which
-    # one should be kept.
+    # One's number is the other's with a rebill suffix: an original and its
+    # reissue, of which one should be kept.
     reissue: bool = False
     not_an_invoice: str | None = None
     billed_to: str | None = None
@@ -118,8 +118,8 @@ class InvoiceCheck:
             )
         elif self.copy_of and self.reissue:
             out.append(
-                f"It looks like a reissue of {self.copy_of}, so only one should count. Delete this one, or delete "
-                "that one and this takes its place; or tell us they're separate invoices."
+                f"This and {self.copy_of} look like an original and its reissue, so only one should count. Delete "
+                "this one, or delete that one and this takes its place; or tell us they're separate invoices."
             )
         elif self.copy_of:
             out.append(f"It looks like a copy of {self.copy_of}. Delete it, or tell us it's a different invoice.")

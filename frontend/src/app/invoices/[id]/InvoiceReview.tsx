@@ -381,7 +381,7 @@ export default function InvoiceReview({
             {held === "copy" && invoice.duplicate_is_same_file
               ? `These look like more pages of ${invoice.duplicate_of_label ?? "an invoice"} from the same file, so nothing here is used. Delete this and add anything missing to that invoice.`
               : held === "copy" && invoice.duplicate_is_reissue
-              ? `This looks like a reissue of ${invoice.duplicate_of_label ?? "an invoice you already added"}, so nothing on it is used until one of the two is deleted. Delete this one, or open that one and delete it: this then takes its place.`
+              ? `This and ${invoice.duplicate_of_label ?? "an invoice you already added"} look like an original and its reissue, so nothing on this one is used until one of the two is deleted. Delete this one, or open that one and delete it: this then takes its place.`
               : held === "copy"
               ? `This looks like a copy of ${invoice.duplicate_of_label ?? "an invoice you already added"}, so nothing on it is used.`
               : held === "document"

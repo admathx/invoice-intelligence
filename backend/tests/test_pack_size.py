@@ -451,7 +451,11 @@ def test_a_gross_is_not_grams():
 def test_a_case_of_quarts_written_into_the_description_is_read():
     described = pack_from_description("CREAM HVY 40% 12/1 QT", "CS")
     assert described is not None and (described.unit, described.base_units_per_case) == ("gal", Decimal("3"))
-    assert pack_from_description("PASTA PENNE 12/500 G", "CS").unit == "lb"
+    # A lone letter after the size is a size (Large), not litres or grams.
+    assert pack_from_description("PASTA PENNE 12/500 G", "CS") is None
+    assert pack_from_description("GLOVE NITRILE PF 10/100 L", "CS") is None
+    assert pack_from_description("OIL OLIVE 12/750 ML", "CS").unit == "gal"
+    assert pack_from_description("RICE BASMATI 4/5 KG", "CS").unit == "lb"
     # A size alone still isn't a case.
     assert pack_from_description("CREAM HVY 1 QT", "CS") is None
 

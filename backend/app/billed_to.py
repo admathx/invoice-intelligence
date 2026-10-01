@@ -17,8 +17,8 @@ only on evidence:
   invoice is someone else's account. A new distributor using a name not
   seen before says nothing: that is how a restaurant's names are learned.
 
-Held, a person deletes it or says it's theirs (after which the name is one
-that distributor uses for them).
+Held, a person deletes it or says it's theirs, after which that exact name
+on that distributor's invoices is theirs, whichever rule held it.
 """
 import uuid
 from difflib import SequenceMatcher
@@ -76,26 +76,35 @@ def is_elsewhere(
     `invoice_id` is the invoice itself, left out of its own history."""
     if not printed or not name_words(printed):
         return False
+    # The names this distributor's invoices here have carried: read without
+    # being held, or held and then kept by a person.
+    usual = (
+        db.execute(
+            select(Invoice.printed_customer, func.count())
+            .where(
+                Invoice.tenant_id == tenant.id,
+                Invoice.distributor_id == distributor_id,
+                Invoice.id != invoice_id,
+                Invoice.printed_customer.is_not(None),
+                Invoice.billed_elsewhere.is_(False),
+                Invoice.status != InvoiceStatus.failed,
+            )
+            .group_by(Invoice.printed_customer)
+        ).all()
+        if distributor_id is not None
+        else []
+    )
+    # Exactly a name already theirs settles it, before anything else: an
+    # owner's two restaurants on one distributor account are both billed
+    # under one's name, and "It's ours" has to stick.
+    if name_key(printed) in {name_key(name) for name, _ in usual}:
+        return False
     if tenant.account_id is not None:
         siblings = list(
             db.scalars(select(Tenant.name).where(Tenant.account_id == tenant.account_id, Tenant.id != tenant.id))
         )
         if names_sibling(printed, tenant.name, siblings):
             return True
-    if same_name(printed, tenant.name) or distributor_id is None:
-        return False
-    usual = db.execute(
-        select(Invoice.printed_customer, func.count())
-        .where(
-            Invoice.tenant_id == tenant.id,
-            Invoice.distributor_id == distributor_id,
-            Invoice.id != invoice_id,
-            Invoice.printed_customer.is_not(None),
-            Invoice.billed_elsewhere.is_(False),
-            Invoice.status != InvoiceStatus.failed,
-        )
-        .group_by(Invoice.printed_customer)
-    ).all()
-    if sum(count for _, count in usual) < MIN_HISTORY:
+    if same_name(printed, tenant.name) or sum(count for _, count in usual) < MIN_HISTORY:
         return False
     return not any(same_name(printed, name) for name, _ in usual)

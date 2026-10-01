@@ -68,16 +68,18 @@ def one_at_a_time(db: Session, tenant_id) -> None:
 
 def find_original(db: Session, invoice: Invoice) -> Invoice | None:
     """The earliest invoice added before this one that it looks like a copy
-    of: same location, same distributor, same number (or the number this one
-    reissues). None without a number or a distributor to go on. For an
-    unattributed invoice, the printed distributor name has to match as well.
+    of: same location, same distributor, same number, or one the reissue of
+    the other ("904718271-R"), whichever of those arrived first. None without
+    a number or a distributor to go on. For an unattributed invoice, the
+    printed distributor name has to match as well.
 
     A credit and a charge are never copies of each other: a credit memo
     often carries the number of the invoice it credits."""
     key = number_key(invoice.invoice_number)
     if not key or invoice.distributor_id is None:
         return None
-    keys = [key, *([reissue_of(invoice.invoice_number)] if reissue_of(invoice.invoice_number) else [])]
+    reissued = reissue_of(invoice.invoice_number)
+    keys = [key, reissued] if reissued else [key]
     stored_key = func.ltrim(func.regexp_replace(func.upper(Invoice.invoice_number), "[^A-Z0-9]", "", "g"), "0")
     candidates = db.scalars(
         select(Invoice)
@@ -91,7 +93,9 @@ def find_original(db: Session, invoice: Invoice) -> Invoice | None:
                 and_(Invoice.created_at == invoice.created_at, Invoice.id < invoice.id),
             ),
             Invoice.distributor_id == invoice.distributor_id,
-            stored_key.in_(keys),
+            # Its own number, the one it reissues, or (narrowed below) one
+            # that reissues it: a suffix after the same number.
+            or_(stored_key.in_(keys), stored_key.like(f"{key}%")),
             Invoice.status != InvoiceStatus.failed,
             # The original, not another copy of it.
             Invoice.duplicate_of_id.is_(None),
@@ -102,5 +106,10 @@ def find_original(db: Session, invoice: Invoice) -> Invoice | None:
     if distributor is not None and distributor.slug == UNRECOGNIZED_SLUG:
         printed = name_key(invoice.printed_distributor or "")
         candidates = [c for c in candidates if printed and name_key(c.printed_distributor or "") == printed]
-    candidates = [c for c in candidates if _is_credit(c) == _is_credit(invoice)]
+    candidates = [
+        c
+        for c in candidates
+        if (number_key(c.invoice_number) in keys or reissue_of(c.invoice_number) == key)
+        and _is_credit(c) == _is_credit(invoice)
+    ]
     return candidates[0] if candidates else None

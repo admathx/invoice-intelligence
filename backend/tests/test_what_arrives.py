@@ -199,6 +199,22 @@ def test_an_invoice_taken_out_of_a_file_is_read_like_any_other_and_not_split_aga
     assert len(db_session.scalars(select(Invoice).where(Invoice.tenant_id == tenant.id)).all()) == 2
 
 
+def test_a_file_that_cannot_be_taken_apart_is_left_whole_not_failed(db_session, tenant, monkeypatch, queued):
+    """It rendered and was read (and paid for); only cutting out the other
+    invoices' pages failed."""
+
+    def broken(*_a, **_k):
+        raise RuntimeError("pdfium: failed to import pages")
+
+    monkeypatch.setattr("app.workers.tasks.pdf_of_pages", broken)
+    before = len(queued)
+    first = _read(monkeypatch, tenant, _pdf(["A", "B"]), _numbered(7, page_invoices=[1, 2]))
+    db_session.expire_all()
+    assert db_session.get(Invoice, first).status == InvoiceStatus.extracted
+    assert db_session.scalars(select(Invoice).where(Invoice.split_from_id == first)).all() == []
+    assert page_names(first) == ["page_001.png", "page_002.png"] and len(queued) == before + 1  # only its own upload
+
+
 def test_one_invoice_with_a_blank_back_page_is_not_split(db_session, tenant, monkeypatch):
     first = _read(monkeypatch, tenant, _pdf(["front", ""]), _numbered(4, page_invoices=[1, 0]))
     db_session.expire_all()
@@ -303,6 +319,18 @@ def test_an_invoice_made_out_to_the_owners_other_restaurant_is_held(db_session, 
     assert resp.status_code == 200, resp.text
     assert resp.json()["billed_elsewhere"] is False
     assert not any("made out to" in reason for reason in resp.json()["check"]["reasons"])
+
+    # And it sticks: one distributor account covering both restaurants bills
+    # everything under the other's name, every week.
+    next_week = _read(monkeypatch, tenant, _pdf(["theirs again"]), _numbered(12, customer_name=sibling.name.upper()))
+    db_session.expire_all()
+    assert db_session.get(Invoice, next_week).billed_elsewhere is False
+    # From a distributor that hasn't been told, it is still held.
+    other = _read(
+        monkeypatch, tenant, _pdf(["us foods"]), _numbered(13, distributor="us_foods", customer_name=sibling.name.upper())
+    )
+    db_session.expire_all()
+    assert db_session.get(Invoice, other).billed_elsewhere is True
 
 
 def test_an_invoice_in_the_owners_company_name_is_not_held(db_session, tenant, sibling, monkeypatch):
@@ -430,7 +458,10 @@ def test_a_credit_memo_printed_with_positive_amounts_counts_as_a_credit(db_sessi
 
 def test_a_credit_memo_already_negative_or_an_invoice_is_left_as_printed():
     assert as_credits(FAKE_PAYLOAD) is None  # an invoice
-    negative = FAKE_PAYLOAD.model_copy(update={"document_type": "credit_memo", "total": "-142.50", "subtotal": "-142.50"})
+    rows = [li.model_copy(update={"quantity": f"-{li.quantity}", "extended_price": f"-{li.extended_price}"}) for li in FAKE_PAYLOAD.line_items]
+    negative = FAKE_PAYLOAD.model_copy(
+        update={"document_type": "credit_memo", "total": "-142.50", "subtotal": "-142.50", "line_items": rows}
+    )
     assert as_credits(negative) is None
     mixed = FAKE_PAYLOAD.model_copy(
         update={
@@ -439,6 +470,17 @@ def test_a_credit_memo_already_negative_or_an_invoice_is_left_as_printed():
         }
     )
     assert as_credits(mixed) is None
+
+
+def test_positive_rows_under_a_total_printed_as_a_credit_follow_the_total(db_session, tenant, monkeypatch):
+    """Rows 95.00 and 47.50, TOTAL 142.50 CR: read, the rows and the total
+    disagreed in sign and the memo was held for not adding up."""
+    memo = _numbered(65, document_type="credit_memo", subtotal="142.50", tax="0.00", total="142.50 CR")
+    invoice_id = _read(monkeypatch, tenant, _pdf(["credit memo, CR total"]), memo)
+    db_session.expire_all()
+    invoice = db_session.get(Invoice, invoice_id)
+    assert invoice.status == InvoiceStatus.extracted
+    assert (invoice.subtotal, invoice.tax, invoice.total) == (Decimal("-142.50"), Decimal("0"), Decimal("-142.50"))
 
 
 def test_a_credit_memo_with_its_invoices_number_is_not_a_copy_of_it(db_session, tenant, monkeypatch):
@@ -467,6 +509,20 @@ def test_a_rebills_number_names_the_invoice_it_reissues(number, base):
     assert reissue_of(number) == base
 
 
+def test_an_original_that_arrives_after_its_rebill_is_held_too(db_session, tenant, monkeypatch):
+    rebill = _read(monkeypatch, tenant, _pdf(["rebill first"]), _numbered(63, invoice_number="WA-0063-R"))
+    original = _read(monkeypatch, tenant, _pdf(["original, found later"]), _numbered(63))
+    # A longer number that merely starts the same is another invoice.
+    longer = _read(monkeypatch, tenant, _pdf(["another"]), _numbered(64, invoice_number="WA-00631"))
+    db_session.expire_all()
+    assert db_session.get(Invoice, rebill).duplicate_of_id is None
+    assert db_session.get(Invoice, original).duplicate_of_id == rebill
+    assert db_session.get(Invoice, longer).duplicate_of_id is None
+    detail = _detail(tenant, original)
+    assert detail["duplicate_is_reissue"] is True
+    assert any("an original and its reissue" in reason for reason in detail["check"]["reasons"])
+
+
 def test_a_rebill_is_held_against_its_original_and_takes_its_place_when_that_is_deleted(db_session, tenant, monkeypatch):
     """Ready beside its original, the delivery was counted twice."""
     original = _read(monkeypatch, tenant, _pdf(["original"]), _numbered(62))
@@ -475,7 +531,7 @@ def test_a_rebill_is_held_against_its_original_and_takes_its_place_when_that_is_
     assert db_session.get(Invoice, rebill).duplicate_of_id == original
     detail = _detail(tenant, rebill)
     assert detail["duplicate_is_reissue"] is True
-    assert any("reissue of invoice WA-0062" in reason for reason in detail["check"]["reasons"])
+    assert any("invoice WA-0062" in reason and "an original and its reissue" in reason for reason in detail["check"]["reasons"])
 
     resp = TestClient(app).delete(f"/invoices/{original}", params={"tenant_id": str(tenant.id)})
     assert resp.status_code == 204, resp.text

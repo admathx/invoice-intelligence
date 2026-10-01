@@ -2822,3 +2822,38 @@ Known and left: a quantity and price swapped by the reader can't be caught by
 arithmetic (the reworded instruction fixed the layout that showed it); a
 rebill that arrives before its original isn't linked; `2 EA` out of a
 `6/1 GAL` case stays unpriced (one jug, or the case?).
+
+### Review of everything since the third set, and brief version 5
+
+Ten findings, all fixed:
+
+- "It's ours" is remembered: an exact name already accepted on a
+  distributor's invoices here is this restaurant's, before the
+  owner's-other-restaurant rule is asked. One account covering two
+  restaurants was held every week.
+- A zip that can't be taken in full (over 50 invoices, too much to unpack,
+  a locked file) turns the whole email away with the reason; it used to take
+  what fit and say nothing about the rest.
+- An original that arrives after its rebill is held against it, as a rebill
+  arriving after its original already was.
+- A credit memo with positive rows under a total printed as a credit
+  ("157.72 CR") follows the total; it was held for not adding up.
+- The message returned inside a delivery-failure notice isn't read for
+  invoices.
+- A lone L or G after a size in a description is a size, not litres or
+  grams ("GLOVE NITRILE 10/100 L" read as a thousand litres).
+- A file that renders but can't be taken apart is left whole, not failed
+  after it was read.
+- The test runner no longer needs sets I and K or their plan files, and a
+  part split from an email never takes a real attachment's name.
+
+The fourth set replays to the same result after these. Backend 612 tests.
+
+The brief is version 5: about 375 documents. Sets I and K are dropped and
+A–D and F shrunk; expected outcomes corrected (a local vendor's first
+invoice at each restaurant needs a look; stacks, zips and reissues as the
+app now handles them); and five harder sets added: S (layouts that invite
+exchanging quantity and price, which arithmetic can't catch), T (copies and
+look-alikes), U (a year of invoices added in random order), V (matching
+traps, with a products plan) and W (hostile files and emails: instructions
+printed on an invoice, hidden text, oversized and malformed files).

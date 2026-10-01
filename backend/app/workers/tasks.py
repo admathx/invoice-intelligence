@@ -67,10 +67,9 @@ def _clear_prior_attempt(db, invoice_id: uuid.UUID) -> None:
     db.execute(delete(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id))
 
 
-def _split_out(db, invoice: Invoice, pdf: bytes, pages: list[int], split_ids: list[uuid.UUID]) -> Invoice:
+def _split_out(db, invoice: Invoice, data: bytes, pages: list[int], split_ids: list[uuid.UUID]) -> Invoice:
     """Another invoice found in this one's file (app/splitting.py), as an
-    invoice of its own from its own pages, waiting to be read."""
-    data = pdf_of_pages(pdf, pages)
+    invoice of its own from its own pages (`data`), waiting to be read."""
     other = Invoice(
         id=uuid.uuid4(),
         tenant_id=invoice.tenant_id,
@@ -156,9 +155,18 @@ def process_invoice(invoice_id: str) -> None:
         other_pages: list[str] = []
         if others:
             own_pages = set(others.pop(min(others)))
-            for number in sorted(others):
-                _split_out(db, invoice, original_pdf, others[number], split_ids)
-            other_pages = [page.path.name for page in pages if page.pdf_page not in own_pages]
+            try:
+                # All cut out before any is saved: a file that renders but
+                # can't be taken apart stays whole (and is then held for not
+                # adding up), not failed after it was read and paid for.
+                cut = [(others[number], pdf_of_pages(original_pdf, others[number])) for number in sorted(others)]
+            except Exception:
+                logger.exception("couldn't take the other invoices out of invoice %s's file; left whole", invoice_id)
+                cut = []
+            for their_pages, data in cut:
+                _split_out(db, invoice, data, their_pages, split_ids)
+            if cut:
+                other_pages = [page.path.name for page in pages if page.pdf_page not in own_pages]
 
         # A credit memo printed with positive amounts counts as the credit it
         # is (app/extract/credit_memo.py).

@@ -321,10 +321,12 @@ def parse_pack_size(raw_pack_size: str | None) -> ParsedPackSize:
 #   sack or tub, where it is the thing billed. Billed per case, a bare size
 #   is as often the unit inside ("SOUR CREAM 5 LB" in a case of four) and
 #   priced a tub of sour cream at four times its price per pound;
+# - not a lone L or G after the size: in a description those are sizes
+#   ("GLOVE NITRILE 10/100 L" is large gloves, not a thousand litres);
 # - never a bare OZ ("CHICKEN BREAST 6OZ", "CUPS 16 OZ"), a count ("120CT"
 #   slices), or "6/10#" (six #10 cans, or six 10 lb bags).
 _DESCRIBED_CASE = re.compile(
-    r"(?<![\d/.])([2-9]|[1-9]\d+)\s*/\s*(\d+(?:\.\d+)?)\s*(LBS?|GAL|DZ|DOZ|OZ|QT|PT|KG|ML|L|G)(?![A-Z0-9])"
+    r"(?<![\d/.])([2-9]|[1-9]\d+)\s*/\s*(\d+(?:\.\d+)?)\s*(LBS?|GAL|DZ|DOZ|OZ|QT|PT|KG|ML)(?![A-Z0-9])"
 )
 _DESCRIBED_BARE = re.compile(r"(?<![\d/.])(\d+(?:\.\d+)?)\s*(LBS?|#|GAL|DZ|DOZ)(?![A-Z0-9])")
 

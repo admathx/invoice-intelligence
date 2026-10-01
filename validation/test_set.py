@@ -172,10 +172,12 @@ def split(work_dir: Path) -> None:
             continue
         entry["split"] = {str(number): pages for number, pages in plan.items()}
         for position, number in enumerate(sorted(plan)[1:], start=2):
-            if entry.get("kind") == "attachment" and name.endswith("-att1"):
+            # An email's photos arrive as one PDF (NAME-att1), and its keys
+            # for the invoices in them are NAME-att2 ...: taken only when no
+            # real attachment has that name.
+            part = f"{name}.{position}"
+            if entry.get("kind") == "attachment" and name.endswith("-att1") and f"{name[:-1]}{position}" not in gate:
                 part = f"{name[:-1]}{position}"
-            else:
-                part = f"{name}.{position}"
             (work_dir / f"{part}.pdf").write_bytes(pdf_of_pages(pdf, plan[number]))
             truth = work_dir / f"{part}.truth.json"
             gate[part] = {**entry, "kind": "part", "part_of": name, "pages_of_file": plan[number], "files": [f"{part}.pdf"],
@@ -319,6 +321,13 @@ _OUTCOME = {
     "needs_review": "Needs a look",
     "failed": "Couldn't read",
 }
+
+
+def _plan(set_dir: Path, name: str) -> list[dict]:
+    """A plan file's rows; none when the set doesn't have it (not every
+    set includes every part)."""
+    path = set_dir / name
+    return list(csv.DictReader(path.open())) if path.exists() else []
 
 
 def _location(db, name: str, metro: str):
@@ -606,12 +615,12 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     )
     # The six compared with each other (set I) share a city; every other
     # restaurant is alone in its own, so it can't pass for a local business.
-    compared = {r["customer"] for r in csv.DictReader((set_dir / "peers_plan.csv").open())}
+    compared = {r["customer"] for r in _plan(set_dir, "peers_plan.csv")}
     tenants = {
         c: _location(db, f"{TEST_LOCATION_PREFIX}{c}", TEST_METRO if c in compared else f"{c} (test set)") for c in customers
     }
-    series_customer = next(r["customer"] for r in manifest if r["set"] == "H")
-    packs_customer = next(r["customer"] for r in manifest if r["set"] == "K")
+    series_customer = next((r["customer"] for r in manifest if r["set"] == "H"), None)
+    packs_customer = next((r["customer"] for r in manifest if r["set"] == "K"), None)
     changes_customer = next((r["customer"] for r in manifest if r["set"] == "O"), None)
     owners: dict[str, set] = defaultdict(set)
     for row in manifest:
@@ -641,7 +650,7 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
 
     packs_plan = {
         (Path(r["invoice_file"]).stem, r["item_code"]): r["real_pack_size"]
-        for r in csv.DictReader((set_dir / "packs_plan.csv").open())
+        for r in _plan(set_dir, "packs_plan.csv")
     }
     packs_entered: set[str] = set()
     dismissed: list[dict] = []
@@ -829,9 +838,12 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
         read(name, uuid.UUID(resp.json()["id"]), tenant_id)
 
     report = {"invoices": results}
-    report["series"] = _series_v2(db, tenant_ids[series_customer])
-    report["peers"] = _peers_v2(db, set_dir, tenants, gate)
-    report["packs"] = _packs_v2(db, tenant_ids[packs_customer], packs_plan, invoice_names, len(packs_entered))
+    if series_customer:
+        report["series"] = _series_v2(db, tenant_ids[series_customer])
+    if compared:
+        report["peers"] = _peers_v2(db, set_dir, tenants, gate)
+    if packs_customer:
+        report["packs"] = _packs_v2(db, tenant_ids[packs_customer], packs_plan, invoice_names, len(packs_entered))
     if changes_customer:
         report["changes"] = _changes(db, set_dir, tenant_ids[changes_customer], dismissed)
     score_path = work_dir / "score.json"
@@ -879,7 +891,7 @@ def _peers_v2(db, set_dir: Path, tenants: dict, gate: dict) -> dict:
     from app.db import bind_tenant
     from app.models import CanonicalSku, PriceObservation
 
-    peer_customers = sorted({r["customer"] for r in csv.DictReader((set_dir / "peers_plan.csv").open())})
+    peer_customers = sorted({r["customer"] for r in _plan(set_dir, "peers_plan.csv")})
     out: dict[str, list] = {}
     for customer in peer_customers:
         tenant = tenants[customer]
@@ -1026,11 +1038,11 @@ def _summarize_v2(report: dict) -> None:
         f"{ {k: r['distributor_name'] for k, r in results.items() if r.get('distributor') == 'other' and r.get('distributor_name') not in (None, 'Other') and not r.get('distributor_added') and not r.get('held_as')} }"
     )
     print(f"fee lines kept off Match items: {sum(r.get('fees', 0) for r in results.values())}")
-    print(f"\nSet H alerts ({len(report['series']['alerts'])}):")
-    for a in report["series"]["alerts"]:
+    print(f"\nSet H alerts ({len(report.get('series', {}).get('alerts', []))}):")
+    for a in report.get("series", {}).get("alerts", []):
         print(f"  {a['product']} from {a['distributor']}: {a['from']} -> {a['to']} ({float(a['pct_change']):+.1%})")
     print("\nSet I, what each restaurant is shown:")
-    for customer, rows in report["peers"].items():
+    for customer, rows in report.get("peers", {}).items():
         scopes = Counter(r["scope"] for r in rows)
         high = [r["product"] for r in rows if r["percentile"] and float(r["percentile"]) >= 0.9 and r["scope"] == "metro"]
         print(f"  {customer}: {dict(scopes)}; paying the most nearby for: {high}")
@@ -1047,6 +1059,8 @@ def _summarize_v2(report: dict) -> None:
             print(f"  {mark} {behavior}: expected {c['expected_alert']}, got {got}; {c['priced']}/{c['lines']} lines priced; products {c['products']}; {detail}")
         print(f"  alerts on steady items: {report['changes']['stable']['alerts']}")
         print(f"  dismissed along the way: {[(a['product'], a['after'], a['at']) for a in report['changes']['open_after_week_10']]}")
+    if "packs" not in report:
+        return
     k = report["packs"]
     print(
         f"\nSet K: {k['entered']} pack sizes entered by hand; {k['priced']}/{k['lines']} lines priced, "

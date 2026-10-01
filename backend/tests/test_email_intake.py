@@ -615,7 +615,7 @@ def test_a_password_protected_zip_says_so(db_session, inbox, tenant):
     message.add_attachment(archive, maintype="application", subtype="zip", filename="locked.zip")
     result = ingest_email_file(db_session, _write_raw(inbox, message), inbox)
     assert result.status == "quarantined"
-    assert "locked.zip (password-protected)" in result.reason
+    assert "'locked.zip' rejected: it's password-protected" in result.reason
 
 
 def test_a_zip_cannot_unpack_into_more_than_the_upload_limit(db_session, inbox, tenant, monkeypatch):
@@ -627,7 +627,7 @@ def test_a_zip_cannot_unpack_into_more_than_the_upload_limit(db_session, inbox, 
     message.add_attachment(bomb, maintype="application", subtype="zip", filename="big.zip")
     result = ingest_email_file(db_session, _write_raw(inbox, message), inbox)
     assert result.status == "quarantined"
-    assert "big.zip (a file in it is too big)" in result.reason
+    assert "'big.zip' rejected: a file in it is too big" in result.reason
 
 
 def test_a_word_file_is_not_opened_for_the_pictures_inside_it(db_session, inbox, tenant):
@@ -713,15 +713,62 @@ def test_a_photo_stored_sideways_is_judged_the_way_it_is_seen(db_session, inbox,
     assert ingest_email_file(db_session, path, inbox).status == "ingested"
 
 
-def test_a_zip_holding_more_than_it_may_takes_what_fits_and_no_cut_file(db_session, inbox, tenant, monkeypatch):
-    """Whatever is over the total isn't taken cut short as if it were whole."""
+def test_a_zip_that_cannot_be_taken_in_full_turns_the_whole_email_away(db_session, inbox, tenant, monkeypatch):
+    """Forty invoices of sixty, and not a word about the rest, would be worse
+    than none: nothing in an email is dropped silently."""
     from app.config import settings
-    from app.ingest.email_stub import EmailAttachment, _unzipped
+    from app.ingest import email_stub
 
     pdf = _pdf_bytes("fits")
+    # More together than may be unpacked.
     monkeypatch.setattr(settings, "max_upload_bytes", len(pdf) + 10)
-    padded = [(f"inv-{i}.pdf", pdf + bytes([i]) * 5) for i in range(8)]  # eight files; four fit the total
-    archive = EmailAttachment("many.zip", "application/zip", _zip(dict(padded)))
-    taken = _unzipped(archive)
-    assert 1 <= len(taken) < 8
-    assert all(a.content in {data for _, data in padded} for a in taken)
+    message = _message(tenant.inbox_address)
+    many = _zip({f"inv-{i}.pdf": pdf + bytes([i]) * 5 for i in range(8)})
+    message.add_attachment(many, maintype="application", subtype="zip", filename="many.zip")
+    result = ingest_email_file(db_session, _write_raw(inbox, message, "many.eml"), inbox)
+    assert result.status == "quarantined" and "'many.zip' rejected: there's too much in it" in result.reason
+
+    # More invoices than one zip may hold.
+    monkeypatch.setattr(settings, "max_upload_bytes", 25 * 1024 * 1024)
+    monkeypatch.setattr(email_stub, "MAX_ZIP_FILES", 3)
+    message = _message(tenant.inbox_address)
+    five = _zip({f"inv-{i}.pdf": _pdf_bytes(f"invoice {i}") for i in range(5)})
+    message.add_attachment(five, maintype="application", subtype="zip", filename="five.zip")
+    result = ingest_email_file(db_session, _write_raw(inbox, message, "five.eml"), inbox)
+    assert result.status == "quarantined" and "holds more than 3 invoices" in result.reason
+
+    # One locked file among good ones.
+    message = _message(tenant.inbox_address)
+    mixed = _zip({"a.pdf": _pdf_bytes("a")})
+    locked = _zip({"b.pdf": _pdf_bytes("b")}, password_flag=True)
+    message.add_attachment(mixed, maintype="application", subtype="zip", filename="good.zip")
+    message.add_attachment(locked, maintype="application", subtype="zip", filename="locked.zip")
+    result = ingest_email_file(db_session, _write_raw(inbox, message, "mixed.eml"), inbox)
+    assert result.status == "quarantined" and "locked.zip" in result.reason
+    assert _invoices_for(db_session, tenant) == []
+
+
+def test_the_message_returned_in_a_delivery_failure_notice_is_not_an_invoice_sent_in(db_session, inbox, tenant):
+    from email import message_from_bytes, policy
+
+    returned = EmailMessage()
+    returned["From"] = "owner@restaurant.example.com"
+    returned["To"] = "someone@mistyped.example.com"
+    returned["Subject"] = "Invoice 904718233"
+    returned.set_content("Attached.")
+    returned.add_attachment(_pdf_bytes("returned"), maintype="application", subtype="pdf", filename="inv.pdf")
+    raw = (
+        b"From: MAILER-DAEMON@mail.example.com\r\nTo: " + tenant.inbox_address.encode() + b"\r\n"
+        b"Subject: Undelivered Mail Returned to Sender\r\nMessage-ID: <bounce-1@test>\r\nMIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/report; report-type=delivery-status; boundary="BOUND"\r\n\r\n'
+        b"--BOUND\r\nContent-Type: text/plain\r\n\r\nYour message could not be delivered.\r\n"
+        b"--BOUND\r\nContent-Type: message/delivery-status\r\n\r\nReporting-MTA: dns; mail.example.com\r\n\r\n"
+        b"--BOUND\r\nContent-Type: message/rfc822\r\n\r\n" + returned.as_bytes() + b"\r\n--BOUND--\r\n"
+    )
+    assert message_from_bytes(raw, policy=policy.default).get_content_type() == "multipart/report"
+    assert parse_email(raw).pdf_attachments == []
+    path = inbox / "bounce.eml"
+    path.write_bytes(raw)
+    result = ingest_email_file(db_session, path, inbox)
+    assert result.status == "quarantined" and "delivery-failure notice" in result.reason
+    assert _invoices_for(db_session, tenant) == []
