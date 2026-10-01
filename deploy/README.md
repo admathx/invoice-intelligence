@@ -106,7 +106,7 @@ in `.env.production`):
   each alert is emailed to each person once. A location's alerts wait until
   no invoice has arrived there for fifteen minutes and none is still being
   read, so a batch of invoices produces one email about what is true at the
-  end of it; and an increase in prices more than thirty days old (a backlog
+  end of it; and an increase in prices more than forty-five days old (a backlog
   of old invoices) is shown in the app but not emailed.
 - **Password reset links** ("Forgot your password?" on the sign-in page):
   single use, valid for an hour, at most three per address per hour.

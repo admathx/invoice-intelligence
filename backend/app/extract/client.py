@@ -1,10 +1,12 @@
 import base64
+import io
 import json
 from pathlib import Path
 from typing import Any
 
 import anthropic
 import pydantic
+from PIL import Image
 
 from app.config import settings
 from app.extract.prompt import EXTRACTION_SYSTEM_PROMPT, build_retry_prompt
@@ -39,9 +41,54 @@ class ExtractionFailedError(Exception):
         self.cost_usd = cost_usd
 
 
+# What the page images of one read may add up to, encoded. The API takes a
+# request of up to 32 MB; this leaves room for the rest of it. A scanned or
+# photographed page renders to a PNG of 1.1-1.5 MB, so about seventeen of
+# them passed the limit: the request was refused, and because that wasn't
+# an ExtractionFailedError it was reported as the service being down.
+MAX_IMAGE_BYTES = 24 * 1024 * 1024
+# The quality pages are re-encoded at when their PNGs are too much together:
+# high enough that small print stays sharp.
+JPEG_QUALITY = 90
+
+
+def _block(data: bytes, media_type: str) -> dict[str, Any]:
+    encoded = base64.standard_b64encode(data).decode("utf-8")
+    return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": encoded}}
+
+
 def _image_block(page_path: Path) -> dict[str, Any]:
-    data = base64.standard_b64encode(Path(page_path).read_bytes()).decode("utf-8")
-    return {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}
+    return _block(Path(page_path).read_bytes(), "image/png")
+
+
+def _jpeg_block(page_path: Path) -> dict[str, Any]:
+    out = io.BytesIO()
+    with Image.open(page_path) as image:
+        image.convert("RGB").save(out, "JPEG", quality=JPEG_QUALITY)
+    return _block(out.getvalue(), "image/jpeg")
+
+
+def _encoded_size(blocks: list[dict[str, Any]]) -> int:
+    return sum(len(block["source"]["data"]) for block in blocks)
+
+
+def image_blocks(page_image_paths: list[Path], limit: int | None = None) -> list[dict[str, Any]]:
+    """The pages as the request carries them: as rendered (PNG) when they
+    fit together, as JPEG when they don't. Raises ExtractionFailedError,
+    with nothing spent, when even that is more than one request can hold:
+    the invoice's problem (it's kept for a person), not the service's."""
+    limit = MAX_IMAGE_BYTES if limit is None else limit
+    blocks = [_image_block(p) for p in page_image_paths]
+    if _encoded_size(blocks) <= limit:
+        return blocks
+    blocks = [_jpeg_block(p) for p in page_image_paths]
+    if _encoded_size(blocks) <= limit:
+        return blocks
+    raise ExtractionFailedError(
+        f"{len(page_image_paths)} pages are too much to read at once "
+        f"({_encoded_size(blocks) // (1024 * 1024)} MB of page images; the most is {limit // (1024 * 1024)} MB)",
+        cost_usd=0.0,
+    )
 
 
 def _strict_json_schema() -> dict[str, Any]:
@@ -88,23 +135,27 @@ class AnthropicExtractorClient:
         self._schema = _strict_json_schema()
 
     def extract(self, page_image_paths: list[Path]) -> tuple[ExtractedInvoice, float]:
-        image_blocks = [_image_block(p) for p in page_image_paths]
         messages: list[dict[str, Any]] = [
-            {"role": "user", "content": [*image_blocks, {"type": "text", "text": "Extract this invoice."}]}
+            {"role": "user", "content": [*image_blocks(page_image_paths), {"type": "text", "text": "Extract this invoice."}]}
         ]
 
         total_cost = 0.0
         last_error: Exception | None = None
 
         for attempt in range(2):  # one retry per SPEC.md §5
-            with self.client.messages.stream(
-                model=self.model,
-                max_tokens=MAX_TOKENS,
-                system=EXTRACTION_SYSTEM_PROMPT,
-                messages=messages,
-                output_config={"format": {"type": "json_schema", "schema": self._schema}},
-            ) as stream:
-                response = stream.get_final_message()
+            try:
+                with self.client.messages.stream(
+                    model=self.model,
+                    max_tokens=MAX_TOKENS,
+                    system=EXTRACTION_SYSTEM_PROMPT,
+                    messages=messages,
+                    output_config={"format": {"type": "json_schema", "schema": self._schema}},
+                ) as stream:
+                    response = stream.get_final_message()
+            except anthropic.RequestTooLargeError as exc:
+                # Refused for its size whatever the estimate above said: about
+                # this invoice, not the service, and trying again won't help.
+                raise ExtractionFailedError(f"too large to read at once: {exc}", cost_usd=total_cost) from exc
             total_cost += cost_usd(self.model, response.usage)
 
             # Stop reasons a retry can't fix. A truncated answer at the cap

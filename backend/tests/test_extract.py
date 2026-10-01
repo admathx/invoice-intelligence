@@ -334,3 +334,79 @@ def test_an_unreadable_line_total_is_not_excused_by_a_missing_subtotal():
     assessment = assess_extraction(invoice)
     assert assessment.status == InvoiceStatus.needs_review
     assert assessment.lines_sum_to_subtotal is False
+
+
+# --- The request's size (a scanned stack, a long receipt in slices) -----------
+
+import anthropic  # noqa: E402
+from PIL import Image  # noqa: E402
+
+from app.extract import client as extract_client  # noqa: E402
+
+
+def _scan_like_pages(tmp_path, n: int, size=(600, 800)) -> list:
+    """Noisy pages, as a scan or photo renders: PNGs that barely compress."""
+    paths = []
+    for i in range(n):
+        path = tmp_path / f"page_{i + 1:03d}.png"
+        Image.effect_noise(size, 40).convert("RGB").save(path)
+        paths.append(path)
+    return paths
+
+
+def _sizes(tmp_path):
+    pages = _scan_like_pages(tmp_path, 3)
+    png = extract_client._encoded_size([extract_client._image_block(p) for p in pages])
+    jpeg = extract_client._encoded_size([extract_client._jpeg_block(p) for p in pages])
+    assert jpeg < png
+    return pages, png, jpeg
+
+
+def test_pages_go_as_rendered_when_they_fit_together(tmp_path):
+    pages, png, _ = _sizes(tmp_path)
+    blocks = extract_client.image_blocks(pages, limit=png)
+    assert {b["source"]["media_type"] for b in blocks} == {"image/png"}
+
+
+def test_pages_too_big_together_as_png_go_as_jpeg(tmp_path):
+    """About seventeen scanned pages passed what one request takes: refused,
+    and reported as the service being down."""
+    pages, png, jpeg = _sizes(tmp_path)
+    blocks = extract_client.image_blocks(pages, limit=png - 1)
+    assert {b["source"]["media_type"] for b in blocks} == {"image/jpeg"}
+    assert extract_client._encoded_size(blocks) == jpeg
+
+
+def test_pages_too_big_even_as_jpeg_are_the_invoices_problem_and_cost_nothing(tmp_path, extractor_client):
+    pages, _, jpeg = _sizes(tmp_path)
+    with pytest.raises(ExtractionFailedError, match="too much to read at once") as failure:
+        extract_client.image_blocks(pages, limit=jpeg - 1)
+    assert failure.value.cost_usd == 0.0
+
+    # And the model is never called.
+    extractor_client.client.messages = _StubMessages([])
+    monkeypatch_limit = extract_client.MAX_IMAGE_BYTES
+    extract_client.MAX_IMAGE_BYTES = jpeg - 1
+    try:
+        with pytest.raises(ExtractionFailedError):
+            extractor_client.extract(pages)
+    finally:
+        extract_client.MAX_IMAGE_BYTES = monkeypatch_limit
+    assert extractor_client.client.messages.calls == []
+
+
+def test_a_request_refused_for_its_size_is_the_invoices_problem(extractor_client):
+    """Whatever the estimate said: not a service outage, so no one is paged
+    and the invoice is kept for a person."""
+
+    class _TooLarge:
+        calls = 0
+
+        def stream(self, **kwargs):
+            _TooLarge.calls += 1
+            raise anthropic.RequestTooLargeError.__new__(anthropic.RequestTooLargeError)
+
+    extractor_client.client.messages = _TooLarge()
+    with pytest.raises(ExtractionFailedError, match="too large to read at once") as failure:
+        extractor_client.extract([])
+    assert failure.value.cost_usd == 0.0 and _TooLarge.calls == 1  # not retried

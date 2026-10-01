@@ -49,8 +49,10 @@ logger = logging.getLogger(__name__)
 
 WINDOW = timedelta(days=7)
 # How long after the last price it's about an increase is still news to
-# send: the weekly digest and the price-increase emails both go by it.
-NEWS_FOR = timedelta(days=30)
+# send: the weekly digest and the price-increase emails both go by it. Long
+# enough for a month's invoices added in one go early the next month, when
+# something bought on the 1st is already five weeks old.
+NEWS_FOR = timedelta(days=45)
 LISTED = 5  # items of each kind shown before "and N more"
 SAVINGS_LISTED = 3
 

@@ -331,10 +331,13 @@ def test_an_increase_in_old_prices_is_history_not_news(db, outbox):
     user = _user(db, tenant)
     _alert(db, tenant, _sku(db, "Old increase"), window_end=NOW.date() - timedelta(days=200))
     recent = _alert(db, tenant, _sku(db, "Recent increase"), window_end=NOW.date() - timedelta(days=10))
+    # A month's invoices added early the next month: something bought on the
+    # 1st is five weeks old by then, and still news.
+    month_end = _alert(db, tenant, _sku(db, "Month-end batch"), window_end=NOW.date() - timedelta(days=35))
 
     _send(NOW)
-    assert _emailed(db, user) == {recent.id}
+    assert _emailed(db, user) == {recent.id, month_end.id}
 
-    # Nor is it "new this week" in the Monday summary.
+    # Nor is the old one "new this week" in the Monday summary.
     week = digest.location_week(db, tenant, NOW)
-    assert week.new_increase_count == 1 and week.open_alert_count == 2
+    assert week.new_increase_count == 2 and week.open_alert_count == 3

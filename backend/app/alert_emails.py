@@ -15,8 +15,9 @@ realistic set a lime alert opened and closed twice that way. So a
 location's alerts wait until its invoices have stopped arriving (none added
 in the last SETTLE, none still being read), and only what is still open
 then is sent. And an increase is only news while the prices it is about are
-recent (NEWS_FOR): what a distributor charged last spring is history, shown
-on the Price alerts page, not something to email about today.
+recent (NEWS_FOR, long enough for a month's invoices added at month end):
+what a distributor charged last spring is history, shown on the Price
+alerts page, not something to email about today.
 
 One email per person per run, covering every new alert across their
 locations, so an invoice that opens five alerts sends one message, not five.

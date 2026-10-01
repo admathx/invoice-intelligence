@@ -45,15 +45,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
-from app.ingest.render import render_pdf_to_pngs  # noqa: E402
+from app.ingest.render import MAX_PAGE_IMAGES, render_pdf_to_pngs  # noqa: E402
 from app.ingest.upload import InvalidInvoiceFileError, invoice_pdf_from_upload  # noqa: E402
 
 _PAGE = re.compile(r"^(?P<stem>.+)-p(?P<n>\d+)$")
 TEST_LOCATION_PREFIX = "Test Set "
-# A document that renders to more page images than this isn't sent to the
-# model by this runner (a 500-page PDF in the hostile set): it would cost
-# dollars to learn what is already known, that the app has no page limit.
-MAX_PAGES_TO_READ = 100
 # What a read has cost per document, for the estimate prepare prints.
 USD_PER_DOCUMENT = 0.032
 OUTCOMES = {"Ready", "Needs a look", "Couldn't read", "Rejected", "Refused as a copy"}
@@ -151,8 +147,10 @@ def prepare(set_dir: Path, work_dir: Path) -> None:
             entry.update(outcome="Couldn't read", reason=f"couldn't open the file: {type(exc).__name__}: {exc}"[:200])
             gate[name] = entry
             continue
-        if pages > MAX_PAGES_TO_READ:
-            entry.update(outcome="Not read", pages_found=pages, reason=f"{pages} page images: accepted by the app, not sent to the model by this runner")
+        if pages > MAX_PAGE_IMAGES:
+            # As the worker does (app/workers/tasks.py): more page images
+            # than one read takes, so it stops before calling the model.
+            entry.update(outcome="Couldn't read", reason=f"{pages} page images is more than can be read at once")
             gate[name] = entry
             continue
         (work_dir / f"{name}.pdf").write_bytes(pdf)
@@ -214,6 +212,24 @@ def check_set(set_dir: Path) -> list[str]:
         sets = {x.strip() for x in (row.get("sets") or "").replace(",", ";").split(";") if x.strip()}
         if sets & alone and len(sets) > 1:
             problems.append(f"{row.get('customer')}: in sets {sorted(sets)}, but a set {sorted(sets & alone)} restaurant should be in no other")
+    order: dict[str, set] = defaultdict(set)
+    for row in _plan(set_dir, "year_plan.csv"):
+        order[row.get("invoice_file", "")].add((row.get("upload_order") or "").strip())
+    bad = sorted(f for f, values in order.items() if len(values) != 1 or not next(iter(values)).isdigit())
+    if bad:
+        problems.append(f"year_plan: {len(bad)} files without one whole-number upload_order, e.g. {bad[:3]}")
+    taken = [next(iter(values)) for f, values in order.items() if f not in bad]
+    if len(taken) != len(set(taken)):
+        problems.append("year_plan: two files share an upload_order")
+    for plan in ("changes_plan.csv", "year_plan.csv"):
+        expected: dict[str, set] = defaultdict(set)
+        for row in _plan(set_dir, plan):
+            expected[row.get("behavior", "")].add(row.get("expected_alert", ""))
+        for behavior, values in expected.items():
+            if len(values) > 1:
+                problems.append(f"{plan}: {behavior} rows disagree on expected_alert ({sorted(values)}); they are graded apart")
+            if values - {"yes", "no"}:
+                problems.append(f"{plan}: {behavior} has expected_alert {sorted(values - {'yes', 'no'})}; it must be yes or no")
     for plan, column in (("year_plan.csv", "invoice_file"), ("changes_plan.csv", "invoice_file"), ("products_plan.csv", "invoice_file")):
         missing = sorted({row[column] for row in _plan(set_dir, plan) if row.get(column) and row[column] not in by_file})
         if missing:
@@ -351,7 +367,11 @@ def score(work_dir: Path) -> dict:
         # The same rows in another order (pages scanned out of order, read
         # in the order they came) are not a misreading.
         def rows(lines) -> list:
-            return sorted(tuple(str(_num(li.get(f))) for f in _MONEY_FIELDS) for li in lines)
+            # With the item each row is for: two items' numbers exchanged
+            # are a misreading, however well the totals still add up.
+            return sorted(
+                (_norm(li.get("raw_description")), *(str(_num(li.get(f))) for f in _MONEY_FIELDS)) for li in lines
+            )
 
         row["same_rows_any_order"] = rows(truth["line_items"]) == rows(got["line_items"])
         row["money_mistake"] = (
@@ -719,7 +739,9 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     # Set U arrives in the order its plan says (a year of paperwork out of
     # a box), every other document in order of its name.
     upload_order = {
-        Path(r["invoice_file"]).stem: int(r["upload_order"]) for r in _plan(set_dir, "year_plan.csv") if r.get("upload_order")
+        Path(r["invoice_file"]).stem: int(r["upload_order"])
+        for r in _plan(set_dir, "year_plan.csv")
+        if (r.get("upload_order") or "").strip().isdigit()  # anything else is reported by check_set at prepare
     }
     # Set V: what each line was matched to before a person touched it.
     as_matched: dict[str, list[dict]] = {}
@@ -1075,9 +1097,15 @@ def _changes(db, plan_rows: list[dict], tenant_id, dismissed: list[dict]) -> dic
     from app.db import bind_tenant
     from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceAlert
 
+    # A behavior whose rows disagree on what's expected (the old item no, its
+    # replacement yes) is graded as two, one for each answer.
+    answers: dict[str, set] = defaultdict(set)
+    for row in plan_rows:
+        answers[row["behavior"]].add(row["expected_alert"])
     plan: dict[str, dict] = {}
     for row in plan_rows:
-        b = plan.setdefault(row["behavior"], {"expected_alert": row["expected_alert"], "codes": set(), "descriptions": set()})
+        key = row["behavior"] if len(answers[row["behavior"]]) == 1 else f"{row['behavior']} (expected {row['expected_alert']})"
+        b = plan.setdefault(key, {"expected_alert": row["expected_alert"], "codes": set(), "descriptions": set()})
         b["codes"].add(row["item_code"])
         b["descriptions"].add(row["description"])
     bind_tenant(db, tenant_id)
@@ -1163,17 +1191,34 @@ def _matching(plan_rows: list[dict], as_matched: dict[str, list[dict]]) -> dict:
     product, left for a person, or matched to something else. A wrong match
     made automatically is the failure; a wrong suggestion waits for a person
     who may catch it. `true_product` none means it's in no catalog."""
-    plan = {}
+    # A row is found by its code and description together; by either alone
+    # only when that is unambiguous on its invoice (one code on two rows, a
+    # contract price and a market price, mustn't be judged as each other).
+    exact: dict[tuple, dict] = {}
+    by_code: dict[tuple, list] = defaultdict(list)
+    by_description: dict[tuple, list] = defaultdict(list)
     for row in plan_rows:
         name = Path(row["invoice_file"]).stem
-        plan[(name, (row.get("item_code") or "").strip())] = row
-        plan[(name, " ".join((row.get("description") or "").upper().split()))] = row
+        code, description = (row.get("item_code") or "").strip(), _norm(row.get("description"))
+        exact[(name, code, description)] = row
+        if code:
+            by_code[(name, code)].append(row)
+        by_description[(name, description)].append(row)
+
+    def planned(name: str, line: dict) -> dict | None:
+        code, description = line["item_code"], _norm(line["description"])
+        if (name, code, description) in exact:
+            return exact[(name, code, description)]
+        for candidates in (by_code.get((name, code), []) if code else [], by_description.get((name, description), [])):
+            if len(candidates) == 1:
+                return candidates[0]
+        return None
+
     out = {"lines": 0, "right": 0, "left_for_a_person": 0, "wrong_automatic": [], "wrong_suggested": [], "not_in_plan": 0,
            "unclear_pack_priced": [], "packs": []}  # fmt: skip
     for name, lines in sorted(as_matched.items()):
         for line in lines:
-            row = plan.get((name, line["item_code"])) if line["item_code"] else None
-            row = row or plan.get((name, " ".join((line["description"] or "").upper().split())))
+            row = planned(name, line)
             if row is None:
                 out["not_in_plan"] += 1
                 continue

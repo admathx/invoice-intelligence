@@ -2899,3 +2899,26 @@ would be rendered and sent whole).
   stops before calling the model and keeps the pages for a person.
 
 Backend 619 tests.
+
+### Review of the runner and the two fixes: eight findings, fixed
+
+- **The size of a read, not only its page count.** The API takes a request
+  of up to 32 MB, and a scanned or photographed page renders to a PNG of
+  1.5-2 MB encoded: about fifteen of them were refused, and because that
+  wasn't an invoice problem it was reported as the service being down. Pages
+  that are too much together as PNG now go as JPEG (measured on the fourth
+  set's pages: about 80 photographed pages or 28 speckled scans fit, against
+  14-17 and 13). Past that, and for any request the API still refuses for
+  its size, the invoice is marked "Couldn't read" for a person, at no cost
+  and with no alert to operations. Reading from JPEG pages has not been
+  tried on the real model.
+- **News for 45 days, not 30**: a month's invoices added early the next
+  month were already too old to email about.
+- Runner: reordered rows have to be the same items with the same numbers
+  (two items' numbers exchanged were scored as right); a document over the
+  page-image limit gets the app's own outcome and the app's own limit; a set
+  is checked for upload orders that are missing, shared or not numbers, and
+  for a behavior whose rows disagree on what's expected (graded apart); a
+  products-plan row is found by code and description together.
+
+Backend 626 tests.
