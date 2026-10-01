@@ -2699,7 +2699,7 @@ so it tests the fixes.
 - **Catch weights as distributors print them.** A meat line prints a case
   count and a weight, and the price multiplies the weight. The reading
   instructions now say the quantity is the number the price multiplies, and
-  the unit LB. *Not yet checked against the real model* (below).
+  the unit LB.
 - **Quarts, pints, metric, kegs.** `12/1 QT` is 3 gallons, `12/500 G`
   13.2 lb, `1/2 BBL` 15.5 gallons (it parsed as one container of two),
   `FL OZ` is never weight. A line billed per QT or KG is priced per gallon
@@ -2734,3 +2734,25 @@ so it tests the fixes.
 
 Migration 0024. Backend 578 tests; frontend 56; matching gate unchanged
 (98.8% auto, 0 false).
+
+### Checked against the real model
+
+Eighteen documents read once ($0.70): eight drawn for the new cases, ten
+from the second test set to see nothing got worse.
+
+- Catch weights with a case count and a weight column: all three lines read
+  as the weight, per LB; the invoice added up.
+- A four-page stack of three invoices: pages grouped 1, 2, 2, 3. A
+  statement in front of an invoice: two documents, the first a statement.
+  Two photos of two different invoices: two. A retake of the same page: the
+  second photo belongs to none.
+- A two-sided scan (blank back, terms page): one invoice, 13 items, added up.
+- A 36-row till receipt, one image four times as tall as wide, read as four
+  overlapping slices: 36 items, each once, adding up to the total.
+- No subtotal printed: read with the total as the subtotal; ready.
+- The customer's name was read on all eighteen.
+- The ten earlier documents: same items, totals, numbers and outcome as
+  before; the two- and three-page invoices were not divided.
+
+Not yet run: the split through the running app with real reads (the worker's
+side is covered by tests with a canned reader).
