@@ -34,6 +34,7 @@ from app.normalize.pack_size import (
     ParsedPackSize,
     CASE_UNITS,
     CONTAINER_UNITS,
+    SPLIT_CASE_UNIT,
     ProductUnitMismatchError,
     billed_unit_scale,
     billed_unit_token,
@@ -314,6 +315,10 @@ def _apply_pack_size(
     # UOM="LB") already prices per base unit, so dividing by the pack size
     # again would silently understate normalized_unit_price by that factor.
     billed = uom.strip().upper()
+    if billed == SPLIT_CASE_UNIT and not pack.is_single_container:
+        # One of the case's containers: a jug from "6/1 GAL" is a gallon.
+        each = pack.base_units_per_case / pack.count * per_pack_unit
+        return quantity * each, (unit_price / each).quantize(UNIT_PRICE_PLACES)
     # The whole case, or one bag/tub/pail when that is the whole pack ("50
     # LB" billed BG). These used to count as a mismatch, leaving every bag of
     # flour and beans unpriced.

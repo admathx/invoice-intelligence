@@ -4,7 +4,8 @@ The check that guards every invoice is quantity x price = amount, row by
 row. Some rows are right and don't multiply out as read, because the page
 says it another way: the amount cell says N/C, the weight that was billed
 sits in the pack column, the price is per hundred, a deposit column is
-added into each amount, the amount is left for a note below. Each was held
+added into each amount, the amount is left for a note below. (And one kind
+that multiplies out and still can't be priced: a jug sold out of a case.) Each was held
 for a person, on invoices where nothing had been misread.
 
 Such a row is restated here, before the check, into the three numbers that
@@ -20,6 +21,7 @@ from decimal import Decimal
 from app.extract.amounts import parse_amount
 from app.extract.confidence import ARITHMETIC_TOLERANCE, check_arithmetic
 from app.extract.schema import ExtractedInvoice, ExtractedLineItem
+from app.normalize.pack_size import SPLIT_CASE_UNIT, PackSizeParseError, parse_pack_size
 
 # What a price or amount cell says when nothing is charged for the row.
 _NO_CHARGE = re.compile(r"FREE|N/?C|NO\s*CHARGE|NO\s*CHG|N/CHG|GRATIS|COMP(?:LIMENTARY)?")
@@ -42,6 +44,8 @@ _PRICED_PER = {
 }
 _QUANTITY_PLACES = Decimal("0.0001")
 DEPOSITS = "DEPOSIT, FROM THE DEPOSIT COLUMN"
+# The fee a distributor charges for breaking a case, as its row names it.
+_SPLIT_CASE_FEE = re.compile(r"\b(?:SPLIT|BROKEN|BREAK|BROKE)\s*(?:CASE|CS|PACK)\b|\bCASE\s*(?:SPLIT|BREAK)\b")
 
 
 def _says_no_charge(text: str | None) -> bool:
@@ -121,6 +125,29 @@ def _restated_row(line: ExtractedLineItem) -> tuple[str, ExtractedLineItem, Deci
     return ("deposit_column", *with_deposit) if with_deposit is not None else None
 
 
+def _split_cases(lines: list[ExtractedLineItem]) -> list[int]:
+    """Which rows are one container out of a split case: those billed by
+    the each against a pack of several ("2 EA" of "6/1 GAL"), on an invoice
+    with a split-case fee for each of them. "EA" against such a pack says
+    nothing by itself (one jug, or the case?), so those rows were never
+    priced; the fee says a case was broken, and for which rows when there
+    are as many fees as rows it could mean."""
+    fees = Decimal(0)
+    of_a_case: list[int] = []
+    for index, line in enumerate(lines):
+        if not (line.raw_pack_size or "").strip() and _SPLIT_CASE_FEE.search(line.raw_description.upper()):
+            fees += max(parse_amount(line.quantity) or Decimal(1), Decimal(1))
+            continue
+        if (line.uom or "").strip().upper() not in ("EA", "EACH"):
+            continue
+        try:
+            if not parse_pack_size(line.raw_pack_size).is_single_container:
+                of_a_case.append(index)
+        except PackSizeParseError:
+            continue
+    return of_a_case if of_a_case and len(of_a_case) <= fees else []
+
+
 def restate(extracted: ExtractedInvoice) -> tuple[ExtractedInvoice, list[str]]:
     """The reading with such rows restated, and what was restated (for the
     record). The reading itself when there is nothing to restate."""
@@ -142,6 +169,10 @@ def restate(extracted: ExtractedInvoice) -> tuple[ExtractedInvoice, list[str]]:
                 without_amount.append(index)
                 line = line.model_copy(update={"extended_price": str((quantity * price).quantize(_CENT))})
         lines.append(line)
+
+    for index in _split_cases(lines):
+        kinds.add("split_case")
+        lines[index] = lines[index].model_copy(update={"uom": SPLIT_CASE_UNIT})
 
     if deposits:
         # The deposits are still money on the invoice: one charge, so the

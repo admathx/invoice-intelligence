@@ -198,3 +198,54 @@ def test_an_invoice_with_a_deposit_column_is_ready_with_its_deposits_as_one_char
     ).all()
     assert [line.extended_price for line in lines] == [Decimal("46.23"), Decimal("350.20"), Decimal("15.00")]
     assert lines[-1].raw_description == DEPOSITS and lines[-1].review_status == ReviewStatus.not_product
+
+
+# --- A split case ----------------------------------------------------------------
+
+
+def _split_invoice(rows):
+    total = str(sum(Decimal(r.extended_price) for r in rows))
+    return _invoice(rows, total)
+
+
+def test_a_jug_sold_out_of_a_case_is_priced_when_the_invoice_charges_for_splitting_it():
+    """"2 EA" of a "6/1 GAL" case at 9.25, with a SPLIT CASE FEE row: two
+    jugs, 9.25 a gallon. "EA" alone doesn't say jug or case, and the row
+    was never priced."""
+    from app.normalize.pack_size import SPLIT_CASE_UNIT
+
+    oil = _row(1, "2", "9.25", "18.50", pack="6/1 GAL").model_copy(update={"uom": "EA"})
+    fee = _row(2, "1", "2.50", "2.50", pack=None).model_copy(update={"raw_description": "SPLIT CASE FEE", "uom": "EA"})
+    whole = _row(3, "3", "117.99", "353.97", pack="4/10 LB")
+    restated, kinds = restate(_split_invoice([oil, fee, whole]))
+    assert kinds == ["split_case"]
+    assert [r.uom for r in restated.line_items] == [SPLIT_CASE_UNIT, "EA", "CS"]
+    assert normalize_price("6/1 GAL", Decimal("2"), Decimal("9.25"), SPLIT_CASE_UNIT) == (Decimal("2"), Decimal("9.250000"))
+    # One 5 lb bag out of a case of four, at 12.50: 2.50 a pound.
+    assert normalize_price("4/5 LB", Decimal("1"), Decimal("12.50"), SPLIT_CASE_UNIT) == (Decimal("5"), Decimal("2.500000"))
+    assert _status(restated) == InvoiceStatus.extracted
+
+
+def test_without_a_split_case_fee_each_against_a_case_is_still_not_guessed():
+    oil = _row(1, "2", "9.25", "18.50", pack="6/1 GAL").model_copy(update={"uom": "EA"})
+    restated, kinds = restate(_split_invoice([oil, _row(2, "3", "117.99", "353.97", pack="4/10 LB")]))
+    assert kinds == [] and restated.line_items[0].uom == "EA"
+    assert normalize_price("6/1 GAL", Decimal("2"), Decimal("9.25"), "EA") == (None, None)
+
+
+def test_one_fee_doesnt_explain_two_rows_billed_by_the_each():
+    """One could be the case: nothing says which."""
+    oil = _row(1, "2", "9.25", "18.50", pack="6/1 GAL").model_copy(update={"uom": "EA"})
+    mayo = _row(2, "1", "13.40", "13.40", pack="4/1 GAL").model_copy(update={"uom": "EA"})
+    fee = _row(3, "1", "2.50", "2.50", pack=None).model_copy(update={"raw_description": "BROKEN CASE CHARGE", "uom": "EA"})
+    restated, kinds = restate(_split_invoice([oil, mayo, fee]))
+    assert kinds == []
+    # A fee for each, or one fee row for two, does.
+    two = fee.model_copy(update={"quantity": "2", "extended_price": "5.00"})
+    restated, kinds = restate(_split_invoice([oil, mayo, two]))
+    assert kinds == ["split_case"]
+    # A single container is one whatever it's called, and a count is a count.
+    bag = _row(1, "1", "24.48", "24.48", pack="25 LB").model_copy(update={"uom": "EA"})
+    cups = _row(2, "5", "0.07", "0.35", pack="1000 CT").model_copy(update={"uom": "EA"})
+    restated, kinds = restate(_split_invoice([bag, cups, fee]))
+    assert kinds == []

@@ -140,6 +140,12 @@ class ProductUnitMismatchError(PackSizeParseError):
 _PACK_COUNT_UNITS = {"PK": "ea", "PACK": "ea", "FT": "ea", "FEET": "ea", "YD": "ea"}
 _LENGTHS = {"FT", "FEET", "YD"}
 
+# One container out of a case that holds several: a jug from a "6/1 GAL"
+# case, sold apart. Never printed; given to a row the invoice shows to be a
+# split case (app/extract/restated.py), since "EA" by itself doesn't say
+# whether it is the jug or the case.
+SPLIT_CASE_UNIT = "EA (SPLIT CASE)"
+
 # Billing units that are the whole case whatever the pack.
 CASE_UNITS = {"CS", "CASE", "CA", "CTN", "CARTON"}
 # Billing units naming one container: the whole pack when the pack is a
