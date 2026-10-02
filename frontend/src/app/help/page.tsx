@@ -12,6 +12,7 @@ const TOPICS: Topic[] = [
   { id: "match", title: "Matching items" },
   { id: "alerts", title: "Price alerts" },
   { id: "savings", title: "Savings" },
+  { id: "costs", title: "Costs and what-ifs" },
   { id: "products", title: "Products" },
   { id: "export", title: "Sending invoices to your accountant" },
   { id: "phone", title: "Using it on your phone" },
@@ -261,6 +262,31 @@ export default async function HelpPage() {
               <strong>Best available</strong>: what others pay where we know it, otherwise what you used to pay.
             </li>
           </ul>
+        </Section>
+
+        <Section topic={topic("costs")}>
+          <p>
+            <Go href="/costs">Costs</Go> shows what a year of your buying costs at today&rsquo;s prices, worked out
+            from your last 90 days of invoices, and lets you ask &ldquo;what if&rdquo;:
+          </p>
+          <ul className="mt-1 list-disc space-y-1 pl-5">
+            <li>
+              <strong>What could change it</strong> lists ready-made what-ifs: your flagged prices going back, getting
+              the cheapest price found elsewhere, getting every target on Savings, and prices moving again as they
+              just did. They overlap, so don&rsquo;t add them together.
+            </li>
+            <li>
+              <strong>Try your own</strong> has a slider for each category&rsquo;s prices and one for how much you
+              buy. The total updates as you move them.
+            </li>
+            <li>
+              <strong>Where the money goes</strong> shows your distributors and your biggest products.
+            </li>
+          </ul>
+          <p className="mt-2">
+            Only items matched to a product are counted, because only those have a price per unit. The page says how
+            much of your spending that covers.
+          </p>
         </Section>
 
         <Section topic={topic("products")}>

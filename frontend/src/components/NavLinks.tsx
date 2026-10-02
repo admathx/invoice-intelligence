@@ -6,14 +6,15 @@ import { useEffect, useRef } from "react";
 type Item = { href: string; label: string };
 
 // In the order of the work: invoices come in (and add up to spending), their
-// items get matched to products, and then price alerts and savings are worth
-// reading.
+// items get matched to products, then price alerts and savings are worth
+// reading, and costs puts a year of it together to plan with.
 const MAIN: Item[] = [
   { href: "/invoices", label: "Invoices" },
   { href: "/spending", label: "Spending" },
   { href: "/review", label: "Match items" },
   { href: "/insights", label: "Price alerts" },
   { href: "/negotiation", label: "Savings" },
+  { href: "/costs", label: "Costs" },
   { href: "/skus", label: "Products" },
   { href: "/activity", label: "Activity" },
 ];

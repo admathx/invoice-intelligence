@@ -96,6 +96,32 @@ def test_an_alert_card_says_where_the_product_costs_less(db_session, tenant, dis
     assert offer["advice"]["points"][0].startswith("No new account needed.")
 
 
+def test_the_costs_page_gets_a_year_and_its_scenarios(db_session, tenant, distributor, canonical_sku):
+    client = TestClient(app)
+    empty = client.get(f"/costs?tenant_id={tenant.id}").json()
+    assert (empty["window_end"], empty["products"], empty["scenarios"]) == (None, [], [])
+
+    line = _auto_matched_line(db_session, tenant, distributor, canonical_sku)  # 1 lb at $7.00, on 2026-05-01
+    db_session.add(
+        PriceObservation(
+            tenant_id=tenant.id, canonical_sku_id=canonical_sku.id, distributor_id=distributor.id,
+            observed_on=date(2026, 5, 1), unit_price_base=Decimal("7.00"), metro=tenant.metro,
+            volume_tier=tenant.volume_tier, invoice_line_item_id=line.id,
+        )  # fmt: skip
+    )
+    db_session.commit()
+
+    body = client.get(f"/costs?tenant_id={tenant.id}").json()
+
+    assert (body["window_end"], body["window_days"]) == ("2026-05-01", 1)
+    [product] = body["products"]
+    assert (product["name"], product["distributor"]) == (canonical_sku.name, distributor.name)
+    assert Decimal(body["yearly_cost"]) == Decimal(product["yearly_cost"]) > 0
+    assert [s["key"] for s in body["scenarios"]] == [
+        "increases_reversed", "cheaper_elsewhere", "savings_targets", "rise_again",
+    ]  # fmt: skip
+
+
 def test_screens_get_what_they_need_to_fix_a_wrong_match(db_session, tenant, distributor, canonical_sku):
     line = _auto_matched_line(db_session, tenant, distributor, canonical_sku)
     client = TestClient(app)

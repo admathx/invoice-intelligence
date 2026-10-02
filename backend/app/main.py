@@ -6,6 +6,7 @@ from app.api import (
     accounts,
     activity,
     auth,
+    costs,
     digest,
     distributors,
     exports,
@@ -76,6 +77,7 @@ app.include_router(exports.router)
 app.include_router(inbound.router)
 app.include_router(skus.router)
 app.include_router(spending.router)
+app.include_router(costs.router)
 app.include_router(review.router)
 app.include_router(setup.router)
 app.include_router(insights.router)

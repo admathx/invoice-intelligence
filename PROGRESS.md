@@ -3404,3 +3404,38 @@ Foods", "Stay with Sysco"), one plain sentence, and points of one fact or
 one thing to ask each. The alert card shows the same as a table (where,
 price, saves a year, next step), fitting a phone without sideways
 scrolling.
+
+## Costs: a year at today's prices, and what would change it
+
+Spending says what was spent; alerts and Savings each say one thing about
+one product. Nothing answered what an owner plans with: what does a year of
+this cost now, and how far would it move? **Costs** (in the navigation,
+after Savings) does (app/analytics/costs.py):
+
+- **A year at today's prices**: what was bought in the last 90 days of the
+  location's own invoices, counted back from its latest one, scaled to a
+  year as Savings scales, at what each distributor charges now. Only items
+  matched to a product (they are the ones with a price per unit); the page
+  says how much of the spending that covers.
+- **What could change it**, a table of ready-made what-ifs, each against
+  that year: the flagged prices go back; the cheapest price found at
+  another distributor is had; every target on Savings is met; prices move
+  again as they did over the window. They overlap, and the page says not
+  to add them up.
+- **Try your own**: a slider for each category's prices and one for how
+  much is bought. The year, the difference and what that is a month update
+  as they move. Buttons start from the last 90 days' own changes, or from
+  everything up 5% or down 3%. The arithmetic is done in the browser.
+- **Where the money goes**: by distributor, and the ten biggest products.
+
+On the dev data The Copper Skillet's year is about $498,000, all with
+Sysco; meeting every Savings target would take off about $7,100, and the
+last 85 days repeated would add about $3,200.
+
+The planner's controls wait until the page is interactive: the browser
+test pressed a button before that and nothing happened, as it would for a
+person on a slow connection.
+
+Not in it: seasons (a year is the last quarter four times over, so a
+summer quarter overstates produce in winter), menu prices or sales (so no
+food cost as a share of revenue), and anything not matched to a product.

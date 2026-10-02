@@ -711,6 +711,29 @@ test.describe("spending, setup and the phone app", () => {
     await expect(page.getByRole("heading", { name: "Where it went: the last 12 months" })).toBeVisible();
   });
 
+  test("costs shows a year at today's prices and answers a what-if as the sliders move", async ({ page }) => {
+    await page.goto("/invoices");
+    await page.getByRole("link", { name: "Costs", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Costs", exact: true })).toBeVisible();
+    await expect(page.getByText("A year at today's prices")).toBeVisible();
+
+    // The ready-made what-ifs, each against the same year.
+    const scenarios = page.getByTestId("scenarios");
+    await expect(scenarios.getByText("You get every target price on Savings")).toBeVisible();
+    await expect(scenarios.getByText(/Prices move again like the last \d+ days/)).toBeVisible();
+
+    // One's own: nothing moved is the year as it is; 5% on every price is 5% on the year.
+    const answer = page.getByTestId("planned-total");
+    await expect(answer).toHaveText(/Nothing moved yet/);
+    await page.getByRole("button", { name: "Everything up 5%" }).click();
+    await expect(answer).toHaveText(/The year would cost \$[\d,]+: \+\$[\d,]+ \(\+5%\)/);
+    // Buying 10% less of it all on top: 1.05 x 0.90 is 5.5% less.
+    await page.getByLabel("How much you buy").fill("-10");
+    await expect(answer).toHaveText(/−\$[\d,]+ \(−5\.5%\)/);
+    await page.getByRole("button", { name: "Reset" }).click();
+    await expect(answer).toHaveText(/Nothing moved yet/);
+  });
+
   test("the setup checklist ticks off what's done and can be hidden", async ({ page }) => {
     await page.goto("/invoices");
     const checklist = page.getByTestId("setup-checklist");
