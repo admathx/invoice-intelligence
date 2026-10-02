@@ -38,6 +38,7 @@ class Invoice(Base, TenantScoped):
     # invoice and double-counts into every benchmark cell and creep window it
     # feeds. NULL for uploads, which are a deliberate human action each time.
     source_message_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # Empty for an invoice a person typed in: there is no file.
     original_file_uri: Mapped[str] = mapped_column(String, nullable=False)
     # SHA-256 of the stored file: an identical file is refused at upload.
     file_sha256: Mapped[str | None] = mapped_column(String, nullable=True)

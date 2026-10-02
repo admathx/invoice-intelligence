@@ -16,6 +16,7 @@ export type AuditEvent = {
 type Change = { from?: unknown; to?: unknown };
 
 const FIELD_LABELS: Record<string, string> = {
+  invoice_number: "invoice #",
   invoice_date: "date",
   distributor_id: "distributor",
   raw_description: "description",
@@ -66,6 +67,8 @@ export function describeEvent(event: AuditEvent): string {
       return typeof d.photo_count === "number"
         ? `uploaded ${d.photo_count} photo${d.photo_count === 1 ? "" : "s"} of a paper invoice`
         : `uploaded ${show(d.filename)}`;
+    case "invoice.typed_in":
+      return `started typing in ${d.invoice_number ? `invoice ${show(d.invoice_number)}` : "an invoice"}${d.distributor ? ` from ${show(d.distributor)}` : ""}`;
     case "invoice.exported":
       return `exported ${d.kind === "line-items" ? "line items" : "invoices"} to a spreadsheet (${exportPeriod(d)}, ${show(d.rows)} rows)`;
     case "invoice.received_by_email":

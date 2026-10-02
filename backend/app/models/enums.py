@@ -12,6 +12,8 @@ class InvoiceSource(str, enum.Enum):
     upload = "upload"
     email = "email"
     photo = "photo"
+    # Typed in by a person, with no file behind it (POST /invoices/typed).
+    typed = "typed"
 
 
 class InvoiceStatus(str, enum.Enum):

@@ -7,6 +7,7 @@ import { useLocationId } from "@/components/SessionContext";
 import { api } from "@/lib/api";
 import { formatApiError } from "@/lib/apiError";
 import ActionButton from "@/components/ActionButton";
+import DistributorPicker, { withDistributor, type Distributor } from "@/components/DistributorPicker";
 import RefreshWhileReading from "@/components/RefreshWhileReading";
 import {
   editableNumber,
@@ -50,6 +51,8 @@ export type InvoiceDetail = {
   distributor_id: string | null;
   distributor_name: string | null;
   status: string;
+  // "typed": a person is typing it in, and there is no page image.
+  source: string;
   subtotal: string | null;
   tax: string | null;
   total: string | null;
@@ -78,7 +81,7 @@ const DOCUMENT_LABEL: Record<string, string> = {
   price_list: "a price list or order guide",
 };
 
-export type Distributor = { id: string; name: string; slug: string };
+export type { Distributor };
 
 type MoneyField = "quantity" | "unit_price" | "extended_price";
 // What identifies the item. Editable because OCR misreads these too, and the
@@ -105,7 +108,7 @@ function sameValue(
   return norm(draft) === norm(saved ?? "");
 }
 type HeaderField =
-  "subtotal" | "tax" | "total" | "invoice_date" | "distributor_id";
+  "subtotal" | "tax" | "total" | "invoice_date" | "invoice_number" | "distributor_id";
 
 // Money stays a string end to end: typed in, sent to the API, parsed there as
 // a Decimal (SPEC.md §11). Nothing here does arithmetic on it; the check that
@@ -150,8 +153,6 @@ export default function InvoiceReview({
   // Plus any added here, so a new one can be chosen straight away.
   const [distributorList, setDistributorList] = useState(distributors);
   useEffect(() => setDistributorList(distributors), [distributors]);
-  const [addingDistributor, setAddingDistributor] = useState(false);
-  const [newDistributor, setNewDistributor] = useState(initial.printed_distributor ?? "");
   // Extraction's "other" is stored as a real distributor row but isn't in the
   // picker (it isn't a choice), so it reads as unrecognized here, same as NULL.
   const recognized = distributorList.some((d) => d.id === invoice.distributor_id);
@@ -163,6 +164,9 @@ export default function InvoiceReview({
         ? "elsewhere"
         : null;
   const reading = READING_STATUSES.has(invoice.status);
+  // Typed in, so what it's checked against is the person's own paper.
+  const typed = invoice.source === "typed";
+  const paper = typed ? "your invoice" : "the picture";
 
   // Only values that actually differ from what the server holds count as
   // edits. Confirming is disabled while any exist: the check on screen is the
@@ -185,6 +189,9 @@ export default function InvoiceReview({
     });
     const header = (Object.keys(headerDrafts) as HeaderField[]).filter((f) => {
       const value = headerDrafts[f] ?? "";
+      // The number can be cleared (some invoices print none); a date or a
+      // distributor can only be replaced.
+      if (f === "invoice_number") return value.trim() !== (invoice.invoice_number ?? "");
       return f === "invoice_date" || f === "distributor_id"
         ? value !== "" && value !== (invoice[f] ?? "")
         : !sameMoney(value, invoice[f]);
@@ -265,36 +272,6 @@ export default function InvoiceReview({
       router.refresh();
     } catch {
       setError("Couldn't reach the server. Nothing was removed.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function addDistributor() {
-    const name = newDistributor.trim();
-    if (!name) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await api(`/distributors?tenant_id=${locationId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) {
-        setError(formatApiError(data?.detail, "Couldn't add that distributor."));
-        return;
-      }
-      setDistributorList((list) =>
-        list.some((d) => d.id === data.id)
-          ? list
-          : [...list, data].sort((a, b) => a.name.localeCompare(b.name)),
-      );
-      setHeaderDrafts((d) => ({ ...d, distributor_id: data.id }));
-      setAddingDistributor(false);
-    } catch {
-      setError("Couldn't reach the server. Nothing was added.");
     } finally {
       setBusy(false);
     }
@@ -399,7 +376,9 @@ export default function InvoiceReview({
                     ? "This one adds up. Add the other invoice on its page, then confirm this one to start using its prices."
                   : invoice.check.passes
                     ? "Everything adds up now. Confirm the invoice to start using its prices."
-                    : "Some numbers on this invoice don't add up, so its prices aren't being used yet."}
+                    : typed
+                      ? "You're typing this invoice in. Its prices are used once it adds up and you confirm it."
+                      : "Some numbers on this invoice don't add up, so its prices aren't being used yet."}
           </p>
           {held && (
             <div className="mt-2 flex flex-wrap gap-2">
@@ -425,9 +404,13 @@ export default function InvoiceReview({
                 ))}
               </ul>
               <p className="mt-2 text-amber-800">
-                {invoice.line_items.length === 0
-                  ? "Add each item from the picture, fill in the totals, then save."
-                  : "Check the highlighted items against the picture, fix anything that was misread, then save."}
+                {typed
+                  ? // No page to check the typing against, so the printed
+                    // amounts are: a slip in one shows as not adding up.
+                    "Add each item, then the total. Type every line total and the total as printed, not worked out: that is how a slip in the typing gets caught."
+                  : invoice.line_items.length === 0
+                    ? "Add each item from the picture, fill in the totals, then save."
+                    : "Check the highlighted items against the picture, fix anything that was misread, then save."}
               </p>
             </>
           )}
@@ -462,64 +445,31 @@ export default function InvoiceReview({
         <div className="min-w-0 flex-1">
           {editable && (
             <div className="mb-3 flex flex-wrap gap-4 text-sm">
-              <label className="flex items-center gap-2">
-                Distributor
-                <select
-                  value={
-                    headerDrafts.distributor_id ??
-                    (recognized ? (invoice.distributor_id ?? "") : "")
-                  }
-                  onChange={(e) => {
-                    if (e.target.value === "__add__") {
-                      setAddingDistributor(true);
-                      return;
-                    }
-                    setHeaderDrafts((d) => ({
-                      ...d,
-                      distributor_id: e.target.value,
-                    }));
-                  }}
-                  className="input py-1.5"
-                >
-                  {!recognized && !headerDrafts.distributor_id && (
-                    <option value="">Choose the distributor</option>
-                  )}
-                  {distributorList.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
-                  <option value="__add__">+ Add a distributor…</option>
-                </select>
-              </label>
-              {addingDistributor && (
-                <span className="flex flex-wrap items-center gap-2">
-                  <input
-                    aria-label="New distributor's name"
-                    value={newDistributor}
-                    onChange={(e) => setNewDistributor(e.target.value)}
-                    placeholder="Their name, as on the invoice"
-                    className="input py-1.5"
-                    autoFocus
-                  />
-                  <button type="button" onClick={() => void addDistributor()} disabled={busy || !newDistributor.trim()} className="btn-secondary btn-sm">
-                    Add
-                  </button>
-                  <button type="button" onClick={() => setAddingDistributor(false)} className="text-xs font-medium text-gray-600 hover:underline">
-                    Cancel
-                  </button>
-                  {/* The name is what we read off the page, which on a
-                      crumpled or faxed invoice can be wrong. */}
-                  <span className="basis-full text-xs text-gray-500">
-                    Check the name against the picture. If it&rsquo;s one already in the list, choose that instead.
-                  </span>
-                </span>
-              )}
-              {!recognized && !addingDistributor && invoice.printed_distributor && (
+              <DistributorPicker
+                distributors={distributorList}
+                value={headerDrafts.distributor_id ?? (recognized ? (invoice.distributor_id ?? "") : "")}
+                onChange={(id) => setHeaderDrafts((d) => ({ ...d, distributor_id: id }))}
+                onAdded={(added) => setDistributorList((list) => withDistributor(list, added))}
+                suggestedName={initial.printed_distributor ?? ""}
+                // The name is what we read off the page, which on a crumpled
+                // or faxed invoice can be wrong.
+                addHint={`${typed ? "" : "Check the name against the picture. "}If it's one already in the list, choose that instead.`}
+                disabled={busy}
+              />
+              {!recognized && invoice.printed_distributor && (
                 <span className="self-center text-xs text-gray-500">
                   The invoice says &ldquo;{invoice.printed_distributor}&rdquo;.
                 </span>
               )}
+              <label className="flex items-center gap-2">
+                Invoice #
+                <input
+                  value={headerValue("invoice_number")}
+                  onChange={(e) => setHeaderDrafts((d) => ({ ...d, invoice_number: e.target.value }))}
+                  maxLength={100}
+                  className="input w-36 py-1.5"
+                />
+              </label>
               <label className="flex items-center gap-2">
                 Invoice date
                 <input
@@ -732,8 +682,8 @@ export default function InvoiceReview({
           {/* No header row over nothing: one box that says what to do. */}
           {invoice.line_items.length === 0 && (
             <p className="rounded-lg border-2 border-dashed border-gray-300 bg-white px-4 py-6 text-center text-sm text-gray-500">
-              We didn&rsquo;t find any items on this invoice.
-              {editable && " Add them from the picture."}
+              {typed ? "No items yet." : "We didn’t find any items on this invoice."}
+              {editable && ` Add them from ${paper}.`}
             </p>
           )}
           {editable && (

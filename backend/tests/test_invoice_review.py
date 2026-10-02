@@ -598,3 +598,166 @@ def test_description_and_unit_cant_be_blanked(client, misread_invoice, tenant):
     for field in ("raw_description", "uom"):
         resp = client.patch(_url(invoice, tenant), json={"line_items": [{"id": str(lines[0].id), field: ""}]})
         assert resp.status_code == 422, field
+
+
+# --- typing an invoice in, with no file ---------------------------------------
+
+
+def _typed(client, tenant, distributor, **overrides):
+    body = {"distributor_id": str(distributor.id), "invoice_date": "2026-04-22", "invoice_number": "TYPED-1"}
+    body.update(overrides)
+    return client.post(f"/invoices/typed?tenant_id={tenant.id}", json=body)
+
+
+def _typed_url(tenant, invoice_id, suffix=""):
+    return f"/invoices/{invoice_id}{suffix}?tenant_id={tenant.id}"
+
+
+def test_an_invoice_can_be_typed_in_with_no_file(client, db, tenant, distributor, monkeypatch):
+    """A purchase with nothing to upload was absent from spending and from
+    price history. It starts as an invoice needing a look, with no items, and
+    nothing is sent to be read."""
+    def queued(*_):
+        raise AssertionError("there is nothing to read")
+
+    monkeypatch.setattr("app.api.invoices.enqueue_extraction", queued)
+
+    resp = _typed(client, tenant, distributor, invoice_number="  TYPED-1 ")
+
+    assert resp.status_code == 201, resp.text
+    invoice = db.get(Invoice, uuid.UUID(resp.json()["id"]))
+    assert (invoice.source, invoice.status) == (InvoiceSource.typed, InvoiceStatus.needs_review)
+    assert (invoice.invoice_number, invoice.invoice_date, invoice.distributor_id) == (
+        "TYPED-1", date(2026, 4, 22), distributor.id,
+    )  # fmt: skip
+    assert invoice.file_sha256 is None and invoice.extraction_cost_usd is None
+    detail = client.get(_typed_url(tenant, invoice.id)).json()
+    assert detail["page_image_urls"] == []
+    # What's left to do is said plainly: the items, and the total they're checked against.
+    assert detail["check"]["reasons"] == ["There are no items yet.", "Add the total."]
+
+
+def test_a_typed_invoice_counts_only_once_it_adds_up_and_is_confirmed(client, db, tenant, distributor):
+    sku = _sku(db, "Mozzarella")
+    db.add(SkuAlias(tenant_id=tenant.id, canonical_sku_id=sku.id, distributor_id=distributor.id,
+                    raw_description="MOZZ SHRD WHL MLK MOZ-1", raw_sku="MOZ-1"))  # fmt: skip
+    db.commit()
+    invoice_id = _typed(client, tenant, distributor).json()["id"]
+
+    added = client.post(_typed_url(tenant, invoice_id, "/line-items"), json=_new_line())
+    [line] = added.json()["line_items"]
+    assert line["canonical_sku_id"] == str(sku.id), "matched like any other line"
+    assert added.json()["check"]["reasons"] == ["Add the total."]
+    assert client.post(_typed_url(tenant, invoice_id, "/confirm")).status_code == 422
+
+    # The total is typed as printed. A slip in it (or in an item) is caught
+    # by the same arithmetic as a misread: the only check a typed invoice has.
+    slipped = client.patch(_typed_url(tenant, invoice_id), json={"total": "59.00"})
+    assert slipped.json()["check"]["reasons"] == ["The items plus tax don't equal the total."]
+    assert db.scalar(select(PriceObservation).where(PriceObservation.invoice_line_item_id == uuid.UUID(line["id"]))) is None
+
+    assert client.patch(_typed_url(tenant, invoice_id), json={"total": "95.00"}).json()["check"]["passes"] is True
+    confirmed = client.post(_typed_url(tenant, invoice_id, "/confirm"))
+
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["status"] == InvoiceStatus.confirmed.value
+    db.expire_all()
+    observation = db.scalar(select(PriceObservation).where(PriceObservation.invoice_line_item_id == uuid.UUID(line["id"])))
+    assert observation.unit_price_base == Decimal("2.375") and observation.observed_on == date(2026, 4, 22)
+
+
+def test_a_typed_invoice_already_here_from_its_file_is_held_as_a_copy(client, db, tenant, distributor):
+    _invoice(db, tenant, distributor, InvoiceStatus.extracted, number="0088214", day=3, subtotal="95.00", total="95.00")
+
+    invoice_id = _typed(client, tenant, distributor, invoice_number="88214").json()["id"]
+
+    detail = client.get(_typed_url(tenant, invoice_id)).json()
+    assert detail["duplicate_of_label"] == "invoice 0088214 from 2026-04-03"
+    assert any("looks like a copy" in reason for reason in detail["check"]["reasons"])
+    # "It's a different invoice" lets it through, as for a rescan.
+    kept = client.post(_typed_url(tenant, invoice_id, "/keep")).json()
+    assert kept["duplicate_of_id"] is None
+
+
+def test_an_invoice_cant_be_typed_in_for_a_distributor_that_isnt_a_choice(client, db, tenant):
+    other = db.scalar(select(Distributor).where(Distributor.slug == "other"))
+    if other is None:
+        other = Distributor(name="Other", slug="other")
+        db.add(other)
+        db.commit()
+        db.info["_created"]["distributors"].append(other.id)
+
+    assert _typed(client, tenant, other).status_code == 422
+    unknown = client.post(
+        f"/invoices/typed?tenant_id={tenant.id}", json={"distributor_id": str(uuid.uuid4()), "invoice_date": "2026-04-22"}
+    )
+    assert unknown.status_code == 422
+    assert db.scalar(select(Invoice).where(Invoice.tenant_id == tenant.id)) is None
+
+
+def test_a_typed_invoice_needs_its_distributor_and_date(client, tenant, distributor):
+    assert client.post(f"/invoices/typed?tenant_id={tenant.id}", json={"distributor_id": str(distributor.id)}).status_code == 422
+    # A number is optional: a market receipt may print none.
+    assert _typed(client, tenant, distributor, invoice_number=None).status_code == 201
+
+
+# --- correcting the invoice number ---------------------------------------------
+
+
+def test_a_number_changed_to_one_already_added_is_held_as_its_copy(client, db, tenant, distributor):
+    """A copy is told by distributor and number. A number typed (or corrected)
+    to match an invoice already here was confirmed beside it, and the
+    delivery counted twice."""
+    _invoice(db, tenant, distributor, InvoiceStatus.extracted, number="88214", day=3, subtotal="95.00", total="95.00")
+    mine = _invoice(db, tenant, distributor, InvoiceStatus.needs_review, number="88241", day=3, subtotal="95.00", total="95.00")
+
+    held = client.patch(_url(mine, tenant), json={"invoice_number": "88214"}).json()
+
+    assert held["invoice_number"] == "88214"
+    assert held["duplicate_of_label"] == "invoice 88214 from 2026-04-03"
+    # And corrected away from it again, it is its own invoice.
+    released = client.patch(_url(mine, tenant), json={"invoice_number": " 88215 "}).json()
+    assert (released["invoice_number"], released["duplicate_of_id"]) == ("88215", None)
+
+
+def test_a_number_corrected_to_that_of_an_invoice_added_later_is_held_too(client, db, tenant, distributor):
+    """The misread one came first, the rescan that read right came after and
+    is already counted. Correcting the first one's number makes it the copy."""
+    mine = _invoice(db, tenant, distributor, InvoiceStatus.needs_review, number="88241", day=3, subtotal="95.00", total="95.00")
+    _invoice(db, tenant, distributor, InvoiceStatus.extracted, number="88214", day=3, subtotal="95.00", total="95.00")
+
+    held = client.patch(_url(mine, tenant), json={"invoice_number": "88214"}).json()
+
+    assert held["duplicate_of_label"] == "invoice 88214 from 2026-04-03"
+    assert client.post(_url(mine, tenant, "/confirm")).status_code == 422
+
+
+def test_correcting_an_originals_number_releases_the_copy_held_against_it(client, db, tenant, distributor):
+    original = _invoice(db, tenant, distributor, InvoiceStatus.needs_review, number="88214", day=3)
+    copy = _invoice(db, tenant, distributor, InvoiceStatus.needs_review, number="88214", day=3)
+    copy.duplicate_of_id = original.id
+    db.add(_line(copy, tenant, 1, "1", "10.00", "10.00", "4/5 LB", None, ReviewStatus.pending))
+    db.commit()
+
+    client.patch(_url(original, tenant), json={"invoice_number": "88299"})
+
+    db.expire_all()
+    assert db.get(Invoice, copy.id).duplicate_of_id is None
+
+
+def test_the_invoice_number_can_be_cleared_and_the_change_is_recorded(client, db, misread_invoice, tenant):
+    invoice, _ = misread_invoice
+
+    body = client.patch(_url(invoice, tenant), json={"invoice_number": ""}).json()
+
+    assert body["invoice_number"] is None
+    history = client.get(_url(invoice, tenant, "/history")).json()
+    assert history[0]["details"]["changes"]["invoice_number"] == {"from": "REVIEW-0001", "to": None}
+
+
+def test_an_invoice_with_no_total_says_to_add_one(client, db, tenant, distributor):
+    invoice = _invoice(db, tenant, distributor, InvoiceStatus.needs_review, number="NOTOTAL-1", day=20)
+    db.add(_line(invoice, tenant, 1, "1", "10.00", "10.00", "4/5 LB", None, ReviewStatus.pending))
+    db.commit()
+
+    assert client.get(_url(invoice, tenant)).json()["check"]["reasons"] == ["Add the total."]

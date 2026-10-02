@@ -8,6 +8,7 @@ import { requireSession, serverGet } from "@/lib/server";
 import { StatusBadge } from "./[id]/InvoiceReview";
 import ExportPanel from "./ExportPanel";
 import SetupChecklist from "./SetupChecklist";
+import TypeInInvoice from "./TypeInInvoice";
 import UploadForm from "./UploadForm";
 
 type Invoice = {
@@ -44,7 +45,7 @@ export default async function InvoicesPage() {
 
   return (
     <div className="max-w-6xl">
-      {/* The export and photo panels open full width below the buttons
+      {/* The export, type-in and photo panels open full width below the buttons
           (order-last), inside this same row. */}
       <RefreshWhileReading reading={reading > 0} />
       <InstallPrompt />
@@ -63,6 +64,7 @@ export default async function InvoicesPage() {
           </p>
         </div>
         <ExportPanel />
+        <TypeInInvoice />
         <UploadForm />
       </div>
 

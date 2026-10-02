@@ -80,7 +80,7 @@ def one_at_a_time(db: Session, tenant_id) -> None:
     db.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(f"duplicates|{tenant_id}", 0))))
 
 
-def find_original(db: Session, invoice: Invoice) -> Invoice | None:
+def find_original(db: Session, invoice: Invoice, *, added_before: bool = True) -> Invoice | None:
     """The earliest invoice added before this one that it looks like a copy
     of: same location, same distributor, same number, or one the reissue of
     the other ("904718271-R"), whichever of those arrived first; or one the
@@ -91,7 +91,11 @@ def find_original(db: Session, invoice: Invoice) -> Invoice | None:
     as well.
 
     A credit and a charge are never copies of each other: a credit memo
-    often carries the number of the invoice it credits."""
+    often carries the number of the invoice it credits.
+
+    `added_before=False` looks at invoices added after it as well: for one
+    whose number a person has just changed. It is the one still waiting, so
+    it is the one to hold, whichever arrived first."""
     key = number_key(invoice.invoice_number)
     if not key or invoice.distributor_id is None:
         return None
@@ -107,6 +111,7 @@ def find_original(db: Session, invoice: Invoice) -> Invoice | None:
             # The original is the one added first. Attachments of one email
             # share a timestamp (the transaction's), so ties go by id.
             or_(
+                not added_before,
                 Invoice.created_at < invoice.created_at,
                 and_(Invoice.created_at == invoice.created_at, Invoice.id < invoice.id),
             ),

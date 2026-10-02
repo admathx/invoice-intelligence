@@ -84,7 +84,7 @@ export default async function HelpPage() {
         </Section>
 
         <Section topic={topic("add-invoices")}>
-          <p>Three ways, all on the <Go href="/invoices">Invoices</Go> page:</p>
+          <p>Four ways, all on the <Go href="/invoices">Invoices</Go> page:</p>
           <ul className="mt-2 list-disc space-y-1 pl-5">
             <li>
               <strong>Upload a PDF.</strong> Press <em>Upload invoice</em> and choose the file. You can choose several;
@@ -109,6 +109,13 @@ export default async function HelpPage() {
                   ))}
                 </ul>
               )}
+            </li>
+            <li>
+              <strong>Type it in,</strong> when you have no file or photo of it. Press <em>Type one in</em>, choose
+              the distributor and the date, then add each item and the total as the invoice prints them. Type each
+              line total and the total as printed, not worked out: with no picture to compare against, the numbers
+              adding up is how a slip in the typing gets caught. Its prices count once you press{" "}
+              <em>Confirm invoice</em>.
             </li>
           </ul>
           <p className="mt-2">

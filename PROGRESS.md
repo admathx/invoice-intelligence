@@ -3272,3 +3272,42 @@ with a test:
 - the replay left its own date check in the app if it stopped partway.
 
 Both sets replay the same afterwards, and the matching gate is unchanged.
+
+## Typing an invoice in
+
+Every invoice began as a file: an upload, photos, or an email. A purchase
+with nothing to send (the paper is gone; a market run written on a pad; a
+delivery only the distributor's website shows) could not be recorded, so
+its spending and prices were simply absent. A person could already type
+rows into an invoice that failed to read, but there was no way to start
+one.
+
+**Type one in**, on the Invoices page, asks who it's from, its date and
+its number (if it has one), and opens the invoice's own screen: the one a
+misread invoice is fixed on, with no picture. From there it is an invoice
+like any other. Its items are added and matched, its numbers have to add
+up, and nothing on it is used until it is confirmed. It then counts in
+spending, price history, alerts and savings, and shows as "Typed in".
+Nothing is read, so nothing is queued and it costs nothing.
+
+- There is no page to check the typing against, so the arithmetic is the
+  only check: each line total and the invoice total are typed as printed,
+  never worked out, and a slip in one shows as not adding up. The screen
+  says so.
+- A typed invoice already here from its file is held as a likely copy,
+  like a rescan. If the file arrives later, that one is held.
+- The invoice number can now be corrected on any invoice needing a look
+  (it could not be, so a misread number stayed misread). A copy is told by
+  distributor and number, so changing either asks the question again: for
+  the invoice, for any held as copies of it, and against invoices added
+  after it as well as before.
+- An invoice with no total now says "Add the total." It said the items
+  "don't equal the total", of a total that wasn't there.
+
+Migration 0026 adds `typed` to where an invoice came from. Choosing or
+adding a distributor is one component now, shared by this form and the
+review screen.
+
+Limits, on purpose: nothing checks a typed invoice against anything but
+itself, so a total typed to match wrong items passes; and a typed invoice
+has no picture for anyone to look back at later.

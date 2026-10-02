@@ -6,18 +6,19 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import audit, ops
+from app import audit, business_distributors, ops
 from app.api.deps import get_tenant_or_404
 from app.api.invoice_review import build_invoice_detail
 from app.auth import current_user, get_db_for_tenant
 from app.config import settings
 from app.api.invoice_review import invoice_label
-from app.duplicates import BEING_READ, file_hash, same_file
+from app.duplicates import BEING_READ, file_hash, find_original, one_at_a_time, same_file
 from app.ingest.upload import InvalidInvoiceFileError, invoice_pdf_from_upload, save_invoice_bytes
-from app.models import Invoice, User
+from app.models import Distributor, Invoice, User
+from app.models.distributor import UNRECOGNIZED_SLUG
 from app.models.enums import InvoiceSource, InvoiceStatus
 from app.queue import enqueue_extraction
-from app.schemas.invoices import InvoiceDetailOut, InvoiceOut, InvoiceUploadResponse
+from app.schemas.invoices import InvoiceDetailOut, InvoiceOut, InvoiceUploadResponse, TypedInvoice
 from app.storage import forget_original, get_storage, render_key
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
@@ -100,6 +101,66 @@ def upload_invoice(
     except Exception as exc:
         ops.alert("queue:upload", "An uploaded invoice couldn't be queued for reading", exc=exc)
 
+    return InvoiceUploadResponse(id=invoice.id, status=invoice.status)
+
+
+@router.post("/typed", response_model=InvoiceUploadResponse, status_code=201)
+def type_in_invoice(
+    tenant_id: uuid.UUID,
+    body: TypedInvoice,
+    db: Session = Depends(get_db_for_tenant),
+    user: User = Depends(current_user),
+) -> InvoiceUploadResponse:
+    """Start an invoice a person will type in: one with no file to send (the
+    paper is gone, or there never was any).
+
+    It begins where an invoice that couldn't be read ends up: needing a look,
+    with no items. From there it is the same invoice as any other. Its items
+    are added and matched, its numbers have to add up, and nothing on it is
+    used until a person confirms it (app/api/invoice_review.py). There is no
+    page to check the typing against, so that arithmetic is the only check
+    it gets: each item's amount and the invoice's total are typed as printed,
+    never worked out from the rest.
+
+    Nothing is read, so nothing is queued and nothing is spent.
+    """
+    get_tenant_or_404(db, tenant_id)
+    distributor = db.get(Distributor, body.distributor_id)
+    if (
+        distributor is None
+        or distributor.slug == UNRECOGNIZED_SLUG
+        or not business_distributors.usable_by(db, tenant_id, distributor)
+    ):
+        raise HTTPException(status_code=422, detail="Choose a distributor from the list.")
+
+    invoice = Invoice(
+        tenant_id=tenant_id,
+        distributor_id=distributor.id,
+        invoice_number=(body.invoice_number or "").strip() or None,
+        invoice_date=body.invoice_date,
+        source=InvoiceSource.typed,
+        status=InvoiceStatus.needs_review,
+        original_file_uri="",
+    )
+    db.add(invoice)
+    db.flush()
+    # The same invoice may already be here from its file; then this one is
+    # held as a likely copy, for the person to delete or keep, as a rescan is.
+    one_at_a_time(db, tenant_id)
+    original = find_original(db, invoice)
+    invoice.duplicate_of_id = original.id if original is not None else None
+    audit.record(
+        db,
+        user,
+        "invoice.typed_in",
+        "invoice",
+        invoice.id,
+        tenant_id,
+        invoice_number=invoice.invoice_number,
+        invoice_date=invoice.invoice_date,
+        distributor=distributor.name,
+    )
+    db.commit()
     return InvoiceUploadResponse(id=invoice.id, status=invoice.status)
 
 

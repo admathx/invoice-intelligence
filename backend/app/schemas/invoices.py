@@ -152,14 +152,26 @@ class LineItemSuggestion(BaseModel):
 
 class InvoiceEdit(BaseModel):
     """Corrections a person makes while reading the invoice page. Only fields
-    actually sent are applied; there is no way to blank a value from here."""
+    actually sent are applied; there is no way to blank a value from here,
+    except the invoice number (an empty string: some invoices have none)."""
 
     distributor_id: uuid.UUID | None = None
+    invoice_number: str | None = Field(default=None, max_length=100)
     invoice_date: date | None = None
     subtotal: Money | None = None
     tax: Money | None = None
     total: Money | None = None
     line_items: list[LineItemEdit] = []
+
+
+class TypedInvoice(BaseModel):
+    """An invoice a person is about to type in: who it's from and when, which
+    is what tells a copy from a new one. Its items and totals are entered on
+    the invoice's own screen, and checked there like any other's."""
+
+    distributor_id: uuid.UUID
+    invoice_date: date
+    invoice_number: str | None = Field(default=None, max_length=100)
 
 
 class InvoiceUploadResponse(BaseModel):

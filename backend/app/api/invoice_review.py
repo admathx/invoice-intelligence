@@ -33,7 +33,7 @@ from app import audit, business_distributors
 from app.analytics.price_creep import upsert_creep_alerts
 from app.api.deps import get_tenant_or_404
 from app.auth import current_user, get_db_for_tenant
-from app.duplicates import BEING_READ, find_original, number_key
+from app.duplicates import BEING_READ, find_original, number_key, one_at_a_time
 from app.extract.charges import is_charge
 from app.extract.dates import dated_ahead
 from app.packs import apply_to_item, needs_pack, remember
@@ -75,7 +75,7 @@ _RESOLVED = {ReviewStatus.auto, ReviewStatus.confirmed, ReviewStatus.corrected}
 
 # What the audit trail records about an invoice and a line: the numbers and
 # text a person can change here, so "what did it say before" is answerable.
-_INVOICE_AUDITED = ("invoice_date", "subtotal", "tax", "total", "distributor_id")
+_INVOICE_AUDITED = ("invoice_number", "invoice_date", "subtotal", "tax", "total", "distributor_id")
 _LINE_AUDITED = ("raw_description", "raw_sku", "raw_pack_size", "uom", "quantity", "unit_price", "extended_price")
 
 
@@ -107,6 +107,8 @@ class InvoiceCheck:
     dated_ahead: date | None = None
     # No subtotal is printed, so the items are checked against the total.
     no_subtotal: bool = False
+    # No total either: there is nothing to check the items against.
+    missing_total: bool = False
 
     @property
     def reasons(self) -> list[str]:
@@ -143,7 +145,7 @@ class InvoiceCheck:
             pass
         elif not self.lines_sum_to_subtotal:
             out.append("The items don't add up to the subtotal.")
-        elif not self.totals_reconcile:
+        elif not self.totals_reconcile and not self.missing_total:
             # Only reported once the lines reconcile: until then the subtotal
             # itself is suspect, so this would be noise on top of the real error.
             out.append(
@@ -151,6 +153,10 @@ class InvoiceCheck:
                 if self.no_subtotal
                 else "Subtotal plus tax doesn't equal the total."
             )
+        if self.missing_total:
+            # Said for what it is: "doesn't equal the total" of a total that
+            # isn't there sent a person looking for a wrong number.
+            out.append("Add the total.")
         if self.missing_distributor:
             out.append("Choose the distributor.")
         if self.missing_invoice_date:
@@ -220,6 +226,7 @@ def check_stored_invoice(
             invoice.invoice_date if dated_ahead(invoice.invoice_date, invoice.created_at.date()) else None
         ),
         no_subtotal=invoice.subtotal is None,
+        missing_total=invoice.total is None,
     )
 
 
@@ -425,6 +432,21 @@ def _get_reviewable_invoice(db: Session, invoice_id: uuid.UUID, *, editing: bool
     return invoice
 
 
+def _look_again_for_original(db: Session, invoice: Invoice) -> None:
+    """Whether an invoice is a likely copy, asked again: its number or its
+    distributor is what that goes by (app/duplicates.py), and one of them
+    has just changed, on it or on the invoice it was held against. Against
+    invoices added after it too: a number corrected to that of a rescan
+    which came later, and was read right, makes this the copy. The caller
+    holds one_at_a_time."""
+    was_held = invoice.is_held
+    original = find_original(db, invoice, added_before=False)
+    invoice.duplicate_of_id = original.id if original is not None else None
+    if was_held and not invoice.is_held:
+        _match_held_lines(db, invoice)
+    db.flush()  # the next one asked about must see this (no autoflush)
+
+
 def _take_under_review(invoice: Invoice) -> None:
     """A failed invoice becomes needs_review the moment a person edits it.
 
@@ -469,6 +491,9 @@ def edit_invoice(
     for name in ("invoice_date", "subtotal", "tax", "total"):
         if name in sent and getattr(body, name) is not None:
             setattr(invoice, name, getattr(body, name))
+    number_before = invoice.invoice_number
+    if "invoice_number" in sent and body.invoice_number is not None:
+        invoice.invoice_number = body.invoice_number.strip() or None
 
     filled_packs = [lines[edit.id] for edit in body.line_items if _apply_line_edit(db, invoice, lines[edit.id], edit)]
 
@@ -490,6 +515,17 @@ def edit_invoice(
         # read against the wrong catalog.
         for line in lines.values():
             _match(db, invoice, line)
+
+    if distributor_changed or invoice.invoice_number != number_before:
+        # A copy is told by its distributor and number, so what was decided
+        # from the old ones is decided again: for this invoice, and for any
+        # held as copies of it. A number typed to match one already added
+        # was otherwise confirmed beside it, and the delivery counted twice.
+        one_at_a_time(db, tenant_id)
+        db.flush()
+        copies = db.scalars(select(Invoice).where(Invoice.duplicate_of_id == invoice.id).order_by(Invoice.created_at))
+        for affected in [invoice, *copies]:
+            _look_again_for_original(db, affected)
 
     # A pack filled in for an item that has none printed is remembered, and
     # fills in the item's other lines here (app/packs.py), as from Match items.

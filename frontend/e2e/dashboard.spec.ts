@@ -263,6 +263,59 @@ test.describe("ingest -> review -> negotiation sheet", () => {
 
     await expect(page.getByText("Confirmed. Its prices now count")).toBeVisible();
   });
+
+  test("an invoice with no file can be typed in, checked and confirmed", async ({ page }) => {
+    // E2E-TYPED-: how the fixture's cleanup finds it afterwards.
+    const number = `E2E-TYPED-${Date.now().toString(36)}`;
+
+    await page.goto("/invoices");
+    await page.getByRole("button", { name: "Type one in" }).click();
+    const panel = page.getByTestId("type-in-panel");
+    const start = panel.getByRole("button", { name: "Continue to its items" });
+    await expect(start).toBeDisabled(); // who it's from and when come first
+    // Whichever distributor this location's list starts with.
+    const distributor = panel.getByLabel("Distributor");
+    await expect(distributor.locator("option")).not.toHaveCount(2); // the list has loaded
+    await distributor.selectOption({ index: 1 });
+    await panel.getByLabel("Invoice date").fill("2026-09-02");
+    await panel.getByLabel(/Invoice #/).fill(number);
+    await start.click();
+
+    // The same screen a misread invoice is fixed on, with no picture.
+    await expect(page.getByRole("heading", { name: `Invoice ${number}` })).toBeVisible();
+    await expect(page.getByText("You're typing this invoice in.")).toBeVisible();
+    await expect(page.getByText("Add the total.")).toBeVisible();
+    await expect(page.getByAltText("The invoice")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "+ Add item" }).click();
+    const dialog = page.getByRole("dialog", { name: "Add an item" });
+    await dialog.getByLabel("Description").fill("E2E TYPED TOMATOES");
+    await dialog.getByLabel("Quantity").fill("2");
+    await dialog.getByLabel("Price each", { exact: true }).fill("21.50");
+    await dialog.getByLabel("Line total").fill("43.00");
+    await dialog.getByRole("button", { name: "Add item" }).click();
+    await expect(dialog).toBeHidden();
+
+    // A slip in the total is caught by the arithmetic: the only check a
+    // typed invoice has.
+    const confirm = page.getByRole("button", { name: "Confirm invoice" });
+    await page.getByLabel("Total", { exact: true }).fill("34.00");
+    await page.getByRole("button", { name: "Save and check" }).click();
+    await expect(page.getByText("The items plus tax don't equal the total.")).toBeVisible();
+    await expect(confirm).toBeDisabled();
+
+    await page.getByLabel("Total", { exact: true }).fill("43.00");
+    await page.getByRole("button", { name: "Save and check" }).click();
+    await expect(page.getByText("Everything adds up now")).toBeVisible();
+    await confirm.click();
+    await expect(page.getByText("Confirmed. Its prices now count")).toBeVisible();
+
+    const history = page.locator("section", { has: page.getByRole("heading", { name: "History" }) });
+    await expect(history.getByText(`E2E Reviewer started typing in invoice ${number}`)).toBeVisible();
+
+    await page.goto("/invoices");
+    await expect(page.getByRole("row", { name: new RegExp(number) }).getByText("Typed in")).toBeVisible();
+  });
 });
 
 

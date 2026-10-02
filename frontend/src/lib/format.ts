@@ -115,6 +115,7 @@ export const SOURCE_LABEL: Record<string, string> = {
   upload: "Upload",
   email: "Email",
   photo: "Photo",
+  typed: "Typed in",
 };
 
 /** A stored decimal as the starting text of an edit box: no padding zeros

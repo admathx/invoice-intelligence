@@ -96,11 +96,15 @@ def _cleanup_prior_fixtures(db, tenant_id: uuid.UUID) -> None:
     ]
     # The empty-invoice fixture uses the tenant's REAL distributor (so its
     # suggestions come from real purchase history), which the slug-based
-    # sweep below can't see. Found by its invoice number instead.
+    # sweep below can't see. Found by its invoice number instead. So is the
+    # invoice the suite types in through the screen (E2E-TYPED-).
     empty_ids = [
         row[0]
         for row in db.execute(
-            sqlalchemy.select(Invoice.id).where(Invoice.tenant_id == tenant_id, Invoice.invoice_number.like("E2E-EMPTY-%"))
+            sqlalchemy.select(Invoice.id).where(
+                Invoice.tenant_id == tenant_id,
+                sqlalchemy.or_(Invoice.invoice_number.like("E2E-EMPTY-%"), Invoice.invoice_number.like("E2E-TYPED-%")),
+            )
         ).all()
     ]
     if empty_ids:

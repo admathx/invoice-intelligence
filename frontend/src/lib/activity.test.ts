@@ -122,6 +122,18 @@ describe("describing the newer events", () => {
     expect(describeEvent(event("invoice.uploaded", { filename: "inv.pdf" }))).toBe("uploaded inv.pdf");
   });
 
+  it("says an invoice was typed in, and when its number was changed", () => {
+    expect(
+      describeEvent(event("invoice.typed_in", { invoice_number: "88214", invoice_date: "2026-04-22", distributor: "Sysco" })),
+    ).toBe("started typing in invoice 88214 from Sysco");
+    expect(describeEvent(event("invoice.typed_in", { invoice_number: null, distributor: "Sysco" }))).toBe(
+      "started typing in an invoice from Sysco",
+    );
+    expect(
+      eventDetailLines(event("invoice.edited", { changes: { invoice_number: { from: "88241", to: "88214" } } })),
+    ).toEqual(["invoice # 88241 → 88214"]);
+  });
+
   it("names what was exported and for when", () => {
     expect(describeEvent(event("invoice.exported", { kind: "line-items", start: "2026-05-01", end: "2026-05-31", rows: 40 }))).toBe(
       "exported line items to a spreadsheet (2026-05-01 to 2026-05-31, 40 rows)",
