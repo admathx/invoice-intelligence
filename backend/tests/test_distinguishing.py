@@ -34,6 +34,9 @@ from app.normalize.distinguishing import conflicts, first_not_contradicted
         ("CHKN THIGH BONE IN", "Chicken Thigh Boneless Skinless"),
         ("CHKN THIGH BNLS SKLS", "Chicken Breast Boneless Skinless"),  # cut
         ("GREEN BEANS FRESH", "Green Beans Frozen"),
+        ("GLOVES VINYL LG", "Rubber Gloves"),  # what it's made of
+        ("GLOVES VINYL MD", "Gloves Nitrile"),
+        ("BAG TAKEOUT PLASTIC", "Take-Out Bags Paper"),
     ],
 )
 def test_a_line_and_a_product_that_differ_on_one_point_are_not_the_same(line, product):
@@ -89,6 +92,32 @@ def test_past_a_contradicted_product_nothing_else_is_offered():
     # A variety has to say what the line says on the point at issue: turkey
     # breast says nothing about lean and fat.
     assert first_not_contradicted("GROUND TURKEY 93/7", ["Ground Turkey 85/15", "Turkey Breast Boneless"]) is None
+
+
+def test_a_variety_that_says_what_the_line_says_is_taken_over_one_that_says_nothing():
+    """"PECHUGA DE POLLO" (chicken breast) was nearest Whole Chicken, with
+    Chicken Breast Boneless Skinless second."""
+    chicken = ["Whole Chicken", "Chicken Breast Boneless Skinless", "Chicken Tenders"]
+    assert first_not_contradicted("PECHUGA DE POLLO", chicken) == 1
+    # Only a variety of the same thing: a pork chop is not a pork shoulder
+    # for saying "boneless".
+    assert first_not_contradicted("PORK BUTT BONELESS", ["Pork Shoulder", "Pork Chop Boneless"]) == 0
+
+
+def test_between_two_varieties_the_line_cant_tell_apart_neither_is_offered():
+    """"CONT TO GO", with no size, was offered the 8 oz container of three."""
+    containers = ["To-Go Container 8oz", "To-Go Container 32oz", "To-Go Container 16oz", "Hinged Container 9in"]
+    assert first_not_contradicted("CONT TO GO", containers) is None
+    assert first_not_contradicted("CONT TO GO 32OZ", containers) == 1
+    assert first_not_contradicted("BUTTER SOLID", ["Salted Butter", "Unsalted Butter"]) is None
+    assert first_not_contradicted("SHRIMP PEELED", ["Shrimp 16/20 Peeled Deveined", "Shrimp 21/25 Peeled Deveined"]) is None
+    mozzarella = ["Mozzarella Shredded Whole Milk", "Mozzarella Shredded Part Skim", "Cheddar Shredded Yellow"]
+    assert first_not_contradicted("CHEESE MOZZ SHRD", mozzarella) is None
+    assert first_not_contradicted("CHEESE MOZZ SHRD WHL MLK", mozzarella) == 0
+    # One product of its kind, or others that are something else, is no doubt.
+    assert first_not_contradicted("CUP HOT", ["Cups 16oz Hot", "Cups 16oz Cold", "Cup Lids"]) == 0
+    assert first_not_contradicted("MUSHROOM SLICED", ["Mushroom Button", "Mushroom Cremini"]) == 0
+    assert first_not_contradicted("CHEESE CHEDDAR BLOCK", ["Cheddar Block White", "Cheddar Shredded Yellow"]) == 0
 
 
 def test_a_product_with_no_word_of_the_lines_name_is_not_looked_at():
@@ -147,6 +176,8 @@ def test_a_percent_sign_and_accents_survive_into_what_is_searched_for():
         ("HUEVOS GRANDES 15DZ", "EGGS LARGE 15DZ"),
         ("QUESO MOZZARELLA RALLADO", "CHEESE MOZZARELLA SHREDDED"),
         ("PICO DE GALLO", "PICO DE GALLO"),  # "DE" goes only with a word from the Spanish list
+        ("PORK SHLDR", "PORK SHOULDER"),
+        ("BUN HAMB", "BUN HAMBURGER"),
     ],
 )
 def test_terse_shorthand_and_kitchen_spanish_are_spelled_out(printed, expected):

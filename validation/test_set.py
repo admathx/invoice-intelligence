@@ -198,7 +198,33 @@ def check_set(set_dir: Path) -> list[str]:
         keyed = (set_dir / f"{name}.truth.json").exists() or any(set_dir.glob(f"{name}.*.truth.json")) or any(set_dir.glob(f"{name}-att*.truth.json"))
         if not keyed and "Ready" in row["expected_outcome"] and not row["file"].endswith(".eml"):
             problems.append(f"{name}: expected {row['expected_outcome']} but has no answer key")
+    restaurants = {row.get("customer") for row in _plan(set_dir, "restaurants.csv")}
+    if restaurants:
+        # Billed to a name that is no restaurant of the set, and not said to
+        # be uploaded to one: the runner would file it at a restaurant of
+        # that name, where nothing can be wrong with it.
+        nowhere = sorted(r["file"] for r in manifest if r.get("customer") and r["customer"] not in restaurants and not r.get("upload_to"))
+        if nowhere:
+            problems.append(
+                f"{len(nowhere)} documents are billed to a name that isn't in restaurants.csv and have no upload_to, "
+                f"e.g. {nowhere[:3]}"
+            )
+        unknown = sorted({r["upload_to"] for r in manifest if r.get("upload_to") and r["upload_to"] not in restaurants})
+        if unknown:
+            problems.append(f"upload_to names restaurants that aren't in restaurants.csv: {unknown}")
+    big = {"sysco", "us_foods", "gordon", "pfg", "other", ""}
+    listed = [row for row in _plan(set_dir, "vendors_plan.csv") if (row.get("vendor") or "").strip().lower() in big]
+    if listed:
+        problems.append(
+            f"vendors_plan: {len(listed)} rows name a big distributor (or nothing) as the vendor; it lists local vendors by "
+            "their printed names"
+        )
+    ahead = _dated_ahead(set_dir, manifest)
+    if ahead:
+        problems.append(ahead)
     for row in _plan(set_dir, "vendors_plan.csv"):
+        if (row.get("vendor") or "").strip().lower() in big:
+            continue
         first = by_file.get(row.get("first_invoice_file", ""))
         if first is None:
             problems.append(f"vendors_plan: {row.get('first_invoice_file')!r} isn't in the manifest")
@@ -238,6 +264,40 @@ def check_set(set_dir: Path) -> list[str]:
         if missing:
             problems.append(f"{plan}: {len(missing)} files not in the manifest, e.g. {missing[:3]}")
     return problems
+
+
+def _latest_date(set_dir: Path, manifest: list[dict], sets: set[str] | None = None):
+    """The latest invoice date in the set's answer keys (of `sets`, if given)."""
+    from app.extract.dates import parse_invoice_date
+
+    latest = None
+    for row in manifest:
+        key = set_dir / f"{Path(row['file']).stem}.truth.json"
+        if (sets and row["set"] not in sets) or not key.exists():
+            continue
+        try:
+            dated = parse_invoice_date(json.loads(key.read_text()).get("invoice_date"))
+        except Exception:
+            dated = None
+        if dated and (latest is None or dated > latest):
+            latest = dated
+    return latest
+
+
+def _dated_ahead(set_dir: Path, manifest: list[dict]) -> str | None:
+    """Invoices dated after today are held by the app (a mistyped year, or
+    a due date). A set built to end later than the day it's run has them."""
+    from datetime import date, timedelta
+
+    from app.extract.dates import MAX_DAYS_AHEAD
+
+    latest = _latest_date(set_dir, manifest, {"H", "O", "U"})
+    if latest and latest > date.today() + timedelta(days=MAX_DAYS_AHEAD):
+        return (
+            f"the price series is dated up to {latest}, after today: the app holds an invoice dated ahead. "
+            "Replayed as if it arrived on that day."
+        )
+    return None
 
 
 def split(work_dir: Path) -> None:
@@ -324,6 +384,10 @@ def score(work_dir: Path) -> dict:
             continue  # no key came with it: that's the reader's own answer, saved as a template
         got = record["extraction"] or {"line_items": []}
         row = {"set": entry["set"], "cost_usd": record["cost_usd"], "failed": record["failed"]}
+        # Rows as the app restates them before checking (a catch weight in
+        # the pack column becomes the weight): a key that holds the restated
+        # number is matched by that, not called a misreading.
+        restated_lines = _restated(got)
         row["distributor"] = got.get("distributor") == truth.get("distributor")
         row["invoice_number"] = _norm(got.get("invoice_number")) == _norm(truth.get("invoice_number"))
         row["invoice_date"] = parse_invoice_date(got.get("invoice_date")) == parse_invoice_date(truth.get("invoice_date"))
@@ -350,7 +414,7 @@ def score(work_dir: Path) -> dict:
                 if _num(t.get(f)) is None:
                     continue
                 fields[f][1] += 1
-                ok = _same_money(t.get(f), g.get(f))
+                ok = _same_money(t.get(f), g.get(f)) or _same_money(t.get(f), restated_lines.get(n, {}).get(f))
                 fields[f][0] += ok
                 line_ok &= ok
             wrong_money_lines += not line_ok
@@ -386,6 +450,18 @@ def score(work_dir: Path) -> dict:
     (work_dir / "score.json").write_text(json.dumps(per_invoice, indent=2, default=str))
     _print_score(per_invoice)
     return per_invoice
+
+
+def _restated(reading: dict) -> dict[int, dict]:
+    """A reading's rows by number, as the app restates them (app/extract/restated.py)."""
+    from app.extract.restated import restate
+    from app.extract.schema import ExtractedInvoice
+
+    try:
+        restated, _ = restate(ExtractedInvoice.model_validate(reading))
+    except Exception:
+        return {}
+    return {line.line_number: line.model_dump() for line in restated.line_items}
 
 
 def _print_score(per_invoice: dict) -> None:
@@ -711,6 +787,22 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     cleanup()
     gate = json.loads((work_dir / "gate.json").read_text())
     manifest = list(csv.DictReader((set_dir / "manifest.csv").open()))
+    # A price series built to end after today is replayed on its own
+    # calendar: each of its invoices as if it arrived on the series' last
+    # day. (The app holds an invoice dated ahead; that is tested elsewhere.)
+    import app.api.invoice_review as invoice_review_module
+    from app.extract.dates import dated_ahead as really_dated_ahead
+
+    series_sets = {"H", "O", "U"}
+    series_until = _latest_date(set_dir, manifest, series_sets) if _dated_ahead(set_dir, manifest) else None
+    on_its_calendar = {"now": False}
+
+    def dated_ahead(invoice_date, received):
+        if on_its_calendar["now"] and series_until is not None:
+            received = max(received, series_until)
+        return really_dated_ahead(invoice_date, received)
+
+    tasks.dated_ahead = invoice_review_module.dated_ahead = dated_ahead
     replay = _Replay()
     tasks.extractor = replay
     queue_module.invoice_queue.enqueue = lambda *a, **k: None  # read here, not by a worker
@@ -935,6 +1027,7 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     for name, entry in sorted(gate.items(), key=arrival):
         if entry.get("kind") in ("attachment", "part"):
             continue  # read when its email, or the file it's in, arrives
+        on_its_calendar["now"] = entry.get("set") in series_sets
         if entry.get("outcome"):
             results[name] = {**entry, "app_outcome": entry["outcome"]}
             continue
@@ -1004,6 +1097,7 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     if year_customer:
         report["year"] = _changes(db, _plan(set_dir, "year_plan.csv"), tenant_ids[year_customer], [])
         report["year"]["added_in_order"] = [n for n, _ in sorted(upload_order.items(), key=lambda kv: kv[1])][:5]
+    tasks.dated_ahead = invoice_review_module.dated_ahead = really_dated_ahead
     if as_matched:
         report["matching"] = _matching(_plan(set_dir, "products_plan.csv"), as_matched)
     report["errors"] = {k: r["error"] for k, r in results.items() if r.get("error")}
@@ -1270,8 +1364,17 @@ def _matching(plan_rows: list[dict], as_matched: dict[str, list[dict]]) -> dict:
             out["lines"] += 1
             true = (row.get("true_product") or "").strip()
             said = f"{name}: {line['description']!r} is {true or 'none'}, matched to {line['product']!r} ({line['status']}, {line['confidence']})"
+            either = [name.strip() for name in true[len("either:"):].split("/")] if true.lower().startswith("either:") else []
             if line["status"] == "not_product":
                 out["right" if true.lower() in ("", "none") else "left_for_a_person"] += 1
+            elif either:
+                # A row that fits two catalog products equally: leaving it
+                # for a person is the right answer, and offering one of the
+                # two is a guess.
+                if line["product"] is None:
+                    out["right"] += 1
+                else:
+                    out["wrong_automatic" if line["status"] == "auto" else "wrong_suggested"].append(said)
             elif line["product"] is None:
                 out["left_for_a_person"] += 1
             elif true.lower() not in ("", "none") and same_product(line["product"], true):

@@ -78,8 +78,9 @@ Rules:
   are copied onto one sheet. Then extract ONLY the first of them (the top one, or the left one): its header,
   its totals and its line items, and nothing from the other. It is false for everything else: a remittance
   slip or payment coupon at the foot of an invoice, two pages of the same invoice shown side by side, a
-  receipt shown in overlapping slices, and several invoices each on a page of their own (page_invoices says
-  that).
+  second copy of the same invoice on the sheet (a customer copy beside a driver copy, the same invoice
+  number: read it once), a receipt shown in overlapping slices, and several invoices each on a page of their
+  own (page_invoices says that).
 """
 
 

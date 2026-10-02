@@ -906,3 +906,48 @@ def test_an_invoice_forwarded_on_five_times_is_found(db_session, inbox, tenant, 
     result = ingest_email_file(db_session, _write_raw(inbox, message), inbox)
     assert result.status == "ingested", result.reason
     assert len(_invoices_for(db_session, tenant)) == 1
+
+
+# --- What the sixth test set showed ------------------------------------------
+
+
+def test_an_attached_message_that_was_base64_encoded_is_still_opened(db_session, inbox, tenant, no_real_queue):
+    """Some mail programs encode a forwarded message like any other file.
+    The parser then sees one block of base64 with no headers, and the
+    invoice in it was turned away as "no PDF attached"."""
+    import base64
+
+    encoded = base64.encodebytes(_undelivered().as_bytes()).decode()
+    raw = (
+        f"From: owner@restaurant.example.com\r\nTo: {tenant.inbox_address}\r\nSubject: Fwd: invoice\r\n"
+        "Message-ID: <b64-forward@test>\r\nMIME-Version: 1.0\r\n"
+        'Content-Type: multipart/mixed; boundary="XX"\r\n\r\n'
+        "--XX\r\nContent-Type: text/plain\r\n\r\nForwarding this.\r\n"
+        '--XX\r\nContent-Type: message/rfc822\r\nContent-Transfer-Encoding: base64\r\n'
+        'Content-Disposition: attachment; filename="forwarded.eml"\r\n\r\n'
+        f"{encoded}\r\n--XX--\r\n"
+    ).encode()
+    path = inbox / "mail.eml"
+    path.write_bytes(raw)
+    result = ingest_email_file(db_session, path, inbox)
+    assert result.status == "ingested", result.reason
+    assert len(_invoices_for(db_session, tenant)) == 1
+
+
+def test_invoices_inside_outlooks_winmail_dat_are_found(db_session, inbox, tenant, no_real_queue):
+    """A message sent from Outlook as rich text arrives elsewhere as one
+    attachment, winmail.dat, with the real attachments inside. It was
+    turned away as a damaged PDF."""
+    wrapper = bytes.fromhex("789f3e22") + b"\x01\x00" + b"\x00" * 40 + _pdf_bytes("first") + b"\x02\x10" * 9 + _pdf_bytes("second") + b"\x00" * 12
+    message = _message(tenant.inbox_address)
+    message.add_attachment(wrapper, maintype="application", subtype="ms-tnef", filename="winmail.dat")
+    result = ingest_email_file(db_session, _write_raw(inbox, message), inbox)
+    assert result.status == "ingested", result.reason
+    assert len(_invoices_for(db_session, tenant)) == 2
+
+
+def test_a_winmail_dat_with_no_invoice_in_it_is_turned_away_by_name(db_session, inbox, tenant):
+    message = _message(tenant.inbox_address)
+    message.add_attachment(bytes.fromhex("789f3e22") + b"\x00" * 64, maintype="application", subtype="ms-tnef", filename="winmail.dat")
+    result = ingest_email_file(db_session, _write_raw(inbox, message), inbox)
+    assert result.status == "quarantined" and "winmail.dat" in result.reason

@@ -17,8 +17,10 @@ that can't be routed, carries no invoice, or fails to parse at all gets moved
 to `inbox/quarantine/` with a `.reason.txt` beside it, so a human can see
 exactly what arrived and why it didn't become an invoice.
 """
+import base64
 import hashlib
 import io
+import quopri
 import re
 import time
 import uuid
@@ -212,6 +214,13 @@ def _attachments(message: EmailMessage, depth: int = 0) -> list[EmailAttachment]
         if content_type == "message/rfc822":
             parts = part.get_payload()
             inner = parts[0] if isinstance(parts, list) and parts else None
+            encoding = str(part.get("content-transfer-encoding", "")).strip().lower()
+            if isinstance(inner, EmailMessage) and not inner.keys() and encoding in ("base64", "quoted-printable"):
+                # Some mail programs encode the attached message like any
+                # other file, which the standard forbids and the parser
+                # doesn't undo: the "message" is then one block of base64
+                # with no headers, and the invoice in it was never found.
+                inner = _decoded(inner, encoding) or inner
         elif filename.lower().endswith(".eml"):
             # Some mail programs attach it as a plain file.
             data = part.get_payload(decode=True)
@@ -236,9 +245,23 @@ def _attachments(message: EmailMessage, depth: int = 0) -> list[EmailAttachment]
         )
         if _is_zip(attachment):
             found.extend(_unzipped(attachment))
+        elif _is_winmail(attachment):
+            found.extend(_from_winmail(attachment))
         else:
             found.append(attachment)
     return found
+
+
+def _decoded(message: EmailMessage, encoding: str) -> EmailMessage | None:
+    """The message an attached message really is, once the transfer
+    encoding it was wrongly given is undone; None if that isn't a message."""
+    try:
+        text = str(message.get_payload()).encode("ascii", "ignore")
+        raw = base64.b64decode(text) if encoding == "base64" else quopri.decodestring(text)
+        inner = message_from_bytes(raw, policy=policy.default)
+    except Exception:
+        return None
+    return inner if isinstance(inner, EmailMessage) and inner.keys() else None
 
 
 def _is_bounce(message: EmailMessage) -> bool:
@@ -257,6 +280,41 @@ def _is_bounce(message: EmailMessage) -> bool:
     if str(message.get("return-path", "")).strip() == "<>" or message.get("x-failed-recipients"):
         return True
     return str(message.get("auto-submitted", "")).strip().lower().startswith("auto-replied")
+
+
+_TNEF_SIGNATURE = bytes.fromhex("789f3e22")
+
+
+def _is_winmail(attachment: EmailAttachment) -> bool:
+    """Outlook's wrapper: a message sent as rich text arrives, in other mail
+    programs, as one attachment called winmail.dat with the real
+    attachments inside it."""
+    return (
+        attachment.filename.lower() == "winmail.dat"
+        or attachment.content_type in ("application/ms-tnef", "application/vnd.ms-tnef")
+        or attachment.content.startswith(_TNEF_SIGNATURE)
+    )
+
+
+def _from_winmail(wrapper: EmailAttachment) -> list[EmailAttachment]:
+    """The PDFs inside a winmail.dat, as if each had been attached. The
+    wrapper stores its attachments as they are, so each PDF is there from
+    its header to its end marker; nothing else in the format is read. With
+    none in it, the wrapper itself, so a rejection names it."""
+    data, pdfs = wrapper.content, []
+    start = data.find(b"%PDF-")
+    while start != -1:
+        following = data.find(b"%PDF-", start + 5)
+        end = data.rfind(b"%%EOF", start, following if following != -1 else len(data))
+        if end != -1:
+            pdfs.append(data[start : end + len(b"%%EOF")] + b"\n")
+        start = following
+    if not pdfs:
+        return [EmailAttachment(filename=wrapper.filename, content_type=wrapper.content_type, content=b"")]
+    return [
+        EmailAttachment(filename=f"{wrapper.filename}-{number}.pdf", content_type="application/pdf", content=pdf)
+        for number, pdf in enumerate(pdfs, 1)
+    ]
 
 
 def _is_zip(attachment: EmailAttachment) -> bool:

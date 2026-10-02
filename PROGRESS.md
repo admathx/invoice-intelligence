@@ -3186,3 +3186,69 @@ Fifth set, replayed: the per-hundred and the deposit invoices are Ready
 with the right price per unit (find-out outcomes 166 of 177, was 164); the
 words-in-cells invoice is still held, on its MKT and TBD rows only; known
 outcomes unchanged at 258 of 265; nothing misread came out Ready.
+
+## The sixth test set (397 documents, the focused sets)
+
+Read for $14.19 in all (425 files with the invoices found inside stacks,
+plus a ten-document re-read). No document read with a wrong amount came
+out Ready. 227 of 239 known outcomes and 150 of 157 find-out outcomes came
+out as expected, once the set's own mistakes were corrected (below).
+
+What it found in the app, all fixed:
+
+- **A forwarded email whose attached message was base64-encoded** wasn't
+  opened: the parser sees one block of base64 with no headers. It is now
+  decoded and read.
+- **The same ticket twice on one sheet** (a customer copy and a driver
+  copy) was held as two invoices sharing a page. The reading instructions
+  now say it is one; confirmed on a re-read of the ten shared-page
+  documents ($0.27), with no other flag changing.
+- **Matching.** Vinyl gloves were offered Rubber Gloves (what a thing is
+  made of is now a telling word); "PECHUGA DE POLLO" was offered Whole
+  Chicken with Chicken Breast second (a variety that says what the line
+  says is now taken over one that says nothing); "CONT TO GO" with no size
+  was offered the 8 oz container of three (between varieties the line
+  can't tell apart, nothing is offered); "PORK SHLDR" was offered Pork
+  Tenderloin (shorthand added).
+- **winmail.dat.** The set's was not a real one, but the app turned any
+  away as a damaged PDF. The PDFs inside Outlook's wrapper are now taken
+  out and read.
+- **A jug out of a split case** is priced when the invoice has a
+  split-case fee for it (done just before the set).
+
+What it found in the set itself (the runner now reports these before
+anything is read):
+
+- six documents printed something their key didn't say (a case count where
+  the key held a weight, 400 for 20,000, a tax line the key didn't have);
+- five email attachments were 23 bytes of text, not PDFs, and the
+  winmail.dat was four letters and a cut-off PDF;
+- eleven look-alike invoices had no `upload_to`, and `restaurants.csv`
+  left out a restaurant, so nothing could be wrong with them;
+- `vendors_plan.csv` listed the big distributors as vendors;
+- the long series ran to February 2027, and the app rightly held every
+  invoice dated ahead (replayed on its own calendar);
+- 63 of 85 product names in `products_plan.csv` were not the catalog's.
+
+Corrected for the replay: `upload_to` on the eleven, and the missing
+restaurant. The originals are kept beside them.
+
+Not errors, and left as they are: a clean invoice misread in one digit and
+held; hard photos misread and held (4 in E, 7 in Q); two vendors with the
+same name in two cities taken for one; one unreadable attachment turning
+away the whole email; a rise of 11% over a year not alerting (the bar is
+10%, measured between medians about 46 weeks apart).
+
+By set: A 11 of 13, E 16 of 16, N 52 of 54, P 22 of 22, Q 32 of 33, R 51
+of 57, S 35 of 39, T 37 of 40, U 92 of 92 with every planned alert right
+that the plan itself got right, V 30 of 30 with no wrong automatic match.
+
+Matching on the fifth set's 124 trap lines, through the app, is now 96
+right and 22 left for a person (was 102 and 16): six rows of shredded
+mozzarella with no milk fat printed are no longer offered one of the
+catalog's two. That is the rule working, not a loss. The gate is
+unchanged at 99.1% automatic, none false; the fifth set's outcomes are
+unchanged.
+
+The brief is at Version 7, full and focused (seven sets, about 195
+documents). It opens with what the last set got wrong.

@@ -164,6 +164,11 @@ ABBREVIATION_EXPANSIONS: dict[str, str] = {
     "MAYO": "MAYONNAISE",
     "IQF": "FROZEN",
     "EVOO": "EXTRA VIRGIN OLIVE OIL",
+    # From the sixth set: "PORK SHLDR" was offered Pork Tenderloin.
+    "SHLDR": "SHOULDER",
+    "HAMB": "HAMBURGER",
+    "RUS": "RUSSET",
+    "ORG": "ORGANIC",
 }
 
 # Kitchen Spanish, as local suppliers' invoices print it ("PECHUGA DE POLLO

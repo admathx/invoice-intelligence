@@ -64,14 +64,34 @@ def test_a_set_is_checked_before_anything_is_read(tmp_path):
          "expected_outcome": "Needs a look or Rejected", "expected_reason": "", "certainty": "find_out", "upload_to": "", "notes": ""},
         {"file": "W-02.pdf", "set": "W", "distributor": "other", "customer": "Harbor & Pine Kitchen", "account": "",
          "expected_outcome": "Exploded", "expected_reason": "", "certainty": "find_out", "upload_to": "", "notes": ""},
+        {"file": "T-01.pdf", "set": "T", "distributor": "sysco", "customer": "Harbor Pine Kitchen & Bar", "account": "",
+         "expected_outcome": "Needs a look", "expected_reason": "", "certainty": "known", "upload_to": "", "notes": ""},
+        {"file": "T-02.pdf", "set": "T", "distributor": "sysco", "customer": "Harbor & Pine Kitchen", "account": "",
+         "expected_outcome": "Needs a look", "expected_reason": "", "certainty": "known", "upload_to": "Queen City Diner", "notes": ""},
     ]  # fmt: skip
     _write(tmp_path / "manifest.csv", manifest)
-    for name in ("U-01", "U-02", "P-01", "W-01"):  # W-02's file is missing
+    for name in ("U-01", "U-02", "P-01", "W-01", "T-01", "T-02"):  # W-02's file is missing
         (tmp_path / f"{name}.pdf").write_bytes(b"%PDF-1.4")
-    for name in ("U-01", "P-01"):  # U-02 has no key
+    for name in ("P-01", "T-01", "T-02"):  # U-02 has no key
         (tmp_path / f"{name}.truth.json").write_text("{}")
-    _write(tmp_path / "vendors_plan.csv", [{"vendor": "Hollow Creek Farm", "restaurant": "Harbor & Pine Kitchen", "first_invoice_file": "P-01.pdf"}])
-    _write(tmp_path / "restaurants.csv", [{"customer": "Marigold Diner", "city": "Tulsa", "state": "OK", "account": "", "sets": "U;A"}])
+    from datetime import date, timedelta
+
+    later = date.today() + timedelta(days=120)  # a series that ends after today
+    (tmp_path / "U-01.truth.json").write_text(f'{{"invoice_date": "{later}"}}')
+    _write(
+        tmp_path / "vendors_plan.csv",
+        [
+            {"vendor": "Hollow Creek Farm", "restaurant": "Harbor & Pine Kitchen", "first_invoice_file": "P-01.pdf"},
+            {"vendor": "gordon", "restaurant": "Harbor & Pine Kitchen", "first_invoice_file": "W-01.pdf"},
+        ],
+    )
+    _write(
+        tmp_path / "restaurants.csv",
+        [
+            {"customer": "Marigold Diner", "city": "Tulsa", "state": "OK", "account": "", "sets": "U;A"},
+            {"customer": "Harbor & Pine Kitchen", "city": "Charlotte", "state": "NC", "account": "", "sets": "P;T;W"},
+        ],
+    )
     plan = {"week": "1", "item_code": "1", "description": "X", "pack_size": "4/5 LB", "unit_price": "1", "uom": "CS"}
     _write(
         tmp_path / "year_plan.csv",
@@ -95,6 +115,11 @@ def test_a_set_is_checked_before_anything_is_read(tmp_path):
         "inflation rows disagree on expected_alert",
         "promo has expected_alert ['maybe']; it must be yes, no or find_out",
         "year_plan.csv: 1 files not in the manifest",
+        # What the sixth set's own files got wrong.
+        "1 documents are billed to a name that isn't in restaurants.csv and have no upload_to, e.g. ['T-01.pdf']",
+        "upload_to names restaurants that aren't in restaurants.csv: ['Queen City Diner']",
+        "vendors_plan: 1 rows name a big distributor",
+        f"the price series is dated up to {later}, after today",
     ):
         assert expected in problems, (expected, problems)
     assert "W-01" not in problems  # "Needs a look or Rejected" is an outcome it knows
@@ -115,3 +140,48 @@ def test_an_increase_that_closed_before_the_end_still_alerted_at_the_time():
     assert not alerted_at_some_point(weekly(["5.00"] * 40))
     assert not alerted_at_some_point(weekly(["5.00"] * 10 + ["4.40"] * 5 + ["5.00"] * 25))  # a promotion
     assert not alerted_at_some_point([])
+
+
+def test_a_row_the_app_restates_to_what_the_key_holds_is_not_a_misreading(tmp_path):
+    """A catch weight printed in the pack column: the reader gives the
+    cases as printed, the app restates the row by the pound, and the key
+    holds the pounds. Scored as read, three right invoices were listed as
+    "read with a wrong amount and still Ready"."""
+    import json
+
+    from validation.test_set import score
+
+    row = {"line_number": 1, "raw_sku": "1", "raw_description": "BEEF BRISKET", "raw_pack_size": "47.30 LB", "uom": "CS",
+           "unit_price": "5.10", "extended_price": "723.69", "confidence": 1.0}  # fmt: skip
+    head = {"distributor": "us_foods", "invoice_number": "1", "invoice_date": "2026-09-04", "subtotal": "723.69", "tax": "0.00", "total": "723.69"}
+    (tmp_path / "gate.json").write_text(json.dumps({"S-30": {"set": "S", "outcome": None}}))
+    (tmp_path / "S-30.extracted.json").write_text(
+        json.dumps({"cost_usd": 0.03, "failed": None, "extraction": {**head, "line_items": [{**row, "quantity": "3"}]}})
+    )
+    (tmp_path / "S-30.truth.json").write_text(json.dumps({**head, "line_items": [{**row, "quantity": "141.90", "uom": "LB"}]}))
+    assert score(tmp_path)["S-30"]["money_mistake"] is False
+    # A quantity that is simply wrong is still a misreading.
+    (tmp_path / "S-30.extracted.json").write_text(
+        json.dumps({"cost_usd": 0.03, "failed": None, "extraction": {**head, "line_items": [{**row, "quantity": "4"}]}})
+    )
+    assert score(tmp_path)["S-30"]["money_mistake"] is True
+
+
+def test_a_row_that_fits_two_products_is_right_when_left_for_a_person():
+    from validation.test_set import _matching
+
+    plan = [
+        {"invoice_file": "V-01.pdf", "item_code": "1", "description": "CHEESE MOZZ SHRD",
+         "true_product": "either: Mozzarella Shredded Whole Milk / Mozzarella Shredded Part Skim", "true_pack": "", "note": ""},
+        {"invoice_file": "V-01.pdf", "item_code": "2", "description": "CONT TO GO",
+         "true_product": "either: To-Go Container 8oz / To-Go Container 32oz", "true_pack": "", "note": ""},
+    ]  # fmt: skip
+    line = {"status": "pending", "confidence": "0.7", "pack": "4/5 LB", "uom": "CS", "price_per_unit": None, "unit": None}
+    matched = {
+        "V-01": [
+            {**line, "item_code": "1", "description": "CHEESE MOZZ SHRD", "product": None},
+            {**line, "item_code": "2", "description": "CONT TO GO", "product": "To-Go Container 8oz"},
+        ]
+    }
+    result = _matching(plan, matched)
+    assert result["right"] == 1 and len(result["wrong_suggested"]) == 1 and "CONT TO GO" in result["wrong_suggested"][0]

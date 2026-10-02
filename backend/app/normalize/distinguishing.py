@@ -84,6 +84,9 @@ _GROUPS: tuple[dict[str, tuple[str, ...]], ...] = (
         "tender": ("TENDER", "TENDERS"),
         "leg": ("LEG", "LEGS"),
     },
+    # What it is made of.
+    {"nitrile": ("NITRILE",), "vinyl": ("VINYL",), "latex": ("LATEX",), "rubber": ("RUBBER",), "poly": ("POLY",)},
+    {"paper": ("PAPER",), "plastic": ("PLASTIC",), "foam": ("FOAM", "STYROFOAM")},
     # Grade of olive oil, and of beef.
     {"extra virgin": ("EXTRA VIRGIN",), "pure": ("PURE",), "pomace": ("POMACE",)},
     {"choice": ("CHOICE",), "select": ("SELECT",), "prime": ("PRIME",)},
@@ -135,7 +138,12 @@ def _read(description: str) -> _Reading:
                 points.setdefault(number, set()).add(value)
                 unread = unread.replace(f" {phrase} ", "  ")
                 name = name.replace(f" {phrase} ", "  ")
-    return _Reading(points, frozenset(word for word in name.split() if not word.isdigit()))
+    left = {word for word in name.split() if not word.isdigit()}
+    if " WHOLE MILK " in words and len(left) > 1:
+        # "Whole milk" said of a cheese is its kind, not its name:
+        # Mozzarella Shredded Whole Milk and Part Skim are both mozzarella.
+        left.discard("MILK")
+    return _Reading(points, frozenset(left))
 
 
 def _contradicted_on(line: _Reading, product: _Reading) -> set:
@@ -158,27 +166,71 @@ def conflicts(raw_description: str, product_name: str) -> bool:
 
 
 def first_not_contradicted(raw_description: str, product_names: Sequence[str]) -> int | None:
-    """Which of `product_names` (nearest first) a line can be offered: the
-    first it doesn't contradict, as long as that is the nearest, or another
-    variety of the nearest. Products that share no word of their name with
-    the line are not looked at. None when there is no such product."""
+    """Which of `product_names` (nearest first) a line can be offered, or
+    None when there is no such product.
+
+    The first it doesn't contradict, as long as that is the nearest, or
+    another variety of the nearest. Products that share no word of their
+    name with the line are not looked at. Then two refinements, from a set
+    of matching traps:
+
+    - a variety of it further down that says what the line says is taken
+      over one that says nothing: "PECHUGA DE POLLO" (chicken breast) was
+      nearest Whole Chicken, with Chicken Breast Boneless Skinless second;
+    - and when the catalog has two varieties the line can't tell apart, it
+      is offered neither: "CONT TO GO", with no size, was offered the 8 oz
+      container of three, and a suggestion is one click from being wrong.
+    """
     line = _read(raw_description)
+    products = [_read(name) for name in product_names]
+
+    def open_to(product: _Reading) -> bool:
+        return not (line.name and product.name and not _share_a_word(line.name, product.name))
+
+    def same_thing(a: _Reading, b: _Reading) -> bool:
+        return bool(a.name and b.name) and (a.name <= b.name or b.name <= a.name)
+
+    def agreed(product: _Reading) -> int:
+        return sum(1 for point, said in line.points.items() if said & product.points.get(point, set()))
+
+    chosen: int | None = None
     nearest: _Reading | None = None
     at_issue: set = set()
-    for index, name in enumerate(product_names):
-        product = _read(name)
-        if line.name and product.name and not _share_a_word(line.name, product.name):
+    for index, product in enumerate(products):
+        if not open_to(product):
             # Not a variety of anything the line names: "CHICKEN BREAST" is
             # nearer Duck Breast than Chicken Breast Boneless Skinless.
             continue
         contradicted = _contradicted_on(line, product)
         if nearest is None:
             if not contradicted:
-                return index
+                chosen = index
+                break
             nearest, at_issue = product, contradicted
             continue
-        same_thing = bool(product.name and nearest.name) and (product.name <= nearest.name or nearest.name <= product.name)
         # It has to say, on the point the nearest got wrong, what the line says.
-        if not contradicted and same_thing and at_issue <= product.points.keys():
-            return index
-    return None
+        if not contradicted and same_thing(product, nearest) and at_issue <= product.points.keys():
+            chosen = index
+            break
+    if chosen is None:
+        return None
+
+    for index in range(chosen + 1, len(products)):
+        other = products[index]
+        if (
+            open_to(other)
+            and not _contradicted_on(line, other)
+            and same_thing(other, products[chosen])
+            and agreed(other) > agreed(products[chosen])
+        ):
+            chosen = index
+
+    mine = products[chosen]
+    for index, other in enumerate(products):
+        if index == chosen or other.name != mine.name or _contradicted_on(line, other):
+            continue
+        # Another variety the line fits as well: they differ on a point it
+        # doesn't speak to.
+        if any(point not in line.points for point in _contradicted_on(mine, other)):
+            return None
+    return chosen
