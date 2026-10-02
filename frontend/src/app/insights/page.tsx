@@ -2,6 +2,7 @@ import { computeSparklineCoords, type PriceHistoryPoint } from "@/lib/sparkline"
 import { labelAnchor, priceVerdict, trackPosition } from "@/lib/spectrum";
 
 import ActionButton from "@/components/ActionButton";
+import { alternativeSource, type Alternative } from "@/lib/alternatives";
 import NoLocation from "@/components/NoLocation";
 import { percent, priceChangeTone, TONE_TEXT, unitPrice } from "@/lib/format";
 import { requireSession, serverGet } from "@/lib/server";
@@ -29,6 +30,7 @@ type InsightCard = {
   status: string;
   price_history: PriceHistoryPoint[];
   benchmark: BenchmarkPosition | null;
+  alternatives: Alternative[];
 };
 
 async function getInsights(locationId: string): Promise<InsightCard[]> {
@@ -162,6 +164,30 @@ function BenchmarkSpectrum({ benchmark }: { benchmark: BenchmarkPosition }) {
   );
 }
 
+/** Where the same product costs less: another distributor the reader buys
+ *  it from, or one that similar businesses buy it from for less. */
+function Alternatives({ alternatives }: { alternatives: Alternative[] }) {
+  return (
+    <div className="mt-3 rounded-md bg-brand-50 px-3 py-2.5">
+      <div className="text-sm font-medium text-brand-900">Costs less elsewhere</div>
+      <ul className="mt-1.5 space-y-1.5 text-sm">
+        {alternatives.map((a) => (
+          <li key={a.distributor_name} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span className="font-medium text-gray-900">{a.distributor_name}</span>
+            <span className="num text-gray-900">{unitPrice(a.price)}</span>
+            <span className="badge bg-brand-100 text-brand-800">▼ {percent(a.saving_pct)} less</span>
+            <span className="text-xs text-gray-600">{alternativeSource(a)}</span>
+          </li>
+        ))}
+      </ul>
+      {/* The match is to a catalog product, not a brand or a case size. */}
+      <p className="mt-1.5 text-xs text-gray-500">
+        The same product as we matched it. Check the brand and pack before you switch.
+      </p>
+    </div>
+  );
+}
+
 export default async function InsightsPage() {
   const { locationId } = await requireSession();
   if (!locationId) return <NoLocation />;
@@ -183,7 +209,8 @@ export default async function InsightsPage() {
           <a href="/negotiation" className="link">
             savings
           </a>{" "}
-          list has the numbers to bring.
+          list has the numbers to bring. Where the same product costs less at another distributor, the alert says
+          so.
         </p>
       </div>
       {cards.length === 0 && (
@@ -225,6 +252,7 @@ export default async function InsightsPage() {
               <Sparkline points={card.price_history} />
             </div>
             {card.benchmark && <BenchmarkSpectrum benchmark={card.benchmark} />}
+            {card.alternatives?.length > 0 && <Alternatives alternatives={card.alternatives} />}
             <div className="mt-3 flex justify-end border-t border-gray-100 pt-2">
               <ActionButton
                 label="Dealt with it"

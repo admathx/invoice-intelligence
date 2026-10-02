@@ -214,7 +214,10 @@ export default async function HelpPage() {
         <Section topic={topic("alerts")}>
           <p>
             <Go href="/insights">Price alerts</Go> lists products you&rsquo;re now paying noticeably more for than you
-            used to. Where we know what similar businesses pay, you&rsquo;ll see how your price compares. Open a
+            used to. Where we know what similar businesses pay, you&rsquo;ll see how your price compares. Where the
+            same product costs less at another distributor, the alert lists it under <em>Costs less elsewhere</em>:
+            either what you already pay there, from your own invoices, or what similar businesses typically pay
+            there. It is the same product as we matched it, so check the brand and pack before you switch. Open a
             product to see every price you&rsquo;ve paid for it. Once you&rsquo;ve dealt with one (called your rep, or
             accepted it), press <em>Dealt with it</em> to take it off the list; we&rsquo;ll tell you again if the price
             goes up more.

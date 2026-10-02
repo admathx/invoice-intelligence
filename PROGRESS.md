@@ -3311,3 +3311,41 @@ review screen.
 Limits, on purpose: nothing checks a typed invoice against anything but
 itself, so a total typed to match wrong items passes; and a typed invoice
 has no picture for anyone to look back at later.
+
+## Where a flagged product costs less
+
+A price alert said what rose, by how much, and where that price sits among
+similar businesses. It never said what to do instead of paying it. Each
+alert now lists, under "Costs less elsewhere", up to three other
+distributors the same product costs at least 3% less at
+(app/analytics/alternatives.py):
+
+- one this location already buys it from, at what it pays there now: the
+  middle of its last few prices there, which is how the alert itself
+  defines "now", so a distributor whose own price has just gone up isn't
+  offered at last quarter's;
+- one it doesn't, at what the businesses that do buy it there typically
+  pay, in its area or, failing that, nationwide. The line says which, and
+  how many businesses.
+
+The second is other businesses' prices, so it goes through the benchmark's
+own rule and code: five independent businesses behind every figure, counted
+per distributor (a narrower cell is no easier to publish), the asker's own
+company left out, one number shown. A vendor a business added for itself is
+never named to another. The rule now lives in one function that both the
+benchmark and this call.
+
+Only the same catalog product. "Similar" products were looked at and left
+out: by name, the catalog's kinds of chicken are drumsticks, wings and a
+whole bird, and the nearest thing to a 16-inch pizza box is a 14-inch one.
+Which stands in for which is a cook's call.
+
+On the dev data, 2 of The Copper Skillet's 4 alerts have one (cilantro 19%
+less, cup lids 15% less, each from five businesses nationwide); the other
+19 locations' alerts have none, because the made-up restaurants mostly buy
+each product from one distributor. Real invoices will say how often it has
+something to show.
+
+Not done: nothing estimates what switching would save in a year, the
+weekly email doesn't carry these, and a match is to a product, not a brand
+or case size, which the card says.

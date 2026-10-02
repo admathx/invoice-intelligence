@@ -101,7 +101,7 @@ def _percentile_rank(sorted_values: list[Decimal], value: Decimal) -> Decimal:
     return ((Decimal(below) + Decimal(tied) / 2) / Decimal(len(sorted_values))).quantize(Decimal("0.0001"))
 
 
-def _account_price(prices: list[Decimal]) -> Decimal:
+def own_price(prices: list[Decimal]) -> Decimal:
     """One business's representative price for the window: its median.
 
     Median rather than mean for the same reason price_creep.py and the
@@ -109,6 +109,30 @@ def _account_price(prices: list[Decimal]) -> Decimal:
     shouldn't move what this business is recorded as paying.
     """
     return statistics.median(prices).quantize(UNIT_PRICE_PLACES)  # median sorts internally
+
+
+def account_prices(by_account: Mapping[uuid.UUID, Sequence[Decimal]]) -> list[Decimal] | None:
+    """A cell's prices, one per business, in order; None when fewer than
+    MIN_DISTINCT_ACCOUNTS businesses stand behind it. The suppression rule
+    itself, in the one place every published figure goes through (the
+    benchmark here, and app/analytics/alternatives.py).
+
+    One vote per business, not one per delivery. Percentiles taken over raw
+    observations are weighted by how often each business buys, which stopped
+    matching the count the moment suppression started counting accounts: a
+    five-location group counts once toward the threshold but would
+    contribute five locations' worth of prices to the statistic. A cell of
+    one such group plus five independents paying $10-$14 returned a p25 of
+    $20.00 — a "target price" arguing for a rise.
+    """
+    if len(by_account) < MIN_DISTINCT_ACCOUNTS:
+        return None
+    return sorted(own_price(list(prices)) for prices in by_account.values())
+
+
+def typical_price(prices: list[Decimal]) -> Decimal:
+    """The middle of a cell's prices (account_prices)."""
+    return _percentile(prices, Decimal("0.50"))
 
 
 def _cells(
@@ -164,26 +188,18 @@ def _cells(
 
     results: dict[uuid.UUID, BenchmarkResult] = {}
     for sku_id, by_account in by_sku.items():
-        if len(by_account) < MIN_DISTINCT_ACCOUNTS:
+        prices = account_prices(by_account)
+        if prices is None:
             continue
-
-        # One vote per business, not one per delivery. Percentiles taken over
-        # raw observations are weighted by how often each business buys, which
-        # stopped matching the count the moment suppression started counting
-        # accounts: a five-location group counts once toward the threshold but
-        # would contribute five locations' worth of prices to the statistic.
-        # A cell of one such group plus five independents paying $10-$14
-        # returned a p25 of $20.00 — a "target price" arguing for a rise.
-        account_prices = sorted(_account_price(prices) for prices in by_account.values())
         results[sku_id] = BenchmarkResult(
             canonical_sku_id=sku_id,
-            p25=_percentile(account_prices, Decimal("0.25")),
-            p50=_percentile(account_prices, Decimal("0.50")),
-            p75=_percentile(account_prices, Decimal("0.75")),
-            distinct_account_count=len(account_prices),
+            p25=_percentile(prices, Decimal("0.25")),
+            p50=typical_price(prices),
+            p75=_percentile(prices, Decimal("0.75")),
+            distinct_account_count=len(prices),
             scope="metro" if metro is not None else "national",
             subject_percentile=(
-                _percentile_rank(account_prices, subject_prices[sku_id])
+                _percentile_rank(prices, subject_prices[sku_id])
                 if subject_prices is not None and sku_id in subject_prices
                 else None
             ),

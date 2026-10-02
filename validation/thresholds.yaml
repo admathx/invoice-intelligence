@@ -107,6 +107,12 @@ phase4_analytics:
     # with its own locations. Identical to counting tenants for every
     # single-location customer. See app/analytics/benchmark.py.
     min_distinct_tenants: 5  # hard rule, not tunable
+  alternatives:
+    # Another distributor is offered on a price alert only when the same
+    # product costs at least this much less there than the price that was
+    # flagged: a 1% difference isn't worth changing who you order from.
+    min_saving_pct: 0.03
+    max_shown: 3
   negotiation:
     top_n: 15
     # History basis (target = the median of the tenant's OWN past prices, the
