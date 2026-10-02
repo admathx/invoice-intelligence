@@ -34,6 +34,16 @@ Rules:
   case's weight is listed instead of their total ("20.10 20.60 20.54"), quantity is their sum ("61.24").
   A line with no weight printed is never one of these, even on an invoice that has a weight column: its
   quantity stays the count ("3") and its unit_price the printed price ("116.82").
+- price_per is for a price printed with the unit it is quoted per, where that isn't one of what the
+  quantity counts: "12.00 /C" or "12.00 PER C" (per hundred), "/M" (per thousand), "/DZ" (per dozen), "/CWT",
+  or a column headed PER. Give the unit as printed, without the slash ("C", "M", "DZ"); unit_price stays the
+  printed number ("12.00") and quantity the printed quantity. It is null on every other row. Only when the
+  page prints it: never work it out from the numbers.
+- deposit is for an item table with a column of its own for a deposit (or another charge per row) that is
+  added into each row's amount: the row's number from that column ("5.00"); extended_price stays the printed
+  amount. It is null when there is no such column, and for a row whose cell in it is blank. A deposit printed
+  as a row of its own is a line item, not this.
+- A cell that holds a word where a number would be (FREE, N/C, MKT, TBD, SEE BELOW) is given as that word.
 - uom is the unit the quantity is counted in, from the invoice's unit column (CS, EA, LB, BG, GAL, DZ, CT...).
   If the invoice has no unit column, use CS, or LB for a line whose quantity is a weight priced per pound.
   Never put the pack size in uom: "4/10 LB" is a pack size, not a unit.

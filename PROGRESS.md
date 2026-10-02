@@ -3146,3 +3146,43 @@ automatic (was 98.8%), none false. The rest of the fifth set is unchanged:
 
 Both briefs now give the catalog's product names for set V's
 `true_product`, so a right match isn't scored wrong for its name.
+
+## Rows the page states another way (set S's held layouts)
+
+Three of the fifth set's layouts were held for a person with nothing
+misread: the readings matched the answer keys exactly, and the rows didn't
+multiply out as read. `app/extract/restated.py` restates such a row before
+the arithmetic check, only on what the page prints and only when the row
+then adds up to the cent.
+
+- **Nothing charged.** FREE or N/C where the price or the amount would be:
+  the row counts for nothing and has no price.
+- **An amount left off the row** ("SEE BELOW", or a smudge): quantity x
+  price, kept only if the invoice's totals then reconcile. They are the one
+  check a worked-out amount has.
+- **A catch weight in the pack column** (2 cases, "47.30 LB", 9.80 a
+  pound): billed by the pound. A scale weight only, never a whole-number
+  pack.
+- **A price per hundred, thousand or dozen** ("12.00 /C"): the quantity is
+  restated in what the price is per. The reader now reports the marker
+  (`price_per`); it is never worked out from the numbers, because quantity x
+  price / 100 = amount as readily explains a 3.00 read as 300.
+- **A deposit column added into each amount.** The reader reports each
+  row's deposit; it comes out of the row's amount and the deposits become
+  one charge, so the rows still add up to the subtotal and each product's
+  amount is what the product cost.
+
+Left held on purpose: a price that says MKT and a quantity that says TBD.
+Dividing the amount by the other number would fill the cell, and nothing
+would then check either.
+
+The changed reading instructions were checked on 49 re-read documents
+($1.33, against $1.25 for the same documents before: about 6% more per
+document for the two new fields). 48 read identically; one differed in the
+unit guessed for three rows with no unit column. The new fields were filled
+on the two invoices that print them and nowhere else.
+
+Fifth set, replayed: the per-hundred and the deposit invoices are Ready
+with the right price per unit (find-out outcomes 166 of 177, was 164); the
+words-in-cells invoice is still held, on its MKT and TBD rows only; known
+outcomes unchanged at 258 of 265; nothing misread came out Ready.

@@ -159,16 +159,28 @@ def _unit(unit_raw: str) -> tuple[str | None, Decimal]:
     return _UNIT_TO_TOKEN.get(unit_raw), Decimal(1)
 
 
+# Pieces billed by the hundred or the thousand, as paper goods are (300
+# napkins at 12.00 a hundred). Only as a billing unit, and only under these
+# names, which are given to a row whose price is printed per C or per M
+# (app/extract/restated.py): a bare C in a unit column is as often a case.
+_BILLED_BY_COUNT: dict[str, tuple[str, Decimal]] = {"HUNDRED": ("ea", Decimal(100)), "THOUSAND": ("ea", Decimal(1000))}
+
+
+def _billed(uom: str) -> tuple[str | None, Decimal]:
+    unit = _join_fl_oz(uom.strip().upper())
+    return _BILLED_BY_COUNT.get(unit) or _unit(unit)
+
+
 def billed_unit_token(uom: str) -> str | None:
     """The physical unit a line's billing UOM names, or None if it names none
     (a container such as BG, BX or PK, whose size the invoice doesn't state)."""
-    return _unit(_join_fl_oz(uom.strip().upper()))[0]
+    return _billed(uom)[0]
 
 
 def billed_unit_scale(uom: str) -> Decimal:
     """How many of billed_unit_token's unit one billed unit is: a line
     billed per QT is a quarter gallon each."""
-    return _unit(_join_fl_oz(uom.strip().upper()))[1]
+    return _billed(uom)[1]
 
 
 def _join_fl_oz(text: str) -> str:

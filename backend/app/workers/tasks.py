@@ -17,6 +17,7 @@ from app.duplicates import file_hash, find_original, one_at_a_time
 from app.extract.charges import is_charge
 from app.extract.confidence import assess_extraction
 from app.extract.credit_memo import as_credits
+from app.extract.restated import restate
 from app.extract.schema import DOCUMENT_TYPES, PRICED_DOCUMENT_TYPES
 from app.extract.amounts import parse_amount
 from app.extract.dates import dated_ahead, parse_invoice_date
@@ -196,6 +197,9 @@ def process_invoice(invoice_id: str) -> None:
         # is (app/extract/credit_memo.py).
         credited = as_credits(extracted)
         extracted = credited or extracted
+        # Rows right on the page that don't multiply out as read: nothing
+        # charged, a weight in the pack column (app/extract/restated.py).
+        extracted, restated_rows = restate(extracted)
 
         distributor = db.scalar(select(Distributor).where(Distributor.slug == extracted.distributor))
         invoice.printed_distributor = (extracted.distributor_name or "").strip() or None
@@ -372,6 +376,7 @@ def process_invoice(invoice_id: str) -> None:
             other_invoices_in_file=len(split_ids) or None,
             another_invoice_on_its_page=True if invoice.shares_page else None,
             counted_as_credits=True if credited else None,
+            rows_restated=restated_rows or None,
             line_count=len(extracted.line_items),
             extraction_model=invoice.extraction_model,
             extraction_cost_usd=invoice.extraction_cost_usd,

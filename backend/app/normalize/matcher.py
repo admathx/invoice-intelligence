@@ -336,7 +336,8 @@ def _apply_pack_size(
         # the price is for one piece or the whole case, and invoices use it
         # both ways. Read as one piece, a $65.93 case of cups was recorded at
         # $65.93 a cup, a thousand times the real price.
-        if pack.unit == "ea" and pack.base_units_per_case > 1:
+        # (Billed by the hundred or thousand, it is pieces, and says so.)
+        if pack.unit == "ea" and pack.base_units_per_case > 1 and billed_unit_scale(uom) == 1:
             raise BilledUnitMismatchError(
                 f"line billed per {uom!r} against a pack of {pack.base_units_per_case}: one piece or the case?"
             )

@@ -19,6 +19,12 @@ class ExtractedLineItem(BaseModel):
     unit_price: str
     extended_price: str
     confidence: float
+    # The unit a price is quoted per, when the page prints one beside it
+    # ("12.00 /C": per hundred), and an amount from a deposit column that is
+    # added into the row's amount (app/extract/restated.py). Defaults keep
+    # readings stored before these existed readable.
+    price_per: str | None = None
+    deposit: str | None = None
 
 
 class ExtractedInvoice(BaseModel):
