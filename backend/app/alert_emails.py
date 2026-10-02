@@ -22,6 +22,11 @@ alerts page, not something to email about today.
 One email per person per run, covering every new alert across their
 locations, so an invoice that opens five alerts sends one message, not five.
 
+Where an increase's product costs less at another distributor, the email
+says so in a table under the increases: where, the price, what it saves in
+a year, and the next step (app/digest.py elsewhere_for). This is the email
+read before the next order, which is when that is most use.
+
 Idempotent per (alert, person): each pair is claimed in alert_email_sends
 before the email goes out, under a unique constraint, and only pairs this run
 claimed are sent. A failed send releases its claims, so the next run retries.
@@ -49,8 +54,8 @@ from sqlalchemy.orm import Session
 from app import email_design as design
 from app import mail
 from app.config import settings
-from app.db import TENANT_SCOPE_BYPASS
-from app.digest import NEWS_FOR, unsubscribe_url
+from app.db import TENANT_SCOPE_BYPASS, bound_to
+from app.digest import NEWS_FOR, elsewhere_for, unsubscribe_url
 from app.duplicates import BEING_READ
 from app.models import AlertEmailSend, CanonicalSku, Distributor, Invoice, PriceAlert, Tenant, TenantMembership, User
 from app.models.enums import AlertStatus
@@ -80,6 +85,8 @@ class Increase:
     now: Decimal
     pct_change: Decimal
     unit: str
+    # Where it costs less, and what to do about it (app/digest.py elsewhere_for).
+    elsewhere: design.Elsewhere | None = None
 
 
 @dataclass
@@ -127,6 +134,17 @@ def due_alerts(db: Session, now: datetime) -> dict[uuid.UUID, list[Increase]]:
             .execution_options(**{TENANT_SCOPE_BYPASS: True})
         )
     )
+    # Where each costs less, a location at a time: the reasoning reads that
+    # location's own invoices, so it is bound for just that long.
+    due: dict[uuid.UUID, list[PriceAlert]] = {}
+    for alert, *_ in rows:
+        if alert.tenant_id not in still_arriving:
+            due.setdefault(alert.tenant_id, []).append(alert)
+    elsewhere: dict[uuid.UUID, design.Elsewhere] = {}
+    for tenant_id, alerts in due.items():
+        with bound_to(db, tenant_id):
+            elsewhere.update(elsewhere_for(db, db.get(Tenant, tenant_id), alerts))
+
     by_tenant: dict[uuid.UUID, list[Increase]] = {}
     for alert, name, uom, distributor in rows:
         if alert.tenant_id in still_arriving:
@@ -142,6 +160,7 @@ def due_alerts(db: Session, now: datetime) -> dict[uuid.UUID, list[Increase]]:
                 now=alert.current_price,
                 pct_change=alert.pct_change,
                 unit=design.UNIT_LABEL.get(uom.value, uom.value),
+                elsewhere=elsewhere.get(alert.id),
             )
         )
     return by_tenant
@@ -223,11 +242,12 @@ def compose(user: Recipient, locations: list[LocationIncreases]) -> EmailMessage
             "<div style='margin:20px 0 0;border:1px solid #e5e7eb;border-left:4px solid #fca5a5;border-radius:8px;"
             "padding:16px 18px'>"
             f"<h2 style='font-size:17px;margin:0 0 10px'>{e(loc.name)}</h2>"
-            f"{design.increase_table(shown, more)}<p style='margin:12px 0 0'>{design.button(design.dashboard_link('/insights', loc.tenant_id), 'See price alerts')}</p>"
+            f"{design.increase_table(shown, more)}{design.elsewhere_table(shown)}"
+            f"<p style='margin:12px 0 0'>{design.button(design.dashboard_link('/insights', loc.tenant_id), 'See price alerts')}</p>"
             "</div>"
         )
     text += [
-        "Worth raising with your rep before the next order.",
+        "Raise these with your rep before your next order.",
         "",
         "--",
         f"You get these because you have access to {', '.join(loc.name for loc in locations)}.",
@@ -237,7 +257,7 @@ def compose(user: Recipient, locations: list[LocationIncreases]) -> EmailMessage
     body = (
         f"<p style='margin:0 0 4px'>Hi {e(user.name)},</p>"
         f"<p style='margin:0;color:{design.MUTED}'>Prices just went up by <strong style='color:{design.RED_TEXT}'>"
-        f"{threshold} or more</strong>. Worth raising with your rep before the next order.</p>"
+        f"{threshold} or more</strong>. Raise these with your rep before your next order.</p>"
         + "".join(sections)
     )
     footer = (

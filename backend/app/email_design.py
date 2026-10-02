@@ -6,6 +6,7 @@ clients ignore stylesheets. Increases red, savings green, like the dashboard.
 """
 import html
 import uuid
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Iterable, Protocol
 
@@ -96,12 +97,30 @@ def dashboard_link(path: str, location: uuid.UUID) -> str:
     return f"{settings.public_base_url}{path}{joiner}location={location}"
 
 
+@dataclass(frozen=True)
+class Elsewhere:
+    """Where an increase's product costs less, and what to do about it: the
+    cheapest of the alert's alternatives, ready to show (app/digest.py
+    elsewhere_for; the reasoning is app/analytics/switching.py)."""
+
+    distributor: str
+    website: str | None
+    price: Decimal
+    less: Decimal  # than the price that was flagged, 0..1
+    # "about $1,112", or None when there's no yearly figure to give.
+    saves: str | None
+    # What to do, in a few words, and a page that helps do it.
+    action: str
+    action_link: str | None = None
+
+
 class PriceIncreaseRow(Protocol):
     sku: str
     before: Decimal
     now: Decimal
     pct_change: Decimal
     unit: str
+    elsewhere: Elsewhere | None
 
 
 def product_from(product: str, distributor: str | None) -> str:
@@ -109,16 +128,18 @@ def product_from(product: str, distributor: str | None) -> str:
     return f"{product} from {distributor}" if distributor else product
 
 
-def _elsewhere(p: PriceIncreaseRow) -> str | None:
-    """Where the product costs less, on the emails that say (the weekly
-    digest; app/digest.py)."""
-    return getattr(p, "elsewhere", None)
-
-
 def increase_line(p: PriceIncreaseRow) -> str:
-    """One increase in a plain-text email."""
+    """One increase in a plain-text email, and under it where it costs less."""
     line = f"  - {p.sku}: {price_per(p.before, p.unit)} -> {price_per(p.now, p.unit)} (+{p.pct_change:.1%})"
-    return f"{line}\n      {_elsewhere(p)}" if _elsewhere(p) else line
+    there = p.elsewhere
+    if there is None:
+        return line
+    site = f" ({there.website})" if there.website else ""
+    saves = f", saves {there.saves} a year" if there.saves else ""
+    return (
+        f"{line}\n      Cheaper at {there.distributor}{site}: {price_per(there.price, p.unit)}{saves}."
+        f"\n      Next step: {there.action}."
+    )
 
 
 def increase_table(increases: Iterable[PriceIncreaseRow], more: int = 0) -> str:
@@ -135,16 +156,54 @@ def increase_table(increases: Iterable[PriceIncreaseRow], more: int = 0) -> str:
         f"<strong style='color:#111827;white-space:nowrap'>{e(price_per(p.now, p.unit))}</strong></td>"
         f"<td style='padding:4px 0;text-align:right'>{pill(f'▲ +{p.pct_change:.1%}', RED_TEXT, RED_TINT)}</td>"
         "</tr>"
-        + (
-            # Under its own row, the full width: a sentence, not a column.
-            f"<tr><td colspan='3' style='padding:0 0 8px;font-size:13px;color:{GREEN_TEXT}'>{e(_elsewhere(p))}</td></tr>"
-            if _elsewhere(p)
-            else ""
-        )
         for p in increases
     )
     more_html = f"<p style='margin:4px 0 0;color:{MUTED}'>&hellip;and {more} more</p>" if more > 0 else ""
     return (
         f"<table role='presentation' cellpadding='0' cellspacing='0' style='font-size:14px;border-collapse:collapse'>{rows}</table>"
         f"{more_html}"
+    )
+
+
+def elsewhere_table(increases: Iterable[PriceIncreaseRow]) -> str:
+    """The increases whose product costs less at another distributor: where,
+    for how much, what that saves in a year, and what to do. A table, since
+    it's read across; nothing at all when no product has anywhere cheaper.
+    The distributor links to its own site and the next step to the page
+    that helps take it."""
+    e = html.escape
+    link = f"color:{GREEN_TEXT};font-weight:600"
+    # Narrow gaps and nothing forced onto one line but a single figure: on a
+    # phone four columns share about 280px, and a no-wrap cell pushed the
+    # next step off the edge of the email.
+    cell = "padding:6px 8px 6px 0;vertical-align:top;border-top:1px solid #e5e7eb"
+    whole = "white-space:nowrap"
+    rows = ""
+    for p in increases:
+        there = p.elsewhere
+        if there is None:
+            continue
+        where = f"<a href='{e(there.website)}' style='{link}'>{e(there.distributor)}</a>" if there.website else e(there.distributor)
+        action = (
+            f"<a href='{e(there.action_link)}' style='{link}'>{e(there.action)}</a>"
+            if there.action_link
+            else f"<strong>{e(there.action)}</strong>"
+        )
+        rows += (
+            f"<tr><td style='{cell}'>{e(p.sku)}</td>"
+            f"<td style='{cell}'>{where}<br><span style='color:{MUTED};font-size:12px'>"
+            f"<span style='{whole}'>{e(price_per(there.price, p.unit))},</span> "
+            f"<span style='{whole}'>{there.less:.0%} less</span></span></td>"
+            f"<td style='{cell}'>{e(there.saves) if there.saves else '&mdash;'}</td>"
+            f"<td style='{cell};padding-right:0'>{action}</td></tr>"
+        )
+    if not rows:
+        return ""
+    head = "padding:0 8px 4px 0;text-align:left;vertical-align:bottom;font-size:12px;font-weight:600"
+    return (
+        f"<p style='margin:16px 0 6px'><strong style='color:{GREEN_TEXT}'>Where they cost less</strong></p>"
+        "<table cellpadding='0' cellspacing='0' style='font-size:13px;border-collapse:collapse;width:100%'>"
+        f"<tr style='color:{MUTED}'><th style='{head}'>Product</th><th style='{head}'>Cheaper at</th>"
+        f"<th style='{head}'>Saves a year</th><th style='{head};padding-right:0'>Next step</th></tr>"
+        f"{rows}</table>"
     )

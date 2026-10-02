@@ -3387,3 +3387,20 @@ committed share of purchases, the actual order minimum), and the card says
 so. On the dev data, The Copper Skillet buys everything from Sysco: its
 cilantro alert says to ask Sysco to match, then get a quote from US Foods
 (about $1,112 a year); its cup lids, at $778, are not worth a new supplier.
+
+### In both emails, as a table, in fewer words
+
+The price-increase email now carries the alternatives too: it is the one
+read before the next order. Both emails show them the same way, in a table
+under the increases: product, cheaper at (linked to the distributor's
+site), saves a year, next step (linked to Savings for "ask them to match"
+or "stay", to the distributor for "move it"). The plain-text version says
+the same in two lines. If the alternatives can't be worked out, the email
+goes without them.
+
+The advice was rewritten to be acted on. Each alternative has an action of
+a few words that fits a table cell ("Ask Sysco to match", "Move it to US
+Foods", "Stay with Sysco"), one plain sentence, and points of one fact or
+one thing to ask each. The alert card shows the same as a table (where,
+price, saves a year, next step), fitting a phone without sideways
+scrolling.

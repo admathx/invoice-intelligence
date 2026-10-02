@@ -17,7 +17,7 @@ from app.models import AlertEmailSend, AuditEvent, Distributor, Invoice, PriceAl
 from app.models.enums import AlertStatus, AlertType, InvoiceSource, InvoiceStatus
 
 # The digest's fixtures: committed users, locations and products, cleaned up after.
-from test_digest import PASSWORD, _outbox_files, _sku, _tenant, _user, db, outbox  # noqa: F401
+from test_digest import PASSWORD, _offer, _outbox_files, _sku, _tenant, _user, db, outbox  # noqa: F401
 
 pytestmark = pytest.mark.real_auth
 
@@ -157,6 +157,53 @@ def test_an_increase_says_whose_price_went_up(db, outbox):
     (path,) = [p for p in _outbox_files(outbox) if user.email.replace("@", "_at_") in p.name]
     _, text, html_body = _read(path)
     assert "Cups Hot" in text and "from Sysco" in text and "from Sysco" in html_body
+
+
+def test_an_increase_says_where_it_costs_less_and_what_to_do(db, outbox, monkeypatch):
+    """The email that says a price went up is the one read before the next
+    order, so it is where "and it's cheaper at..." is most use. A table:
+    where, for how much, what it saves in a year, and the next step."""
+    monkeypatch.setattr(settings, "public_base_url", "https://app.example.com")
+    here, there = _tenant(db, "Here"), _tenant(db, "There")
+    flagged = _alert(db, here, _sku(db, "Cilantro"), distributor=_distributor(db, "sysco"))
+    _alert(db, there, _sku(db, "Limes"), distributor=_distributor(db, "sysco"))
+    user, other = _user(db, here), _user(db, there)
+    asked = []
+
+    def offers(db, tenant, alerts, key):
+        asked.append((tenant.id, db.info.get("tenant_id")))
+        return {flagged.id: [_offer()]} if tenant.id == here.id else {}
+
+    monkeypatch.setattr(digest, "weighed_alternatives", offers)
+
+    _send(NOW)
+
+    mine, theirs = ([p for p in _outbox_files(outbox) if u.email.replace("@", "_at_") in p.name] for u in (user, other))
+    _, text, html_body = _read(mine[0])
+    assert "Cheaper at US Foods (https://www.usfoods.com): $0.5361/lb, saves about $311 a year." in text
+    assert "Next step: Stay with Sysco." in text
+    assert "Cheaper at</th>" in html_body and "href='https://www.usfoods.com'" in html_body and "about $311" in html_body
+    assert f"href='https://app.example.com/negotiation?location={here.id}'" in html_body
+    # Each location's own invoices were read with that location bound, and
+    # the other location's people still got theirs, with nothing about it.
+    assert sorted(asked) == sorted([(here.id, here.id), (there.id, there.id)])
+    assert len(theirs) == 1 and "Cheaper at" not in _read(theirs[0])[1]
+
+
+def test_the_increase_is_still_sent_when_the_alternatives_cant_be_worked_out(db, outbox, monkeypatch):
+    tenant = _tenant(db)
+    _alert(db, tenant, _sku(db, "Cilantro"), distributor=_distributor(db, "sysco"))
+    user = _user(db, tenant)
+
+    def broken(*_):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(digest, "weighed_alternatives", broken)
+
+    _send(NOW)
+
+    (path,) = [p for p in _outbox_files(outbox) if user.email.replace("@", "_at_") in p.name]
+    assert "Cilantro" in _read(path)[1]
 
 
 def test_the_same_product_from_another_distributor_is_its_own_news(db, outbox):

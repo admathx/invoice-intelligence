@@ -56,6 +56,8 @@ class Advice:
     (app/analytics/switching.py)."""
 
     verdict: str  # "move" | "negotiate" | "stay"
+    # What to do, in a few words ("Ask Sysco to match"): fits a table cell.
+    action: str
     headline: str
     points: list[str]
 

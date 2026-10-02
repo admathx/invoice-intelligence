@@ -214,22 +214,33 @@ export default async function HelpPage() {
         <Section topic={topic("alerts")}>
           <p>
             <Go href="/insights">Price alerts</Go> lists products you&rsquo;re now paying noticeably more for than you
-            used to. Where we know what similar businesses pay, you&rsquo;ll see how your price compares. Where the
-            same product costs less at another distributor, the alert lists it under <em>Costs less elsewhere</em>:
-            either what you already pay there, from your own invoices, or what similar businesses typically pay
-            there. Each comes with what it would save in a year at what you buy, a link to that distributor, and
-            a plain answer on whether it&rsquo;s worth acting on. You usually get your pricing by ordering mostly
-            from one distributor, so a cheaper price elsewhere is first of all something to ask your current rep to
-            match. Moving a product makes sense when the other distributor already delivers to you, the saving is
-            worth changing an order for, and the product is a small part of what you buy from the current one. A
-            new supplier means an account, their order minimum, and one more delivery and invoice each week, so it
-            is only suggested when several flagged products together save enough to pay for that. Press{" "}
-            <em>What switching would involve</em> for the details. We can&rsquo;t see your agreement with a
-            distributor, so ask about any rebate or committed volume before splitting an order. It is the same
-            product as we matched it, so check the brand and pack before you switch. Open a
+            used to. Where we know what similar businesses pay, you&rsquo;ll see how your price compares. Open a
             product to see every price you&rsquo;ve paid for it. Once you&rsquo;ve dealt with one (called your rep, or
             accepted it), press <em>Dealt with it</em> to take it off the list; we&rsquo;ll tell you again if the price
             goes up more.
+          </p>
+          <p className="mt-2">
+            If the same product costs less at another distributor, the alert lists it under{" "}
+            <em>Costs less elsewhere</em>, with the price, what you&rsquo;d save in a year, a link to that
+            distributor, and a next step:
+          </p>
+          <ul className="mt-1 list-disc space-y-1 pl-5">
+            <li>
+              <strong>Ask your distributor to match.</strong> Usually the first move, and free. The link opens{" "}
+              <Go href="/negotiation">Savings</Go>, which has the numbers to show your rep.
+            </li>
+            <li>
+              <strong>Move it.</strong> Only when the other distributor already delivers to you, the saving is worth
+              it, and the product is a small part of your order.
+            </li>
+            <li>
+              <strong>Stay.</strong> The saving is too small, or not worth opening a new account for.
+            </li>
+          </ul>
+          <p className="mt-2">
+            Buying mostly from one distributor usually earns better prices, so a lower price elsewhere isn&rsquo;t
+            always a saving. Press <em>What switching would involve</em> to see why. We can&rsquo;t see your
+            contract, so ask about rebates and minimums before you split an order.
           </p>
         </Section>
 

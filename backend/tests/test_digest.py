@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, select, update
 
 from app import digest, mail
+from app import email_design as design
 from app.auth import CSRF_HEADER, CSRF_HEADER_VALUE, SESSION_COOKIE, hash_password
 from app.config import settings
 from app.db import SessionLocal
@@ -173,28 +174,66 @@ def test_a_location_week_counts_what_happened_and_what_needs_doing(db):
     assert week.has_news
 
 
-def test_a_new_increase_says_where_it_costs_less_and_whether_thats_worth_it(db, monkeypatch):
-    """The week's email carries the cheapest alternative of each increase,
-    with its verdict: a lower price alone would read as "switch"."""
+def _offer(verdict="stay", action="Stay with Sysco", **fields):
     from app.analytics.alternatives import Advice, Alternative
 
+    fields = {"website": "https://www.usfoods.com", "annual_saving": Decimal("311.40"), **fields}
+    return Alternative(
+        uuid.uuid4(), "US Foods", Decimal("0.5361"), yours=False, saving_pct=Decimal("0.1995"),
+        advice=Advice(verdict, action, "Not worth a new supplier. Show this price to your Sysco rep.", []), **fields,
+    )  # fmt: skip
+
+
+def test_a_new_increase_says_where_it_costs_less_and_what_to_do(db, monkeypatch):
+    """The week's email carries the cheapest alternative of each increase in
+    a table: where, for how much, what it saves, and the next step. A lower
+    price alone would read as "switch"."""
+    monkeypatch.setattr(settings, "public_base_url", "https://app.example.com")
     tenant = _tenant(db)
     _alert(db, tenant, _sku(db), created_at=NOW - timedelta(days=2))
-    offer = Alternative(
-        uuid.uuid4(), "US Foods", Decimal("0.5361"), yours=False, annual_saving=Decimal("311.40"),
-        advice=Advice("stay", "Not worth opening a new supplier for. Take this price to your Sysco rep.", []),
-    )  # fmt: skip
-    monkeypatch.setattr(digest, "weighed_alternatives", lambda db, tenant, alerts, key: {alerts[0].id: [offer]})
+    monkeypatch.setattr(digest, "weighed_alternatives", lambda db, tenant, alerts, key: {alerts[0].id: [_offer()]})
 
     week = _week(db, tenant)
 
-    said = (
-        "Costs less at US Foods: $0.5361/lb, about $311 a year. "
-        "Not worth opening a new supplier for. Take this price to your Sysco rep."
+    savings = f"https://app.example.com/negotiation?location={tenant.id}"
+    assert week.new_increases[0].elsewhere == design.Elsewhere(
+        "US Foods", "https://www.usfoods.com", Decimal("0.5361"), Decimal("0.1995"), "about $311", "Stay with Sysco", savings
     )
-    assert week.new_increases[0].elsewhere == said
     _, text, html_body = _parts(digest.compose(_user(db, tenant), [week]))
-    assert said in " ".join(text.split()) and said in " ".join(html_body.split())
+    assert "Cheaper at US Foods (https://www.usfoods.com): $0.5361/lb, saves about $311 a year." in text
+    assert "Next step: Stay with Sysco." in text
+    # A table, read across; the distributor links to its site and the next
+    # step to the page with the numbers for the rep.
+    assert "<th" in html_body and "Cheaper at</th>" in html_body and "Next step</th>" in html_body
+    assert ">US Foods</a>" in html_body and "href='https://www.usfoods.com'" in html_body
+    assert "$0.5361/lb," in html_body and "20% less" in html_body and "about $311" in html_body
+    assert f"href='{savings}'" in html_body and ">Stay with Sysco</a>" in html_body
+
+
+def test_moving_a_product_links_to_where_it_would_move(db, monkeypatch):
+    tenant = _tenant(db)
+    _alert(db, tenant, _sku(db), created_at=NOW - timedelta(days=2))
+    offer = _offer("move", "Move it to US Foods", annual_saving=None)
+    monkeypatch.setattr(digest, "weighed_alternatives", lambda db, tenant, alerts, key: {alerts[0].id: [offer]})
+
+    there = _week(db, tenant).new_increases[0].elsewhere
+
+    assert (there.action, there.action_link, there.saves) == ("Move it to US Foods", "https://www.usfoods.com", None)
+
+
+def test_the_email_still_goes_when_the_alternatives_cant_be_worked_out(db, monkeypatch):
+    tenant = _tenant(db)
+    _alert(db, tenant, _sku(db), created_at=NOW - timedelta(days=2))
+
+    def broken(*_):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(digest, "weighed_alternatives", broken)
+
+    week = _week(db, tenant)
+
+    assert week.new_increase_count == 1 and week.new_increases[0].elsewhere is None
+    assert digest.compose(_user(db, tenant), [week]) is not None
 
 
 def test_an_increase_with_nowhere_cheaper_says_nothing_about_it(db):
@@ -205,7 +244,7 @@ def test_an_increase_with_nowhere_cheaper_says_nothing_about_it(db):
 
     assert week.new_increases[0].elsewhere is None
     _, text, html_body = _parts(digest.compose(_user(db, tenant), [week]))
-    assert "Costs less" not in text and "Costs less" not in html_body
+    assert "Cheaper at" not in text and "Where they cost less" not in html_body
 
 
 def test_a_quiet_week_sends_nothing(db):

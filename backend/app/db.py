@@ -1,5 +1,6 @@
 import uuid
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 
 from sqlalchemy import ForeignKey, create_engine, event
@@ -58,6 +59,23 @@ def bind_tenant(db: Session, tenant_id: uuid.UUID) -> None:
     travels correctly regardless of which thread ran which part.
     """
     db.info[_TENANT_ID_INFO_KEY] = tenant_id
+
+
+@contextmanager
+def bound_to(db: Session, tenant_id: uuid.UUID) -> Iterator[None]:
+    """bind_tenant for the length of a block, then whatever was bound before
+    (usually nothing). For code that works across locations and needs one
+    location's rows for a moment (app/alert_emails.py): left bound, every
+    later query on the session would be quietly narrowed to that location."""
+    before = db.info.get(_TENANT_ID_INFO_KEY)
+    bind_tenant(db, tenant_id)
+    try:
+        yield
+    finally:
+        if before is None:
+            db.info.pop(_TENANT_ID_INFO_KEY, None)
+        else:
+            db.info[_TENANT_ID_INFO_KEY] = before
 
 
 @event.listens_for(Session, "do_orm_execute")

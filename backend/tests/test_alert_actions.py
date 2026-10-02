@@ -91,9 +91,9 @@ def test_an_alert_card_says_where_the_product_costs_less(db_session, tenant, dis
     # And what to make of it: nothing was bought from the alert's own
     # distributor in the window, so there's no yearly figure to give.
     assert offer["annual_saving"] is None and offer["website"] is None
-    assert offer["advice"]["verdict"] == "negotiate"
-    assert offer["advice"]["headline"] == "You already buy from Elsewhere Foods. Compare the two on your next order."
-    assert offer["advice"]["points"][0].startswith("You already buy from Elsewhere Foods")
+    assert (offer["advice"]["verdict"], offer["advice"]["action"]) == ("negotiate", "Compare on your next order")
+    assert offer["advice"]["headline"] == "You already buy from Elsewhere Foods. Compare the two prices on your next order."
+    assert offer["advice"]["points"][0].startswith("No new account needed.")
 
 
 def test_screens_get_what_they_need_to_fix_a_wrong_match(db_session, tenant, distributor, canonical_sku):

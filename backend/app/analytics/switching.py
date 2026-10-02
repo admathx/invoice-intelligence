@@ -101,66 +101,69 @@ def _advise(
 ) -> Advice:
     """`their_share` and `deliveries` are the other distributor's part of
     this location's spending and how many invoices it sent, when it already
-    delivers."""
+    delivers.
+
+    Written to be acted on: the action is a few words that fit a table cell,
+    the headline one plain sentence, and each point one fact or one thing to
+    ask, shortest first."""
     current, alt, saving = standing.current, offer.distributor_name, offer.annual_saving
     large = standing.product_share is not None and standing.product_share >= LARGE_SHARE
-    one_distributor = (
-        f"{current} is {_share(standing.share_of_spending)} of your spending over the last {LOOKBACK_DAYS} days. "
+    spending = (
+        f"{current} gets {_share(standing.share_of_spending)} of your spending. "
         if standing.share_of_spending is not None
         else ""
-    ) + "Ordering mostly from one distributor is usually what earns your pricing, and any rebate or volume agreement."
+    ) + "Buying mostly from one distributor usually earns better prices."
     this_product = (
-        f"This product is about {usd(standing.product_a_year)} a year with {current}, "
-        f"{_share(standing.product_share)} of what you buy from them."
+        f"This product is about {usd(standing.product_a_year)} a year, "
+        f"{_share(standing.product_share)} of your order with {current}."
         if standing.product_share is not None and standing.product_a_year is not None
         else None
     )
 
     if offer.yours:
-        how_often = f" ({deliveries} invoice{'s' if deliveries != 1 else ''} in the last {LOOKBACK_DAYS} days)"
+        often = f": {deliveries} invoice{'s' if deliveries != 1 else ''} in the last {LOOKBACK_DAYS} days." if deliveries else "."
         points = [
-            f"You already buy from {alt}{how_often if deliveries else ''}, so this is one more line on an order "
-            "you already place. No new account.",
-            one_distributor
-            + (f" {alt} is {_share(their_share)} of your spending." if their_share is not None else ""),
+            f"No new account needed. {alt} already delivers to you{often}",
+            spending + (f" {alt} gets {_share(their_share)}." if their_share is not None else ""),
         ]
         if this_product:
             points.append(
                 this_product
                 + (
-                    " That is a large part of your order with them: moving it could cost you volume pricing on the rest."
+                    " That's big enough that moving it could raise your other prices."
                     if large
-                    else " A small part of your order with them, so moving it is unlikely to change your standing."
+                    else " That's small enough to move safely."
                 )
             )
-        points.append(
-            f"If you have a rebate or a committed volume with {current}, check that moving this doesn't drop you below it."
-        )
+        points.append(f"Have a rebate or volume deal with {current}? Check this won't drop you below it.")
         if saving is None:
-            return Advice("negotiate", f"You already buy from {alt}. Compare the two on your next order.", points)
+            return Advice(
+                "negotiate",
+                "Compare on your next order",
+                f"You already buy from {alt}. Compare the two prices on your next order.",
+                points,
+            )
         if saving < WORTH_MOVING:
-            return Advice("stay", f"Too small to change an order for. Mention it to your {current} rep.", points)
+            return Advice(
+                "stay", f"Stay with {current}", f"Too small to switch for. Mention the price to your {current} rep.", points
+            )
         if large:
             return Advice(
                 "negotiate",
-                f"Ask {current} to match it first: this is {_share(standing.product_share)} of what you buy from "
-                "them, and moving it could cost you on the rest.",
+                f"Ask {current} to match",
+                f"Ask {current} to match this price before you move it. "
+                f"It's {_share(standing.product_share)} of your order with them.",
                 points,
             )
-        points.append(f"Asking {current} to match is still free, and keeps the order in one place.")
-        return Advice("move", f"Worth moving: {alt} already delivers to you.", points)
+        points.append(f"Or ask {current} to match first. It costs nothing.")
+        return Advice("move", f"Move it to {alt}", f"Move this to {alt}. They already deliver to you.", points)
 
     points = [
-        f"You don't buy from {alt} today. A new supplier means opening an account (often a credit application), "
-        "meeting their minimum on every order, and one more delivery to receive and invoice to check each week.",
-        one_distributor + " Ask what moving this would change before you split your order.",
+        f"You'd need a new account with {alt}: usually a credit application and a minimum order.",
+        spending + " Ask what splitting your order would change.",
     ]
     if this_product:
         points.append(this_product)
-    points.append(
-        f"The price is what {offer.distinct_account_count} businesses typically pay {alt}, not a quote. "
-        "Yours depends on how much you'd buy from them."
-    )
     if flagged.products > 1:
         points.append(
             f"{flagged.products} of your flagged products cost less at {alt}: about {usd(flagged.saving)} a year together."
@@ -168,17 +171,27 @@ def _advise(
     if flagged.spent > 0:
         # What an order from them would come to, against a minimum this
         # can't see: the cost a single cheaper product most often runs into.
-        these = "these products are" if flagged.products > 1 else "this product is"
+        several = flagged.products > 1
         points.append(
-            f"On {'their' if flagged.products > 1 else 'its'} own, {these} about {usd(flagged.spent / WEEKS_PER_YEAR)} "
-            f"a week of orders. Distributors set a minimum for each delivery, so ask {alt} for theirs: you may have "
-            "to move more of your order to buy from them at all."
+            f"On {'their' if several else 'its'} own {'these are' if several else 'this is'} about "
+            f"{usd(flagged.spent / WEEKS_PER_YEAR)} a week. Ask {alt} for their minimum order: "
+            "you may need to move more to buy from them."
         )
+    points.append(f"The price is what {offer.distinct_account_count} other businesses pay {alt}. It isn't a quote for you.")
     if saving is None:
-        return Advice("stay", f"Take this price to your {current} rep before looking at a new supplier.", points)
+        return Advice(
+            "stay", f"Stay with {current}", f"Show this price to your {current} rep before looking at a new supplier.", points
+        )
     if flagged.saving < WORTH_A_NEW_SUPPLIER:
-        return Advice("stay", f"Not worth opening a new supplier for. Take this price to your {current} rep.", points)
-    return Advice("negotiate", f"Ask {current} to match it first. If they won't, it's worth a quote from {alt}.", points)
+        return Advice(
+            "stay", f"Stay with {current}", f"Not worth a new supplier. Show this price to your {current} rep.", points
+        )
+    return Advice(
+        "negotiate",
+        f"Ask {current} to match",
+        f"Ask {current} to match this price. If they won't, get a quote from {alt}.",
+        points,
+    )
 
 
 def weighed_alternatives(

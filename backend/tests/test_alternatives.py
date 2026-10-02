@@ -346,16 +346,17 @@ def test_a_distributor_that_already_delivers_is_worth_moving_a_small_line_to(db_
 
     [offer] = _weighed(db_session, tenant, alert)
 
-    assert offer.advice.verdict == "move"
-    assert offer.advice.headline == "Worth moving: Elsewhere Foods already delivers to you."
-    said = " ".join(offer.advice.points)
-    assert "You already buy from Elsewhere Foods (3 invoices in the last 90 days)" in said
+    assert (offer.advice.verdict, offer.advice.action) == ("move", "Move it to Elsewhere Foods")
+    assert offer.advice.headline == "Move this to Elsewhere Foods. They already deliver to you."
     # Who the order is with, and how much of it this is: $14,000 of $15,500, and $700 of that.
-    assert "Main Street Foods is 90% of your spending over the last 90 days." in said
-    assert "Elsewhere Foods is 10% of your spending." in said
-    assert "This product is about $3,500 a year with Main Street Foods, 5% of what you buy from them." in said
-    assert "A small part of your order with them" in said
-    assert "Asking Main Street Foods to match is still free" in said
+    assert offer.advice.points == [
+        "No new account needed. Elsewhere Foods already delivers to you: 3 invoices in the last 90 days.",
+        "Main Street Foods gets 90% of your spending. Buying mostly from one distributor usually earns better "
+        "prices. Elsewhere Foods gets 10%.",
+        "This product is about $3,500 a year, 5% of your order with Main Street Foods. That's small enough to move safely.",
+        "Have a rebate or volume deal with Main Street Foods? Check this won't drop you below it.",
+        "Or ask Main Street Foods to match first. It costs nothing.",
+    ]
 
 
 def test_a_few_dollars_a_year_isnt_worth_changing_an_order_for(db_session, canonical_sku, distributor):
@@ -369,7 +370,7 @@ def test_a_few_dollars_a_year_isnt_worth_changing_an_order_for(db_session, canon
 
     assert offer.annual_saving == Decimal("52.50") and offer.annual_saving < WORTH_MOVING
     assert offer.advice.verdict == "stay"
-    assert offer.advice.headline.startswith("Too small to change an order for.")
+    assert offer.advice.headline.startswith("Too small to switch for.")
 
 
 def test_a_big_part_of_the_order_is_something_to_ask_them_to_match_first(db_session, canonical_sku, distributor):
@@ -384,12 +385,11 @@ def test_a_big_part_of_the_order_is_something_to_ask_them_to_match_first(db_sess
 
     [offer] = _weighed(db_session, tenant, alert)
 
-    assert offer.advice.verdict == "negotiate"
+    assert (offer.advice.verdict, offer.advice.action) == ("negotiate", "Ask Main Street Foods to match")
     assert offer.advice.headline == (
-        "Ask Main Street Foods to match it first: this is 20% of what you buy from them, "
-        "and moving it could cost you on the rest."
+        "Ask Main Street Foods to match this price before you move it. It's 20% of your order with them."
     )
-    assert any("moving it could cost you volume pricing on the rest" in point for point in offer.advice.points)
+    assert any("big enough that moving it could raise your other prices" in point for point in offer.advice.points)
 
 
 def test_one_cheaper_product_isnt_worth_a_new_supplier(db_session, canonical_sku, distributor):
@@ -404,16 +404,19 @@ def test_one_cheaper_product_isnt_worth_a_new_supplier(db_session, canonical_sku
     [offer] = _weighed(db_session, tenant, alert)
 
     assert offer.annual_saving == Decimal("525.00") and offer.annual_saving < WORTH_A_NEW_SUPPLIER
-    assert offer.advice.verdict == "stay"
-    assert offer.advice.headline == "Not worth opening a new supplier for. Take this price to your Main Street Foods rep."
-    said = " ".join(offer.advice.points)
-    # What a new supplier costs, and what ordering from one is worth.
-    assert "You don't buy from Elsewhere Foods today." in said and "meeting their minimum on every order" in said
-    assert "Main Street Foods is 100% of your spending over the last 90 days." in said
-    assert "Ordering mostly from one distributor is usually what earns your pricing" in said
-    assert "what 5 businesses typically pay Elsewhere Foods, not a quote" in said
-    # $3,500 a year of it: an order that small runs into their minimum.
-    assert "On its own, this product is about $67 a week of orders." in said and "ask Elsewhere Foods for theirs" in said
+    assert (offer.advice.verdict, offer.advice.action) == ("stay", "Stay with Main Street Foods")
+    assert offer.advice.headline == "Not worth a new supplier. Show this price to your Main Street Foods rep."
+    # What a new supplier costs, what ordering from one is worth, and the
+    # minimum an order of $3,500 a year runs into.
+    assert offer.advice.points == [
+        "You'd need a new account with Elsewhere Foods: usually a credit application and a minimum order.",
+        "Main Street Foods gets 100% of your spending. Buying mostly from one distributor usually earns better "
+        "prices. Ask what splitting your order would change.",
+        "This product is about $3,500 a year, 5% of your order with Main Street Foods.",
+        "On its own this is about $67 a week. Ask Elsewhere Foods for their minimum order: "
+        "you may need to move more to buy from them.",
+        "The price is what 5 other businesses pay Elsewhere Foods. It isn't a quote for you.",
+    ]
 
 
 def test_several_flagged_products_cheaper_at_one_supplier_are_weighed_together(db_session, canonical_sku, distributor):
@@ -436,10 +439,10 @@ def test_several_flagged_products_cheaper_at_one_supplier_are_weighed_together(d
     assert first.annual_saving == other.annual_saving == Decimal("525.00")
     assert first.advice.verdict == other.advice.verdict == "negotiate"
     assert first.advice.headline == (
-        "Ask Main Street Foods to match it first. If they won't, it's worth a quote from Elsewhere Foods."
+        "Ask Main Street Foods to match this price. If they won't, get a quote from Elsewhere Foods."
     )
     assert "2 of your flagged products cost less at Elsewhere Foods: about $1,050 a year together." in first.advice.points
-    assert any(point.startswith("On their own, these products are about $135 a week of orders.") for point in first.advice.points)
+    assert any(point.startswith("On their own these are about $135 a week.") for point in first.advice.points)
 
 
 def test_an_alternative_links_to_the_distributor(db_session, canonical_sku, distributor):

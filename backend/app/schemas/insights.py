@@ -32,6 +32,7 @@ class AdviceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     verdict: str  # "move" | "negotiate" | "stay"
+    action: str
     headline: str
     points: list[str]
 

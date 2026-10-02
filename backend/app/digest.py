@@ -17,6 +17,7 @@ import hmac
 import html
 import logging
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -29,7 +30,6 @@ from sqlalchemy.orm import Session
 
 from app import email_design as design
 from app import mail
-from app.analytics.alternatives import Alternative
 from app.analytics.benchmark import account_key_for
 from app.analytics.negotiation import NegotiationBasis, build_negotiation_sheet
 from app.analytics.switching import usd, weighed_alternatives
@@ -69,17 +69,40 @@ class PriceIncrease:
     # Prices are per base unit ("$0.54" for cilantro is per pound); without
     # it the number reads as per case.
     unit: str = ""
-    # Where it costs less, and whether that's worth acting on, in a sentence
-    # (the cheapest of the alert's alternatives; app/analytics/switching.py).
-    elsewhere: str | None = None
+    # Where it costs less, and what to do about it.
+    elsewhere: design.Elsewhere | None = None
 
 
-def _elsewhere(offer: Alternative, unit: str) -> str:
-    saving = ""
-    if offer.annual_saving:
-        saving = f", {'' if offer.annual_saving < 1 else 'about '}{usd(offer.annual_saving)} a year"
-    advice = f" {offer.advice.headline}" if offer.advice else ""
-    return f"Costs less at {offer.distributor_name}: {design.price_per(offer.price, unit)}{saving}.{advice}"
+def elsewhere_for(db: Session, tenant: Tenant, alerts: Sequence[PriceAlert]) -> dict[uuid.UUID, design.Elsewhere]:
+    """The cheapest alternative of each alert, by alert id, as the emails
+    show it. Both emails use it (this one and app/alert_emails.py).
+
+    An email that goes out without this is still the email; one that
+    doesn't go out because this failed is not. So a failure here is logged
+    and leaves the increases as they were, on a savepoint so the session is
+    still usable."""
+    try:
+        with db.begin_nested():
+            found = weighed_alternatives(db, tenant, alerts, account_key_for(db, tenant.id))
+    except Exception:
+        logger.exception("couldn't work out where %s's increases cost less", tenant.id)
+        return {}
+    out = {}
+    for alert_id, offers in found.items():
+        best = offers[0]
+        # Asking the current distributor to match, or staying put, is done
+        # with the numbers on Savings; moving is done at the other one's site.
+        moving = best.advice is not None and best.advice.verdict == "move"
+        out[alert_id] = design.Elsewhere(
+            distributor=best.distributor_name,
+            website=best.website,
+            price=best.price,
+            less=best.saving_pct,
+            saves=f"about {usd(best.annual_saving)}" if best.annual_saving and best.annual_saving >= 1 else None,
+            action=best.advice.action if best.advice else "See price alerts",
+            action_link=best.website if moving else design.dashboard_link("/negotiation", tenant.id),
+        )
+    return out
 
 
 @dataclass
@@ -146,21 +169,18 @@ def location_week(db: Session, tenant: Tenant, now: datetime) -> LocationWeek:
         .order_by(PriceAlert.pct_change.desc())
         .limit(LISTED)
     ).all()
-    elsewhere = weighed_alternatives(db, tenant, [a for a, *_ in rows], account_key_for(db, tenant.id))
-    week.new_increases = []
-    for a, name, uom, distributor in rows:
-        unit = design.UNIT_LABEL.get(uom.value, uom.value)
-        offers = elsewhere.get(a.id)
-        week.new_increases.append(
-            PriceIncrease(
-                design.product_from(name, distributor),
-                a.baseline_price,
-                a.current_price,
-                a.pct_change,
-                unit,
-                _elsewhere(offers[0], unit) if offers else None,
-            )
+    elsewhere = elsewhere_for(db, tenant, [a for a, *_ in rows])
+    week.new_increases = [
+        PriceIncrease(
+            design.product_from(name, distributor),
+            a.baseline_price,
+            a.current_price,
+            a.pct_change,
+            design.UNIT_LABEL.get(uom.value, uom.value),
+            elsewhere.get(a.id),
         )
+        for a, name, uom, distributor in rows
+    ]
     week.open_alert_count = db.scalar(
         select(func.count(PriceAlert.id)).where(PriceAlert.tenant_id == tenant.id, PriceAlert.status == AlertStatus.open)
     )
@@ -302,7 +322,8 @@ def _sections_html(week: LocationWeek) -> str:
             f"<p style='margin:0 0 6px'><strong style='color:{design.RED_TEXT}'>{week.new_increase_count} new price "
             f"increase{'s' if week.new_increase_count != 1 else ''}</strong></p>"
             f"{design.increase_table(week.new_increases, more)}"
-            f"<p style='margin:10px 0 0'>{design.button(link('/insights'), 'See price alerts')}</p>"
+            f"{design.elsewhere_table(week.new_increases)}"
+            f"<p style='margin:12px 0 0'>{design.button(link('/insights'), 'See price alerts')}</p>"
         )
     if week.held_count:
         items = "".join(
