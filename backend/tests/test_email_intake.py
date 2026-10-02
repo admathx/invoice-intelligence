@@ -951,3 +951,21 @@ def test_a_winmail_dat_with_no_invoice_in_it_is_turned_away_by_name(db_session, 
     message.add_attachment(bytes.fromhex("789f3e22") + b"\x00" * 64, maintype="application", subtype="ms-tnef", filename="winmail.dat")
     result = ingest_email_file(db_session, _write_raw(inbox, message), inbox)
     assert result.status == "quarantined" and "winmail.dat" in result.reason
+
+
+def test_a_pdf_with_a_pdf_inside_it_comes_out_of_winmail_dat_whole(db_session, inbox, tenant, no_real_queue):
+    """Cut at the inner file's header, the outer one lost its end and was
+    turned away as damaged, with the whole email."""
+    inner = _pdf_bytes("attached inside")
+    whole = _pdf_bytes("the invoice")
+    cut = whole.rfind(b"xref")
+    # Not a real embedded file, but the same bytes in the same order: a
+    # second header and end marker before the outer file's own end.
+    outer = whole[:cut] + b"%% embedded\n" + inner + b"\n" + whole[cut:]
+    wrapper = bytes.fromhex("789f3e22") + b"\x00" * 16 + outer + b"\x00" * 8
+    message = _message(tenant.inbox_address)
+    message.add_attachment(wrapper, maintype="application", subtype="ms-tnef", filename="winmail.dat")
+    parsed = parse_email(message.as_bytes())
+    assert len(parsed.pdf_attachments) == 1
+    assert parsed.pdf_attachments[0].content.rstrip().endswith(b"%%EOF")
+    assert len(parsed.pdf_attachments[0].content) > len(whole)

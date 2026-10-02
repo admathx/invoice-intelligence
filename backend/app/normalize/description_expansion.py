@@ -180,7 +180,8 @@ SPANISH: dict[str, str] = {
     "MUSLO": "THIGH",
     "ALAS": "WINGS",
     "S/H": "BONELESS",
-    "RES": "BEEF",
+    # Not RES: on an English row it is resealable, or reserve.
+    "CARNE": "BEEF",
     "MOLIDA": "GROUND",
     "CERDO": "PORK",
     "PUERCO": "PORK",

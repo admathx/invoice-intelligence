@@ -151,12 +151,22 @@ def _contradicted_on(line: _Reading, product: _Reading) -> set:
     return {point for point, said in line.points.items() if point in product.points and not said & product.points[point]}
 
 
+def _shortens(short: str, long: str) -> bool:
+    """Whether `short` could be `long` written short: the same first letter
+    and its letters in order ("TKY" for TURKEY, "CUCU" for a cut-off
+    CUCUMBER, "EGG" for EGGS). Loose on purpose: it only decides whether a
+    product is looked at, and shorthand the glossary doesn't know must not
+    put the right one out of the running."""
+    if len(short) < 3 or short[0] != long[0]:
+        return False
+    rest = iter(long)
+    return all(letter in rest for letter in short)
+
+
 def _share_a_word(a: frozenset[str], b: frozenset[str]) -> bool:
-    """Whether two names have a word in common, or one's word begins the
-    other's ("EGG" and "EGGS", "CUCU" for a cut-off "CUCUMBER")."""
-    return any(
-        x == y or (min(len(x), len(y)) >= 3 and (x.startswith(y) or y.startswith(x))) for x in a for y in b
-    )
+    """Whether two names have a word in common, or a word of one could be
+    a word of the other written short."""
+    return any(x == y or _shortens(*sorted((x, y), key=len)) for x in a for y in b)
 
 
 def conflicts(raw_description: str, product_name: str) -> bool:
@@ -165,9 +175,12 @@ def conflicts(raw_description: str, product_name: str) -> bool:
     return bool(_contradicted_on(_read(raw_description), _read(product_name)))
 
 
-def first_not_contradicted(raw_description: str, product_names: Sequence[str]) -> int | None:
+def first_not_contradicted(
+    raw_description: str, product_names: Sequence[str], near_enough: Sequence[bool] | None = None
+) -> int | None:
     """Which of `product_names` (nearest first) a line can be offered, or
-    None when there is no such product.
+    None when there is no such product. `near_enough` says which of them
+    are alike enough to be offered at all (every one, if not given).
 
     The first it doesn't contradict, as long as that is the nearest, or
     another variety of the nearest. Products that share no word of their
@@ -176,7 +189,9 @@ def first_not_contradicted(raw_description: str, product_names: Sequence[str]) -
 
     - a variety of it further down that says what the line says is taken
       over one that says nothing: "PECHUGA DE POLLO" (chicken breast) was
-      nearest Whole Chicken, with Chicken Breast Boneless Skinless second;
+      nearest Whole Chicken, with Chicken Breast Boneless Skinless second.
+      Only one near enough to be offered: a good match isn't given up for
+      a variety too unlike the line to suggest;
     - and when the catalog has two varieties the line can't tell apart, it
       is offered neither: "CONT TO GO", with no size, was offered the 8 oz
       container of three, and a suggestion is one click from being wrong.
@@ -218,7 +233,8 @@ def first_not_contradicted(raw_description: str, product_names: Sequence[str]) -
     for index in range(chosen + 1, len(products)):
         other = products[index]
         if (
-            open_to(other)
+            (near_enough is None or near_enough[index])
+            and open_to(other)
             and not _contradicted_on(line, other)
             and same_thing(other, products[chosen])
             and agreed(other) > agreed(products[chosen])

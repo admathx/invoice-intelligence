@@ -249,3 +249,13 @@ def test_one_fee_doesnt_explain_two_rows_billed_by_the_each():
     cups = _row(2, "5", "0.07", "0.35", pack="1000 CT").model_copy(update={"uom": "EA"})
     restated, kinds = restate(_split_invoice([bag, cups, fee]))
     assert kinds == []
+
+
+def test_a_fee_for_a_row_that_is_part_of_a_case_in_so_many_words_isnt_another_rows():
+    """"0.5 CS" with a split-case fee, and "2 EA" of a 6/1 GAL case on the
+    same invoice: the fee is the half case's, and the EA may be whole cases."""
+    half = _row(1, "0.5", "53.60", "26.80", pack="4/1 GAL")
+    oil = _row(2, "2", "55.50", "111.00", pack="6/1 GAL").model_copy(update={"uom": "EA"})
+    fee = _row(3, "1", "2.50", "2.50", pack=None).model_copy(update={"raw_description": "SPLIT CASE FEE", "uom": "EA"})
+    restated, kinds = restate(_split_invoice([half, oil, fee]))
+    assert kinds == [] and restated.line_items[1].uom == "EA"

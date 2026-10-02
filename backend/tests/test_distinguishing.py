@@ -120,6 +120,19 @@ def test_between_two_varieties_the_line_cant_tell_apart_neither_is_offered():
     assert first_not_contradicted("CHEESE CHEDDAR BLOCK", ["Cheddar Block White", "Cheddar Shredded Yellow"]) == 0
 
 
+def test_a_good_match_isnt_given_up_for_a_variety_too_unlike_the_line_to_offer():
+    chicken = ["Whole Chicken", "Chicken Breast Boneless Skinless"]
+    assert first_not_contradicted("PECHUGA DE POLLO", chicken, [True, True]) == 1
+    assert first_not_contradicted("PECHUGA DE POLLO", chicken, [True, False]) == 0
+
+
+def test_shorthand_the_glossary_doesnt_know_keeps_the_right_product_in_the_running():
+    """"TKY BRST BNLS": TKY is not in the glossary, and is still turkey."""
+    assert first_not_contradicted("TKY BRST BNLS", ["Duck Breast", "Turkey Breast Boneless"]) == 1
+    assert first_not_contradicted("SLMN FLT", ["Salmon Fillet"]) == 0
+    assert first_not_contradicted("GOLDCREST 02318", ["Chicken Breast Boneless Skinless"]) is None
+
+
 def test_a_product_with_no_word_of_the_lines_name_is_not_looked_at():
     """"CHICKEN BREAST" is nearer Duck Breast than Chicken Breast Boneless
     Skinless."""
@@ -177,6 +190,8 @@ def test_a_percent_sign_and_accents_survive_into_what_is_searched_for():
         ("QUESO MOZZARELLA RALLADO", "CHEESE MOZZARELLA SHREDDED"),
         ("PICO DE GALLO", "PICO DE GALLO"),  # "DE" goes only with a word from the Spanish list
         ("PORK SHLDR", "PORK SHOULDER"),
+        ("CARNE MOLIDA 80/20", "BEEF GROUND 80 20"),
+        ("BAG RES 1GAL", "BAG RES 1GAL"),  # resealable, not Spanish for beef
         ("BUN HAMB", "BUN HAMBURGER"),
     ],
 )

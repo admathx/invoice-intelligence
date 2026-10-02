@@ -763,6 +763,21 @@ INBOX_DOMAIN = "invoices.example.com"
 
 
 def app_run_v2(work_dir: Path, set_dir: Path) -> None:
+    """The replay (_app_run_v2), leaving the app's date check as it found
+    it: the replay puts its own in the worker and the review API to give a
+    price series its own calendar, and a replay that stops partway must not
+    leave that behind for whatever runs next in the process."""
+    import app.api.invoice_review as invoice_review_module
+    from app.workers import tasks
+
+    before = (tasks.dated_ahead, invoice_review_module.dated_ahead)
+    try:
+        _app_run_v2(work_dir, set_dir)
+    finally:
+        tasks.dated_ahead, invoice_review_module.dated_ahead = before
+
+
+def _app_run_v2(work_dir: Path, set_dir: Path) -> None:
     """The second set through the app as a business would use it: a location
     per restaurant (two sharing an owner under one account), uploads through
     the upload endpoint (so the same file is refused there), emails through
@@ -1097,7 +1112,6 @@ def app_run_v2(work_dir: Path, set_dir: Path) -> None:
     if year_customer:
         report["year"] = _changes(db, _plan(set_dir, "year_plan.csv"), tenant_ids[year_customer], [])
         report["year"]["added_in_order"] = [n for n, _ in sorted(upload_order.items(), key=lambda kv: kv[1])][:5]
-    tasks.dated_ahead = invoice_review_module.dated_ahead = really_dated_ahead
     if as_matched:
         report["matching"] = _matching(_plan(set_dir, "products_plan.csv"), as_matched)
     report["errors"] = {k: r["error"] for k, r in results.items() if r.get("error")}

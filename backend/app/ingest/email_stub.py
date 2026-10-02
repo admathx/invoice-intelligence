@@ -41,6 +41,7 @@ from app.ingest.photos import MAX_PHOTOS, image_kind
 from app.duplicates import file_hash, same_file
 from app.ingest.upload import (
     InvalidInvoiceFileError,
+    _opened,
     invoice_pdf_from_upload,
     is_pdf_bytes,
     save_invoice_bytes,
@@ -302,13 +303,27 @@ def _from_winmail(wrapper: EmailAttachment) -> list[EmailAttachment]:
     its header to its end marker; nothing else in the format is read. With
     none in it, the wrapper itself, so a rejection names it."""
     data, pdfs = wrapper.content, []
-    start = data.find(b"%PDF-")
-    while start != -1:
-        following = data.find(b"%PDF-", start + 5)
-        end = data.rfind(b"%%EOF", start, following if following != -1 else len(data))
-        if end != -1:
-            pdfs.append(data[start : end + len(b"%%EOF")] + b"\n")
-        start = following
+    starts = [match.start() for match in re.finditer(rb"%PDF-", data)]
+    index = 0
+    while index < len(starts):
+        start, taken = starts[index], None
+        # To the last end marker before the next header. When that doesn't
+        # open, the next header was inside this PDF (one with a PDF attached
+        # to it), so on to the one after.
+        for following in range(index + 1, len(starts) + 1):
+            end = data.rfind(b"%%EOF", start, starts[following] if following < len(starts) else len(data))
+            if end == -1:
+                continue
+            piece = data[start : end + len(b"%%EOF")] + b"\n"
+            taken = taken or (piece, index + 1)  # the shortest, if none opens: the gate then says why
+            if _opened(piece)[0] is None:
+                taken = (piece, following)
+                break
+        if taken is None:
+            index += 1
+            continue
+        pdfs.append(taken[0])
+        index = taken[1]
     if not pdfs:
         return [EmailAttachment(filename=wrapper.filename, content_type=wrapper.content_type, content=b"")]
     return [

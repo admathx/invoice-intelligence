@@ -70,7 +70,11 @@ def _best_match(description: str, query_vec: np.ndarray, compatible_uoms: set, i
     # As the matcher does (match_by_embedding): the nearest few, and of
     # those the first the line doesn't contradict.
     nearest = np.argsort(-sims)[:CANDIDATES_CONSIDERED]
-    chosen = first_not_contradicted(description, [names[global_indices[i]] for i in nearest])
+    chosen = first_not_contradicted(
+        description,
+        [names[global_indices[i]] for i in nearest],
+        [Decimal(str(round(float(sims[i]), 4))) >= REVIEW_QUEUE_CONFIDENCE_LOW for i in nearest],
+    )
     if chosen is None:
         return None, None, None
     best_idx = global_indices[nearest[chosen]]

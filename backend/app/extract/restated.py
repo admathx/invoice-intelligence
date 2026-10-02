@@ -21,7 +21,7 @@ from decimal import Decimal
 from app.extract.amounts import parse_amount
 from app.extract.confidence import ARITHMETIC_TOLERANCE, check_arithmetic
 from app.extract.schema import ExtractedInvoice, ExtractedLineItem
-from app.normalize.pack_size import SPLIT_CASE_UNIT, PackSizeParseError, parse_pack_size
+from app.normalize.pack_size import CASE_UNITS, SPLIT_CASE_UNIT, PackSizeParseError, parse_pack_size
 
 # What a price or amount cell says when nothing is charged for the row.
 _NO_CHARGE = re.compile(r"FREE|N/?C|NO\s*CHARGE|NO\s*CHG|N/CHG|GRATIS|COMP(?:LIMENTARY)?")
@@ -131,14 +131,20 @@ def _split_cases(lines: list[ExtractedLineItem]) -> list[int]:
     with a split-case fee for each of them. "EA" against such a pack says
     nothing by itself (one jug, or the case?), so those rows were never
     priced; the fee says a case was broken, and for which rows when there
-    are as many fees as rows it could mean."""
+    are as many fees as rows it could mean. Not when another row is
+    part of a case in so many words ("0.5 CS"): the fee is then that row's,
+    and an EA beside it may as well be a whole case."""
     fees = Decimal(0)
     of_a_case: list[int] = []
     for index, line in enumerate(lines):
         if not (line.raw_pack_size or "").strip() and _SPLIT_CASE_FEE.search(line.raw_description.upper()):
             fees += max(parse_amount(line.quantity) or Decimal(1), Decimal(1))
             continue
-        if (line.uom or "").strip().upper() not in ("EA", "EACH"):
+        billed = (line.uom or "").strip().upper()
+        quantity = parse_amount(line.quantity)
+        if billed in CASE_UNITS and quantity is not None and quantity != quantity.to_integral_value():
+            return []
+        if billed not in ("EA", "EACH"):
             continue
         try:
             if not parse_pack_size(line.raw_pack_size).is_single_container:

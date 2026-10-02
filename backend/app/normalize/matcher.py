@@ -8,6 +8,7 @@ once a distributor's catalog has been seen before.
 import time
 import uuid
 from dataclasses import dataclass
+from functools import lru_cache
 from decimal import Decimal
 from pathlib import Path
 
@@ -223,6 +224,14 @@ def catalog_vocabulary(db: Session) -> frozenset[str]:
     return _vocabulary[1]
 
 
+@lru_cache(maxsize=512)
+def _embedded(text: str) -> tuple[float, ...]:
+    """A description's embedding, kept for the next search for the same
+    text: a line with nothing near it in its own units is searched for
+    again among all products, and an invoice often repeats an item."""
+    return tuple(embed_text(text))
+
+
 def match_by_embedding(
     db: Session, raw_description: str, compatible_uoms: set[BaseUom] | None, density_uoms: set[BaseUom] = frozenset()
 ) -> tuple[CanonicalSku | None, Decimal | None]:
@@ -249,7 +258,7 @@ def match_by_embedding(
     """
     raw_description = correct_spelling(raw_description, catalog_vocabulary(db))
     query_text = normalize_for_embedding(raw_description)
-    query_vec = embed_text(query_text)
+    query_vec = list(_embedded(query_text))
 
     distance = CanonicalSku.description_embedding.cosine_distance(query_vec)
     # Plus, in density_uoms, products that carry a weight per gallon: a
@@ -265,11 +274,15 @@ def match_by_embedding(
         .order_by(distance)
         .limit(CANDIDATES_CONSIDERED)
     ).all()
-    chosen = first_not_contradicted(raw_description, [candidate.name for candidate, _ in rows])
+    similarities = [Decimal(str(round(1 - distance_value, 4))) for _, distance_value in rows]
+    chosen = first_not_contradicted(
+        raw_description,
+        [candidate.name for candidate, _ in rows],
+        [similarity >= REVIEW_QUEUE_CONFIDENCE_LOW for similarity in similarities],
+    )
     if chosen is None:
         return None, None
-    candidate, distance_value = rows[chosen]
-    return candidate, Decimal(str(round(1 - distance_value, 4)))
+    return rows[chosen][0], similarities[chosen]
 
 
 def _what_it_is(db: Session, raw_description: str, method: str) -> MatchResult:

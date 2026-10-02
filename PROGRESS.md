@@ -3252,3 +3252,23 @@ unchanged.
 
 The brief is at Version 7, full and focused (seven sets, about 195
 documents). It opens with what the last set got wrong.
+
+### Bug check on the last four rounds
+
+A review of everything since the ten fixes (matching, restated rows, the
+split case, the sixth set's fixes) found seven problems, all fixed, each
+with a test:
+
+- preferring a variety that agrees with the line could replace a strong
+  match with one too unlike the line to offer, leaving no suggestion;
+- shorthand the glossary doesn't know ("TKY" for turkey) put the right
+  product out of the running;
+- a split-case fee could be credited to an EA row when another row was the
+  split one in so many words ("0.5 CS");
+- RES was read as Spanish for beef on English rows (resealable bags);
+- a line with nothing near it in its own units was embedded twice;
+- a PDF with a PDF attached inside it was cut in two when taken out of
+  winmail.dat;
+- the replay left its own date check in the app if it stopped partway.
+
+Both sets replay the same afterwards, and the matching gate is unchanged.
