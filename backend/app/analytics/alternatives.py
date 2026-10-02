@@ -51,6 +51,16 @@ _PCT_PLACES = Decimal("0.0001")
 
 
 @dataclass
+class Advice:
+    """Whether to act on an alternative, and what acting on it would cost
+    (app/analytics/switching.py)."""
+
+    verdict: str  # "move" | "negotiate" | "stay"
+    headline: str
+    points: list[str]
+
+
+@dataclass
 class Alternative:
     distributor_id: uuid.UUID
     distributor_name: str
@@ -65,6 +75,12 @@ class Alternative:
     # How many businesses the typical price is taken from, and where.
     distinct_account_count: int | None = None
     scope: str | None = None  # "metro" | "national"
+    # Their site, to link to.
+    website: str | None = None
+    # Set by app/analytics/switching.py: what the difference comes to in a
+    # year at what this location buys, and whether it's worth acting on.
+    annual_saving: Decimal | None = None
+    advice: Advice | None = None
 
 
 def find_alternatives(
@@ -134,13 +150,13 @@ def find_alternatives(
 
         offers: list[Alternative] = []
         for distributor_id in mine.keys() | anywhere.keys():
-            name = distributors[distributor_id].name
+            name, website = distributors[distributor_id].name, distributors[distributor_id].website
             if distributor_id in mine:
                 # What this location pays there says more than what others do.
                 latest = sorted(mine[distributor_id])[-RECENT_WINDOW_SIZE:]
                 offer = Alternative(
                     distributor_id, name, own_price([price for _, price in latest]),
-                    yours=True, last_bought=latest[-1][0],
+                    yours=True, last_bought=latest[-1][0], website=website,
                 )  # fmt: skip
             else:
                 # The area first, then everywhere; never anything narrower.
@@ -151,7 +167,7 @@ def find_alternatives(
                     continue
                 offer = Alternative(
                     distributor_id, name, typical_price(prices),
-                    yours=False, distinct_account_count=len(prices), scope=scope,
+                    yours=False, distinct_account_count=len(prices), scope=scope, website=website,
                 )  # fmt: skip
             if offer.price <= alert.current_price * (1 - MIN_SAVING):
                 offer.saving_pct = ((alert.current_price - offer.price) / alert.current_price).quantize(_PCT_PLACES)

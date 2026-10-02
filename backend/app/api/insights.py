@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import audit
-from app.analytics.alternatives import find_alternatives
+from app.analytics.switching import weighed_alternatives
 from app.analytics.benchmark import account_key_for, compute_benchmark
 from app.api.deps import get_tenant_or_404
 from app.auth import current_user, get_db_for_tenant
@@ -71,7 +71,7 @@ def get_insights(tenant_id: uuid.UUID, db: Session = Depends(get_db_for_tenant))
     distributor_ids = {alert.distributor_id for alert in alerts if alert.distributor_id is not None}
     distributors = dict(db.execute(select(Distributor.id, Distributor.name).where(Distributor.id.in_(distributor_ids))).all())
 
-    alternatives = find_alternatives(db, tenant, alerts, exclude_account_key)
+    alternatives = weighed_alternatives(db, tenant, alerts, exclude_account_key)
 
     cards = []
     for alert in alerts:

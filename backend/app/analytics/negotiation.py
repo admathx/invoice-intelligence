@@ -94,7 +94,7 @@ class NegotiationSheet:
     total_annualized_savings: Decimal
 
 
-def _annualization(observed_dates: list[date], as_of: date) -> tuple[int, Decimal]:
+def annualization(observed_dates: list[date], as_of: date) -> tuple[int, Decimal]:
     """Projects a partial window to a year from the history actually present.
 
     Was a flat x4 ("a 90-day window is ~1 quarter"), which is only true once a
@@ -176,7 +176,7 @@ def build_negotiation_sheet(
             lines=[], window_days=0, annualization_factor=Decimal(0), total_annualized_savings=Decimal("0.0000")
         )
 
-    window_days, annualization_factor = _annualization([observed_on for _, observed_on, _, _, _ in rows], as_of)
+    window_days, annualization_factor = annualization([observed_on for _, observed_on, _, _, _ in rows], as_of)
 
     by_sku: dict[uuid.UUID, list[tuple[date, Decimal, uuid.UUID, Decimal]]] = {}
     for sku_id, observed_on, price, line_item_id, qty in rows:

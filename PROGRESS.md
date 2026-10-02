@@ -3349,3 +3349,41 @@ something to show.
 Not done: nothing estimates what switching would save in a year, the
 weekly email doesn't carry these, and a match is to a product, not a brand
 or case size, which the card says.
+
+## Whether a cheaper distributor is worth it
+
+A lower price elsewhere is not yet a saving. A restaurant usually gets its
+pricing by ordering mostly from one distributor, so each alternative on a
+price alert is now weighed before it is shown (app/analytics/switching.py),
+from the location's own invoices:
+
+- **A year, in dollars.** The difference, times what the location buys of
+  the product from the alert's distributor, projected to a year the way
+  Savings does. Said in whole dollars; for a price others pay, "at that
+  price".
+- **A link** to the distributor's site (migration 0027: a website for the
+  four shared distributors; a vendor a business added has none).
+- **A verdict**, one line:
+  - *Worth moving*: the other distributor already delivers, the saving is
+    at least $100 a year, and the product is under 10% of what the current
+    one sells the location.
+  - *Ask them to match first*: the product is 10% or more of the order
+    with the current distributor, or a new supplier would save $1,000 a
+    year or more across every flagged product that costs less there.
+  - *Not worth it*: under $100 a year, or under $1,000 for a new supplier.
+    The price is still something to take to the rep.
+- **What switching would involve**, opened on request: whether an account
+  exists already, the current distributor's share of the location's
+  spending, the product's share of that, how many invoices the other one
+  sent, what the flagged products come to a week against an order minimum,
+  and that another business's price is not a quote.
+
+The weekly email carries the cheapest alternative of each new increase in
+one sentence, with its verdict.
+
+The three thresholds are judgment, in validation/thresholds.yaml, not
+measurement. What it cannot see is the agreement itself (a rebate tier, a
+committed share of purchases, the actual order minimum), and the card says
+so. On the dev data, The Copper Skillet buys everything from Sysco: its
+cilantro alert says to ask Sysco to match, then get a quote from US Foods
+(about $1,112 a year); its cup lids, at $778, are not worth a new supplier.

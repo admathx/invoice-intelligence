@@ -109,9 +109,16 @@ def product_from(product: str, distributor: str | None) -> str:
     return f"{product} from {distributor}" if distributor else product
 
 
+def _elsewhere(p: PriceIncreaseRow) -> str | None:
+    """Where the product costs less, on the emails that say (the weekly
+    digest; app/digest.py)."""
+    return getattr(p, "elsewhere", None)
+
+
 def increase_line(p: PriceIncreaseRow) -> str:
     """One increase in a plain-text email."""
-    return f"  - {p.sku}: {price_per(p.before, p.unit)} -> {price_per(p.now, p.unit)} (+{p.pct_change:.1%})"
+    line = f"  - {p.sku}: {price_per(p.before, p.unit)} -> {price_per(p.now, p.unit)} (+{p.pct_change:.1%})"
+    return f"{line}\n      {_elsewhere(p)}" if _elsewhere(p) else line
 
 
 def increase_table(increases: Iterable[PriceIncreaseRow], more: int = 0) -> str:
@@ -128,6 +135,12 @@ def increase_table(increases: Iterable[PriceIncreaseRow], more: int = 0) -> str:
         f"<strong style='color:#111827;white-space:nowrap'>{e(price_per(p.now, p.unit))}</strong></td>"
         f"<td style='padding:4px 0;text-align:right'>{pill(f'▲ +{p.pct_change:.1%}', RED_TEXT, RED_TINT)}</td>"
         "</tr>"
+        + (
+            # Under its own row, the full width: a sentence, not a column.
+            f"<tr><td colspan='3' style='padding:0 0 8px;font-size:13px;color:{GREEN_TEXT}'>{e(_elsewhere(p))}</td></tr>"
+            if _elsewhere(p)
+            else ""
+        )
         for p in increases
     )
     more_html = f"<p style='margin:4px 0 0;color:{MUTED}'>&hellip;and {more} more</p>" if more > 0 else ""

@@ -35,6 +35,10 @@ class Distributor(Base):
     # location itself), for a local vendor only that business buys from. Null
     # for the shared distributors everyone sees.
     account_key: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    # Where to find them, linked from a price alert that says a product costs
+    # less there (app/analytics/alternatives.py). Null for most vendors a
+    # business added itself.
+    website: Mapped[str | None] = mapped_column(String, nullable=True)
     # The name reduced to what identifies it (app/business_distributors.py
     # name_key), set from name when the row is added (names aren't edited).
     name_key: Mapped[str | None] = mapped_column(

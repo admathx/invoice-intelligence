@@ -12,9 +12,10 @@ from sqlalchemy import select
 from app.analytics.alternatives import MAX_SHOWN, find_alternatives
 from app.analytics.benchmark import LOOKBACK_DAYS, MIN_DISTINCT_ACCOUNTS, account_key_for
 from app.analytics.price_creep import RECENT_WINDOW_SIZE
-from app.models import Distributor, PriceAlert, PriceObservation
+from app.analytics.switching import WORTH_A_NEW_SUPPLIER, WORTH_MOVING, weighed_alternatives
+from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceAlert, PriceObservation
 from app.models.distributor import UNRECOGNIZED_SLUG
-from app.models.enums import AlertStatus, AlertType
+from app.models.enums import AlertStatus, AlertType, BaseUom, InvoiceSource, InvoiceStatus, ReviewStatus
 
 from test_suppression import (  # noqa: F401  (fixtures and row builders)
     AS_OF,
@@ -257,3 +258,204 @@ def test_the_cheapest_few_come_first(db_session, canonical_sku, distributor):
     offers = _found(db_session, tenant, alert)
 
     assert [o.distributor_name for o in offers] == ["A", "B", "C"][:MAX_SHOWN]
+
+
+# --- whether it's worth it (app/analytics/switching.py) ---------------------------
+
+
+def _bought(db, tenant, sku, distributor, price: str, *, qty: str = "10", days_ago: int = 0, invoice_total: str = "2000") -> None:
+    """A delivery: an invoice with a total, and this product on it."""
+    observed_on = AS_OF - timedelta(days=days_ago)
+    invoice = Invoice(
+        id=uuid.uuid4(),
+        tenant_id=tenant.id,
+        distributor_id=distributor.id,
+        invoice_date=observed_on,
+        total=Decimal(invoice_total),
+        source=InvoiceSource.upload,
+        original_file_uri="file:///dev/null",
+        status=InvoiceStatus.extracted,
+    )
+    line = InvoiceLineItem(
+        id=uuid.uuid4(),
+        tenant_id=tenant.id,
+        invoice_id=invoice.id,
+        line_number=1,
+        raw_description="Switching Test Line",
+        quantity=Decimal(qty),
+        unit_price=Decimal(price),
+        extended_price=Decimal(qty) * Decimal(price),
+        uom="LB",
+        canonical_sku_id=sku.id,
+        normalized_qty_base=Decimal(qty),
+        normalized_unit_price=Decimal(price),
+        base_uom=sku.base_uom,
+        review_status=ReviewStatus.auto,
+    )
+    db.add_all([invoice, line])
+    db.flush()
+    db.add(
+        PriceObservation(
+            tenant_id=tenant.id,
+            canonical_sku_id=sku.id,
+            distributor_id=distributor.id,
+            observed_on=observed_on,
+            unit_price_base=Decimal(price),
+            metro=tenant.metro,
+            volume_tier=tenant.volume_tier,
+            invoice_line_item_id=line.id,
+        )
+    )
+    db.commit()
+
+
+def _a_quarter_at(db, tenant, sku, distributor, price: str = "10.00", **delivery) -> None:
+    """Seven deliveries over 73 days, 10 lb each: a year is five times that."""
+    for days_ago in range(0, 73, 12):
+        _bought(db, tenant, sku, distributor, price, days_ago=days_ago, **delivery)
+
+
+def _weighed(db, tenant, *alerts):
+    found = weighed_alternatives(db, tenant, list(alerts), account_key_for(db, tenant.id))
+    return [found.get(alert.id, []) for alert in alerts] if len(alerts) > 1 else found.get(alerts[0].id, [])
+
+
+def test_a_saving_is_put_in_dollars_a_year_at_what_the_location_buys(db_session, canonical_sku, distributor):
+    """$1.50 a pound less means nothing until it's multiplied by the pounds."""
+    tenant = _make_tenant(db_session, _metro())
+    elsewhere = _distributor(db_session, "Elsewhere Foods")
+    _a_quarter_at(db_session, tenant, canonical_sku, distributor)
+    for days_ago in (5, 20, 40):
+        _bought(db_session, tenant, canonical_sku, elsewhere, "8.50", qty="1", days_ago=days_ago, invoice_total="500")
+    alert = _alert(db_session, tenant, canonical_sku, distributor)
+
+    [offer] = _weighed(db_session, tenant, alert)
+
+    # 70 lb in 73 days is 350 lb a year, at $1.50 less.
+    assert offer.annual_saving == Decimal("525.00")
+
+
+def test_a_distributor_that_already_delivers_is_worth_moving_a_small_line_to(db_session, canonical_sku, distributor):
+    tenant = _make_tenant(db_session, _metro())
+    elsewhere = _distributor(db_session, "Elsewhere Foods")
+    distributor.name = "Main Street Foods"
+    _a_quarter_at(db_session, tenant, canonical_sku, distributor)  # $100 of each $2,000 invoice
+    for days_ago in (5, 20, 40):
+        _bought(db_session, tenant, canonical_sku, elsewhere, "8.50", qty="1", days_ago=days_ago, invoice_total="500")
+    alert = _alert(db_session, tenant, canonical_sku, distributor)
+
+    [offer] = _weighed(db_session, tenant, alert)
+
+    assert offer.advice.verdict == "move"
+    assert offer.advice.headline == "Worth moving: Elsewhere Foods already delivers to you."
+    said = " ".join(offer.advice.points)
+    assert "You already buy from Elsewhere Foods (3 invoices in the last 90 days)" in said
+    # Who the order is with, and how much of it this is: $14,000 of $15,500, and $700 of that.
+    assert "Main Street Foods is 90% of your spending over the last 90 days." in said
+    assert "Elsewhere Foods is 10% of your spending." in said
+    assert "This product is about $3,500 a year with Main Street Foods, 5% of what you buy from them." in said
+    assert "A small part of your order with them" in said
+    assert "Asking Main Street Foods to match is still free" in said
+
+
+def test_a_few_dollars_a_year_isnt_worth_changing_an_order_for(db_session, canonical_sku, distributor):
+    tenant = _make_tenant(db_session, _metro())
+    elsewhere = _distributor(db_session, "Elsewhere Foods")
+    _a_quarter_at(db_session, tenant, canonical_sku, distributor, qty="1")  # 35 lb a year: $52.50
+    _bought(db_session, tenant, canonical_sku, elsewhere, "8.50", days_ago=5)
+    alert = _alert(db_session, tenant, canonical_sku, distributor)
+
+    [offer] = _weighed(db_session, tenant, alert)
+
+    assert offer.annual_saving == Decimal("52.50") and offer.annual_saving < WORTH_MOVING
+    assert offer.advice.verdict == "stay"
+    assert offer.advice.headline.startswith("Too small to change an order for.")
+
+
+def test_a_big_part_of_the_order_is_something_to_ask_them_to_match_first(db_session, canonical_sku, distributor):
+    """A restaurant gets its pricing by ordering mostly from one distributor.
+    A product that is a fifth of the order isn't moved lightly."""
+    tenant = _make_tenant(db_session, _metro())
+    elsewhere = _distributor(db_session, "Elsewhere Foods")
+    distributor.name = "Main Street Foods"
+    _a_quarter_at(db_session, tenant, canonical_sku, distributor, invoice_total="500")  # $100 of each $500
+    _bought(db_session, tenant, canonical_sku, elsewhere, "8.50", days_ago=5)
+    alert = _alert(db_session, tenant, canonical_sku, distributor)
+
+    [offer] = _weighed(db_session, tenant, alert)
+
+    assert offer.advice.verdict == "negotiate"
+    assert offer.advice.headline == (
+        "Ask Main Street Foods to match it first: this is 20% of what you buy from them, "
+        "and moving it could cost you on the rest."
+    )
+    assert any("moving it could cost you volume pricing on the rest" in point for point in offer.advice.points)
+
+
+def test_one_cheaper_product_isnt_worth_a_new_supplier(db_session, canonical_sku, distributor):
+    metro = _metro()
+    tenant = _make_tenant(db_session, metro)
+    elsewhere = _distributor(db_session, "Elsewhere Foods")
+    distributor.name = "Main Street Foods"
+    _a_quarter_at(db_session, tenant, canonical_sku, distributor)
+    _others_pay(db_session, canonical_sku, elsewhere, metro, ["8.50"] * 5)
+    alert = _alert(db_session, tenant, canonical_sku, distributor)
+
+    [offer] = _weighed(db_session, tenant, alert)
+
+    assert offer.annual_saving == Decimal("525.00") and offer.annual_saving < WORTH_A_NEW_SUPPLIER
+    assert offer.advice.verdict == "stay"
+    assert offer.advice.headline == "Not worth opening a new supplier for. Take this price to your Main Street Foods rep."
+    said = " ".join(offer.advice.points)
+    # What a new supplier costs, and what ordering from one is worth.
+    assert "You don't buy from Elsewhere Foods today." in said and "meeting their minimum on every order" in said
+    assert "Main Street Foods is 100% of your spending over the last 90 days." in said
+    assert "Ordering mostly from one distributor is usually what earns your pricing" in said
+    assert "what 5 businesses typically pay Elsewhere Foods, not a quote" in said
+    # $3,500 a year of it: an order that small runs into their minimum.
+    assert "On its own, this product is about $67 a week of orders." in said and "ask Elsewhere Foods for theirs" in said
+
+
+def test_several_flagged_products_cheaper_at_one_supplier_are_weighed_together(db_session, canonical_sku, distributor):
+    """Nobody opens an account for one product. Three may be worth a quote."""
+    metro = _metro()
+    tenant = _make_tenant(db_session, metro)
+    elsewhere = _distributor(db_session, "Elsewhere Foods")
+    distributor.name = "Main Street Foods"
+    second = CanonicalSku(name=f"Switching Test SKU {uuid.uuid4().hex[:8]}", category="test", base_uom=BaseUom.lb)
+    db_session.add(second)
+    db_session.commit()
+    alerts = []
+    for sku in (canonical_sku, second):
+        _a_quarter_at(db_session, tenant, sku, distributor)
+        _others_pay(db_session, sku, elsewhere, metro, ["8.50"] * 5)
+        alerts.append(_alert(db_session, tenant, sku, distributor))
+
+    [[first], [other]] = _weighed(db_session, tenant, *alerts)
+
+    assert first.annual_saving == other.annual_saving == Decimal("525.00")
+    assert first.advice.verdict == other.advice.verdict == "negotiate"
+    assert first.advice.headline == (
+        "Ask Main Street Foods to match it first. If they won't, it's worth a quote from Elsewhere Foods."
+    )
+    assert "2 of your flagged products cost less at Elsewhere Foods: about $1,050 a year together." in first.advice.points
+    assert any(point.startswith("On their own, these products are about $135 a week of orders.") for point in first.advice.points)
+
+
+def test_an_alternative_links_to_the_distributor(db_session, canonical_sku, distributor):
+    tenant = _make_tenant(db_session, _metro())
+    elsewhere = _distributor(db_session, "Elsewhere Foods")
+    elsewhere.website = "https://elsewhere.example"
+    _a_quarter_at(db_session, tenant, canonical_sku, distributor)
+    _bought(db_session, tenant, canonical_sku, elsewhere, "8.50", days_ago=5)
+    alert = _alert(db_session, tenant, canonical_sku, distributor)
+
+    [offer] = _weighed(db_session, tenant, alert)
+
+    assert offer.website == "https://elsewhere.example"
+
+
+def test_the_shared_distributors_have_their_websites(db_session):
+    websites = dict(db_session.execute(select(Distributor.slug, Distributor.website).where(Distributor.account_key.is_(None))).all())
+    assert websites["sysco"] == "https://www.sysco.com" and websites["us_foods"] == "https://www.usfoods.com"
+    assert websites["gordon"] and websites["pfg"] and websites.get("other") is None

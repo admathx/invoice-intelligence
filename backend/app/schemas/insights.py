@@ -25,6 +25,17 @@ class BenchmarkPosition(BaseModel):
     scope: str  # "metro" | "national"
 
 
+class AdviceOut(BaseModel):
+    """Whether an alternative is worth acting on, and what it would involve
+    (app/analytics/switching.py)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    verdict: str  # "move" | "negotiate" | "stay"
+    headline: str
+    points: list[str]
+
+
 class AlternativeOut(BaseModel):
     """Another distributor the alert's product costs less at
     (app/analytics/alternatives.py)."""
@@ -40,6 +51,10 @@ class AlternativeOut(BaseModel):
     last_bought: date | None = None
     distinct_account_count: int | None = None
     scope: str | None = None  # "metro" | "national"
+    website: str | None = None
+    # What the difference comes to in a year, at what this location buys.
+    annual_saving: Decimal | None = None
+    advice: AdviceOut | None = None
 
 
 class InsightCard(BaseModel):

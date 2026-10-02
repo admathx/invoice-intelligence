@@ -113,6 +113,21 @@ phase4_analytics:
     # flagged: a 1% difference isn't worth changing who you order from.
     min_saving_pct: 0.03
     max_shown: 3
+    # Whether a saving is worth acting on (app/analytics/switching.py).
+    # Judgment, not measurement: a restaurant usually gets its pricing by
+    # ordering mostly from one distributor, so a cheaper line elsewhere has
+    # to pay for what moving it costs.
+    # - to a distributor that already delivers: the bother of changing a
+    #   standing order. Under about $2 a week it isn't worth that.
+    worth_moving_min_usd_per_year: 100
+    # - to one that doesn't: a new account, their order minimum, one more
+    #   delivery to receive and invoice to check, every week. Counted over
+    #   every flagged product that costs less there, not one.
+    worth_new_supplier_min_usd_per_year: 1000
+    # A product that is this much of what's bought from its distributor is a
+    # big enough part of the order that moving it could cost volume pricing
+    # or a rebate on the rest: ask them to match before moving it.
+    large_share_of_distributor: 0.10
   negotiation:
     top_n: 15
     # History basis (target = the median of the tenant's OWN past prices, the

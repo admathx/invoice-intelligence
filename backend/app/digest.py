@@ -29,7 +29,10 @@ from sqlalchemy.orm import Session
 
 from app import email_design as design
 from app import mail
+from app.analytics.alternatives import Alternative
+from app.analytics.benchmark import account_key_for
 from app.analytics.negotiation import NegotiationBasis, build_negotiation_sheet
+from app.analytics.switching import usd, weighed_alternatives
 from app.config import settings
 from app.db import bind_tenant
 from app.matching_queue import waiting_item_count
@@ -66,6 +69,17 @@ class PriceIncrease:
     # Prices are per base unit ("$0.54" for cilantro is per pound); without
     # it the number reads as per case.
     unit: str = ""
+    # Where it costs less, and whether that's worth acting on, in a sentence
+    # (the cheapest of the alert's alternatives; app/analytics/switching.py).
+    elsewhere: str | None = None
+
+
+def _elsewhere(offer: Alternative, unit: str) -> str:
+    saving = ""
+    if offer.annual_saving:
+        saving = f", {'' if offer.annual_saving < 1 else 'about '}{usd(offer.annual_saving)} a year"
+    advice = f" {offer.advice.headline}" if offer.advice else ""
+    return f"Costs less at {offer.distributor_name}: {design.price_per(offer.price, unit)}{saving}.{advice}"
 
 
 @dataclass
@@ -132,16 +146,21 @@ def location_week(db: Session, tenant: Tenant, now: datetime) -> LocationWeek:
         .order_by(PriceAlert.pct_change.desc())
         .limit(LISTED)
     ).all()
-    week.new_increases = [
-        PriceIncrease(
-            design.product_from(name, distributor),
-            a.baseline_price,
-            a.current_price,
-            a.pct_change,
-            design.UNIT_LABEL.get(uom.value, uom.value),
+    elsewhere = weighed_alternatives(db, tenant, [a for a, *_ in rows], account_key_for(db, tenant.id))
+    week.new_increases = []
+    for a, name, uom, distributor in rows:
+        unit = design.UNIT_LABEL.get(uom.value, uom.value)
+        offers = elsewhere.get(a.id)
+        week.new_increases.append(
+            PriceIncrease(
+                design.product_from(name, distributor),
+                a.baseline_price,
+                a.current_price,
+                a.pct_change,
+                unit,
+                _elsewhere(offers[0], unit) if offers else None,
+            )
         )
-        for a, name, uom, distributor in rows
-    ]
     week.open_alert_count = db.scalar(
         select(func.count(PriceAlert.id)).where(PriceAlert.tenant_id == tenant.id, PriceAlert.status == AlertStatus.open)
     )

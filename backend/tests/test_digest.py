@@ -173,6 +173,41 @@ def test_a_location_week_counts_what_happened_and_what_needs_doing(db):
     assert week.has_news
 
 
+def test_a_new_increase_says_where_it_costs_less_and_whether_thats_worth_it(db, monkeypatch):
+    """The week's email carries the cheapest alternative of each increase,
+    with its verdict: a lower price alone would read as "switch"."""
+    from app.analytics.alternatives import Advice, Alternative
+
+    tenant = _tenant(db)
+    _alert(db, tenant, _sku(db), created_at=NOW - timedelta(days=2))
+    offer = Alternative(
+        uuid.uuid4(), "US Foods", Decimal("0.5361"), yours=False, annual_saving=Decimal("311.40"),
+        advice=Advice("stay", "Not worth opening a new supplier for. Take this price to your Sysco rep.", []),
+    )  # fmt: skip
+    monkeypatch.setattr(digest, "weighed_alternatives", lambda db, tenant, alerts, key: {alerts[0].id: [offer]})
+
+    week = _week(db, tenant)
+
+    said = (
+        "Costs less at US Foods: $0.5361/lb, about $311 a year. "
+        "Not worth opening a new supplier for. Take this price to your Sysco rep."
+    )
+    assert week.new_increases[0].elsewhere == said
+    _, text, html_body = _parts(digest.compose(_user(db, tenant), [week]))
+    assert said in " ".join(text.split()) and said in " ".join(html_body.split())
+
+
+def test_an_increase_with_nowhere_cheaper_says_nothing_about_it(db):
+    tenant = _tenant(db)
+    _alert(db, tenant, _sku(db), created_at=NOW - timedelta(days=2))
+
+    week = _week(db, tenant)
+
+    assert week.new_increases[0].elsewhere is None
+    _, text, html_body = _parts(digest.compose(_user(db, tenant), [week]))
+    assert "Costs less" not in text and "Costs less" not in html_body
+
+
 def test_a_quiet_week_sends_nothing(db):
     tenant = _tenant(db)
     user = _user(db, tenant)

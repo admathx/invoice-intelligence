@@ -217,7 +217,16 @@ export default async function HelpPage() {
             used to. Where we know what similar businesses pay, you&rsquo;ll see how your price compares. Where the
             same product costs less at another distributor, the alert lists it under <em>Costs less elsewhere</em>:
             either what you already pay there, from your own invoices, or what similar businesses typically pay
-            there. It is the same product as we matched it, so check the brand and pack before you switch. Open a
+            there. Each comes with what it would save in a year at what you buy, a link to that distributor, and
+            a plain answer on whether it&rsquo;s worth acting on. You usually get your pricing by ordering mostly
+            from one distributor, so a cheaper price elsewhere is first of all something to ask your current rep to
+            match. Moving a product makes sense when the other distributor already delivers to you, the saving is
+            worth changing an order for, and the product is a small part of what you buy from the current one. A
+            new supplier means an account, their order minimum, and one more delivery and invoice each week, so it
+            is only suggested when several flagged products together save enough to pay for that. Press{" "}
+            <em>What switching would involve</em> for the details. We can&rsquo;t see your agreement with a
+            distributor, so ask about any rebate or committed volume before splitting an order. It is the same
+            product as we matched it, so check the brand and pack before you switch. Open a
             product to see every price you&rsquo;ve paid for it. Once you&rsquo;ve dealt with one (called your rep, or
             accepted it), press <em>Dealt with it</em> to take it off the list; we&rsquo;ll tell you again if the price
             goes up more.

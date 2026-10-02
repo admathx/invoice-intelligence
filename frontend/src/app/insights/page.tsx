@@ -2,7 +2,7 @@ import { computeSparklineCoords, type PriceHistoryPoint } from "@/lib/sparkline"
 import { labelAnchor, priceVerdict, trackPosition } from "@/lib/spectrum";
 
 import ActionButton from "@/components/ActionButton";
-import { alternativeSource, type Alternative } from "@/lib/alternatives";
+import { alternativeSource, supplierLink, yearlySaving, type Alternative } from "@/lib/alternatives";
 import NoLocation from "@/components/NoLocation";
 import { percent, priceChangeTone, TONE_TEXT, unitPrice } from "@/lib/format";
 import { requireSession, serverGet } from "@/lib/server";
@@ -164,25 +164,65 @@ function BenchmarkSpectrum({ benchmark }: { benchmark: BenchmarkPosition }) {
   );
 }
 
+// What to make of a cheaper price: worth moving (green), ask the current
+// distributor first (amber), or leave it (grey).
+const VERDICT_TONE = { move: "text-brand-800", negotiate: "text-amber-800", stay: "text-gray-700" } as const;
+
 /** Where the same product costs less: another distributor the reader buys
- *  it from, or one that similar businesses buy it from for less. */
+ *  it from, or one that similar businesses buy it from for less. Each comes
+ *  with what it would save in a year and whether it's worth acting on: a
+ *  restaurant usually gets its pricing by ordering mostly from one
+ *  distributor, so a cheaper line elsewhere isn't a saving by itself. */
 function Alternatives({ alternatives }: { alternatives: Alternative[] }) {
   return (
     <div className="mt-3 rounded-md bg-brand-50 px-3 py-2.5">
       <div className="text-sm font-medium text-brand-900">Costs less elsewhere</div>
-      <ul className="mt-1.5 space-y-1.5 text-sm">
-        {alternatives.map((a) => (
-          <li key={a.distributor_name} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <span className="font-medium text-gray-900">{a.distributor_name}</span>
-            <span className="num text-gray-900">{unitPrice(a.price)}</span>
-            <span className="badge bg-brand-100 text-brand-800">▼ {percent(a.saving_pct)} less</span>
-            <span className="text-xs text-gray-600">{alternativeSource(a)}</span>
-          </li>
-        ))}
+      <ul className="mt-1.5 space-y-3 text-sm">
+        {alternatives.map((a) => {
+          const link = supplierLink(a);
+          const saving = yearlySaving(a);
+          return (
+            <li key={a.distributor_name}>
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                {link ? (
+                  <a href={link} target="_blank" rel="noopener noreferrer" className="link font-medium">
+                    {a.distributor_name} <span aria-hidden>↗</span>
+                    <span className="sr-only"> (their website, in a new tab)</span>
+                  </a>
+                ) : (
+                  <span className="font-medium text-gray-900">{a.distributor_name}</span>
+                )}
+                <span className="num text-gray-900">{unitPrice(a.price)}</span>
+                <span className="badge bg-brand-100 text-brand-800">▼ {percent(a.saving_pct)} less</span>
+                {saving && <span className="font-medium text-gray-900">{saving}</span>}
+              </div>
+              <div className="text-xs text-gray-600">{alternativeSource(a)}</div>
+              {a.advice && (
+                <div className="mt-1">
+                  <p className={`font-medium ${VERDICT_TONE[a.advice.verdict] ?? "text-gray-700"}`}>
+                    {a.advice.headline}
+                  </p>
+                  <details className="mt-0.5 text-xs text-gray-600">
+                    <summary className="cursor-pointer font-medium text-gray-700 hover:underline">
+                      What switching would involve
+                    </summary>
+                    <ul className="mt-1 list-disc space-y-1 pl-5">
+                      {a.advice.points.map((point) => (
+                        <li key={point}>{point}</li>
+                      ))}
+                    </ul>
+                  </details>
+                </div>
+              )}
+            </li>
+          );
+        })}
       </ul>
       {/* The match is to a catalog product, not a brand or a case size. */}
-      <p className="mt-1.5 text-xs text-gray-500">
-        The same product as we matched it. Check the brand and pack before you switch.
+      <p className="mt-2 text-xs text-gray-500">
+        The same product as we matched it. Check the brand and pack before you switch. We can&rsquo;t see your
+        agreement with a distributor (a rebate, a committed volume, an order minimum), so ask before splitting an
+        order.
       </p>
     </div>
   );
@@ -210,7 +250,7 @@ export default async function InsightsPage() {
             savings
           </a>{" "}
           list has the numbers to bring. Where the same product costs less at another distributor, the alert says
-          so.
+          so, with what that would save in a year and whether it&rsquo;s worth switching for.
         </p>
       </div>
       {cards.length === 0 && (
