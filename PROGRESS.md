@@ -3239,7 +3239,7 @@ same name in two cities taken for one; one unreadable attachment turning
 away the whole email; a rise of 11% over a year not alerting (the bar is
 10%, measured between medians about 46 weeks apart).
 
-By set: A 11 of 13, E 16 of 16, N 52 of 54, P 22 of 22, Q 32 of 33, R 51
+By set: A 11 of 13, E 16 of 16, N 52 of 54, P 22 of 22, Q 31 of 33, R 51
 of 57, S 35 of 39, T 37 of 40, U 92 of 92 with every planned alert right
 that the plan itself got right, V 30 of 30 with no wrong automatic match.
 
