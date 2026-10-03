@@ -96,6 +96,43 @@ def test_an_alert_card_says_where_the_product_costs_less(db_session, tenant, dis
     assert offer["advice"]["points"][0].startswith("No new account needed.")
 
 
+def test_price_alerts_and_costs_still_load_when_alternatives_cant_be_worked_out(db_session, tenant, distributor, canonical_sku, monkeypatch):
+    """Where else a product costs less is an addition to both pages; a
+    failure in it shows them without it, not as an error."""
+    from app.analytics import switching
+
+    def broken(*_):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(switching, "weighed_alternatives", broken)
+    line = _auto_matched_line(db_session, tenant, distributor, canonical_sku)
+    db_session.add_all(
+        [
+            PriceObservation(
+                tenant_id=tenant.id, canonical_sku_id=canonical_sku.id, distributor_id=distributor.id,
+                observed_on=date(2026, 5, 1), unit_price_base=Decimal("7.00"), metro=tenant.metro,
+                volume_tier=tenant.volume_tier, invoice_line_item_id=line.id,
+            ),
+            PriceAlert(
+                tenant_id=tenant.id, canonical_sku_id=canonical_sku.id, distributor_id=distributor.id,
+                alert_type=AlertType.creep, baseline_price=Decimal("6"), current_price=Decimal("7"),
+                pct_change=Decimal("0.1667"), window_start=date(2026, 3, 1), window_end=date(2026, 5, 1),
+                status=AlertStatus.open,
+            ),
+        ]
+    )  # fmt: skip
+    db_session.commit()
+    client = TestClient(app)
+
+    alerts = client.get(f"/insights?tenant_id={tenant.id}")
+    costs = client.get(f"/costs?tenant_id={tenant.id}")
+
+    assert alerts.status_code == 200 and alerts.json()[0]["alternatives"] == []
+    assert costs.status_code == 200
+    elsewhere = next(s for s in costs.json()["scenarios"] if s["key"] == "cheaper_elsewhere")
+    assert (elsewhere["yearly_change"], elsewhere["products"]) == ("0.00", 0)
+
+
 def test_the_costs_page_gets_a_year_and_its_scenarios(db_session, tenant, distributor, canonical_sku):
     client = TestClient(app)
     empty = client.get(f"/costs?tenant_id={tenant.id}").json()

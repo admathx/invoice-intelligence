@@ -42,8 +42,8 @@ raised; those were, or will be, in a digest.
 import html
 import logging
 import uuid
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from email.message import EmailMessage
 
@@ -85,8 +85,25 @@ class Increase:
     now: Decimal
     pct_change: Decimal
     unit: str
-    # Where it costs less, and what to do about it (app/digest.py elsewhere_for).
+    # The last day of the prices it's about: where else the product costs
+    # less is looked at over the same window.
+    window_end: date | None = None
+    # Where it costs less, and what to do about it (app/digest.py
+    # elsewhere_for): filled in only once it's going to be sent.
     elsewhere: design.Elsewhere | None = None
+
+    # As the alternatives read an alert (app/analytics/alternatives.py).
+    @property
+    def id(self) -> uuid.UUID:
+        return self.alert_id
+
+    @property
+    def canonical_sku_id(self) -> uuid.UUID:
+        return self.sku_id
+
+    @property
+    def current_price(self) -> Decimal:
+        return self.now
 
 
 @dataclass
@@ -134,17 +151,6 @@ def due_alerts(db: Session, now: datetime) -> dict[uuid.UUID, list[Increase]]:
             .execution_options(**{TENANT_SCOPE_BYPASS: True})
         )
     )
-    # Where each costs less, a location at a time: the reasoning reads that
-    # location's own invoices, so it is bound for just that long.
-    due: dict[uuid.UUID, list[PriceAlert]] = {}
-    for alert, *_ in rows:
-        if alert.tenant_id not in still_arriving:
-            due.setdefault(alert.tenant_id, []).append(alert)
-    elsewhere: dict[uuid.UUID, design.Elsewhere] = {}
-    for tenant_id, alerts in due.items():
-        with bound_to(db, tenant_id):
-            elsewhere.update(elsewhere_for(db, db.get(Tenant, tenant_id), alerts))
-
     by_tenant: dict[uuid.UUID, list[Increase]] = {}
     for alert, name, uom, distributor in rows:
         if alert.tenant_id in still_arriving:
@@ -160,7 +166,7 @@ def due_alerts(db: Session, now: datetime) -> dict[uuid.UUID, list[Increase]]:
                 now=alert.current_price,
                 pct_change=alert.pct_change,
                 unit=design.UNIT_LABEL.get(uom.value, uom.value),
-                elsewhere=elsewhere.get(alert.id),
+                window_end=alert.window_end,
             )
         )
     return by_tenant
@@ -288,6 +294,18 @@ class AlertEmailRun:
     failed: list[str] = field(default_factory=list)
 
 
+def _elsewhere(
+    db: Session, found: dict[uuid.UUID, dict[uuid.UUID, design.Elsewhere]], tenant_id: uuid.UUID, increases: list[Increase]
+) -> dict[uuid.UUID, design.Elsewhere]:
+    """Where a location's increases cost less, once per run. It reads that
+    location's own invoices, so the location is bound for just that long:
+    left bound, every later query of the run would be narrowed to it."""
+    if tenant_id not in found:
+        with bound_to(db, tenant_id):
+            found[tenant_id] = elsewhere_for(db, db.get(Tenant, tenant_id), increases)
+    return found[tenant_id]
+
+
 def send_alert_emails(db: Session, now: datetime | None = None) -> AlertEmailRun:
     now = now or datetime.now(timezone.utc)
     run = AlertEmailRun()
@@ -311,6 +329,10 @@ def send_alert_emails(db: Session, now: datetime | None = None) -> AlertEmailRun
             .execution_options(**{TENANT_SCOPE_BYPASS: True})
         ).all()
     )
+    # Where each location's increases cost less, worked out the first time
+    # one of them is about to be sent: most checks send nothing, and an
+    # alert stays in LOOKBACK long after everyone has had it.
+    elsewhere: dict[uuid.UUID, dict[uuid.UUID, design.Elsewhere]] = {}
     for person in _recipients(db, list(by_tenant)):
         wanted = [
             (tenant_name, increase)
@@ -327,9 +349,10 @@ def send_alert_emails(db: Session, now: datetime | None = None) -> AlertEmailRun
             locations: dict[uuid.UUID, LocationIncreases] = {}
             for tenant_name, increase in wanted:
                 if increase.alert_id in claimed:
+                    there = _elsewhere(db, elsewhere, increase.tenant_id, by_tenant[increase.tenant_id])
                     locations.setdefault(
                         increase.tenant_id, LocationIncreases(increase.tenant_id, tenant_name)
-                    ).increases.append(increase)
+                    ).increases.append(replace(increase, elsewhere=there.get(increase.alert_id)))
             mail.send(compose(person, list(locations.values())))
         except Exception as exc:
             # Anything at all between claiming and sending hands the claims

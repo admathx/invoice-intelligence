@@ -108,6 +108,11 @@ export function recentAsSliders(groups: Group[], min: number, max: number): Reco
   );
 }
 
+/** A count of days, said as it's read: "1 day", "85 days". */
+export function days(n: number): string {
+  return `${n} day${n === 1 ? "" : "s"}`;
+}
+
 /** A yearly figure: whole dollars, because it's an estimate. */
 export function dollars(n: number): string {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });

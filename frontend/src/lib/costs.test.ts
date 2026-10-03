@@ -4,6 +4,7 @@ import {
   byCategory,
   byDistributor,
   categoryLabel,
+  days,
   dollars,
   planned,
   recentAsSliders,
@@ -97,6 +98,11 @@ describe("how the figures are said", () => {
     expect(signedDollars(3231.22)).toBe("+$3,231");
     expect(signedDollars(-2714.76)).toBe("−$2,715");
     expect(signedDollars(0.3)).toBe("$0");
+  });
+
+  it("counts days in the singular when there's one", () => {
+    expect(days(1)).toBe("1 day");
+    expect(days(85)).toBe("85 days");
   });
 
   it("gives percentages with their sign", () => {

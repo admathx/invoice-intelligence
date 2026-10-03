@@ -25,7 +25,8 @@ too), so each is its own answer and they are not to be added up:
 - cheaper_elsewhere: every flagged product is bought at the cheapest price
   found at another distributor, by a match or by moving
   (app/analytics/switching.py);
-- savings_targets: every target on Savings is met;
+- savings_targets: every target on Savings is met (as that page has them
+  today, which is where the scenario links);
 - rise_again: every price moves again as it did over the window.
 
 Anything else (a category up 8%, volume down 10%) is arithmetic on the
@@ -42,7 +43,7 @@ from sqlalchemy.orm import Session
 from app.analytics.benchmark import LOOKBACK_DAYS, account_key_for, own_price
 from app.analytics.negotiation import NegotiationBasis, annualization, build_negotiation_sheet
 from app.analytics.price_creep import RECENT_WINDOW_SIZE
-from app.analytics.switching import weighed_alternatives
+from app.analytics.switching import alternatives_or_none
 from app.db import bind_tenant
 from app.models import CanonicalSku, Distributor, Invoice, InvoiceLineItem, PriceAlert, PriceObservation, Tenant
 from app.models.enums import AlertStatus, InvoiceStatus
@@ -207,10 +208,12 @@ def build_costs(db: Session, tenant: Tenant, today: date) -> Costs:
     )
     cheapest = [
         offers[0].annual_saving
-        for offers in weighed_alternatives(db, tenant, alerts, account_key_for(db, tenant.id)).values()
+        for offers in alternatives_or_none(db, tenant, alerts, account_key_for(db, tenant.id)).values()
         if offers[0].annual_saving
     ]
-    sheet = build_negotiation_sheet(db, tenant.id, latest, NegotiationBasis.auto)
+    # As of today, as the Savings page builds it: the scenario says "every
+    # target on Savings" and links there, so it is that page's total.
+    sheet = build_negotiation_sheet(db, tenant.id, today, NegotiationBasis.auto)
     moving = [p for p in products if p.recent_change]
     costs.scenarios = [
         Scenario("increases_reversed", -reversed_.quantize(_CENT), len(alerts)),

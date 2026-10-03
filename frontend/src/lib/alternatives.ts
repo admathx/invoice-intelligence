@@ -1,3 +1,5 @@
+import { dollars } from "./costs";
+
 /** Another distributor a product on a price alert costs less at (backend
  *  app/analytics/alternatives.py), and whether that's worth acting on
  *  (app/analytics/switching.py): a lower price alone isn't a saving for a
@@ -38,8 +40,7 @@ export function alternativeSource(a: Alternative): string {
 export function yearlySaving(a: Alternative): string | null {
   const n = a.annual_saving === null ? NaN : Number(a.annual_saving);
   if (!Number.isFinite(n) || n <= 0) return null;
-  if (n < 1) return "under $1";
-  return `about ${n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}`;
+  return n < 1 ? "under $1" : `about ${dollars(n)}`;
 }
 
 /** The distributor's site, if it's a link worth following: https only. */

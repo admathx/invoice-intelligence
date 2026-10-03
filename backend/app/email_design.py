@@ -193,7 +193,7 @@ def elsewhere_table(increases: Iterable[PriceIncreaseRow]) -> str:
             f"<tr><td style='{cell}'>{e(p.sku)}</td>"
             f"<td style='{cell}'>{where}<br><span style='color:{MUTED};font-size:12px'>"
             f"<span style='{whole}'>{e(price_per(there.price, p.unit))},</span> "
-            f"<span style='{whole}'>{there.less:.0%} less</span></span></td>"
+            f"<span style='{whole}'>{there.less:.1%} less</span></span></td>"
             f"<td style='{cell}'>{e(there.saves) if there.saves else '&mdash;'}</td>"
             f"<td style='{cell};padding-right:0'>{action}</td></tr>"
         )

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app import alert_emails, digest, mail
+from app.analytics import switching
 from app.auth import CSRF_HEADER, CSRF_HEADER_VALUE
 from app.config import settings
 from app.db import SessionLocal
@@ -174,7 +175,7 @@ def test_an_increase_says_where_it_costs_less_and_what_to_do(db, outbox, monkeyp
         asked.append((tenant.id, db.info.get("tenant_id")))
         return {flagged.id: [_offer()]} if tenant.id == here.id else {}
 
-    monkeypatch.setattr(digest, "weighed_alternatives", offers)
+    monkeypatch.setattr(switching, "weighed_alternatives", offers)
 
     _send(NOW)
 
@@ -190,6 +191,22 @@ def test_an_increase_says_where_it_costs_less_and_what_to_do(db, outbox, monkeyp
     assert len(theirs) == 1 and "Cheaper at" not in _read(theirs[0])[1]
 
 
+def test_a_check_with_nothing_to_send_doesnt_work_out_alternatives(db, outbox, monkeypatch):
+    """The scheduler checks every few minutes, and an alert stays in the
+    lookback for two days after everyone has had it. Working out where its
+    product costs less is for an email about to go, not for every check."""
+    tenant = _tenant(db)
+    _alert(db, tenant, _sku(db, "Cilantro"), distributor=_distributor(db, "sysco"))
+    _user(db, tenant)
+    asked = []
+    monkeypatch.setattr(switching, "weighed_alternatives", lambda db, tenant, alerts, key: asked.append(tenant.id) or {})
+
+    _send(NOW)
+    _send(NOW + timedelta(minutes=5))
+
+    assert asked == [tenant.id], "once, for the email that went; not again for the check that sent nothing"
+
+
 def test_the_increase_is_still_sent_when_the_alternatives_cant_be_worked_out(db, outbox, monkeypatch):
     tenant = _tenant(db)
     _alert(db, tenant, _sku(db, "Cilantro"), distributor=_distributor(db, "sysco"))
@@ -198,7 +215,7 @@ def test_the_increase_is_still_sent_when_the_alternatives_cant_be_worked_out(db,
     def broken(*_):
         raise RuntimeError("no")
 
-    monkeypatch.setattr(digest, "weighed_alternatives", broken)
+    monkeypatch.setattr(switching, "weighed_alternatives", broken)
 
     _send(NOW)
 

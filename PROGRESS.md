@@ -3439,3 +3439,27 @@ person on a slow connection.
 Not in it: seasons (a year is the last quarter four times over, so a
 summer quarter overstates produce in winter), menu prices or sales (so no
 food cost as a share of revenue), and anything not matched to a product.
+
+### Bug check on alternatives, switching, the emails and Costs
+
+A review of everything since the last one found eight problems; seven are
+fixed, each with a test where it can have one:
+
+- the price-increase emails worked out every due alert's alternatives on
+  every scheduler check, even with nothing to send; now only for an email
+  about to go, once per location per run;
+- Costs measured "every target on Savings" as of the last invoice while
+  the Savings page it links to is as of today, so the totals differed;
+  now as of today;
+- an error in the alternatives broke Price alerts and Costs (the emails
+  already carried on without them); all four now go through one guarded
+  call and show the rest;
+- "1 days" for a location with one day of invoices;
+- the emails rounded the discount to a whole percent where the card shows
+  one decimal;
+- the emails linked any stored website, where the page links https only;
+- two whole-dollar formatters on the frontend; now one.
+
+Left as it is: the Costs page reads the location's purchases three times
+(its own year, the alternatives, the Savings sheet). Each reads a different
+window, so sharing one read isn't the simple change it looks.

@@ -31,6 +31,7 @@ share of purchases, a minimum order. It says so rather than guessing, and
 tells the person what to ask. The thresholds are judgment
 (validation/thresholds.yaml), not measurement.
 """
+import logging
 import uuid
 from collections import defaultdict
 from collections.abc import Sequence
@@ -50,6 +51,8 @@ from app.db import bind_tenant
 from app.models import Distributor, Invoice, InvoiceLineItem, PriceAlert, PriceObservation, Tenant
 from app.models.enums import InvoiceStatus
 from app.models.invoice import not_held
+
+logger = logging.getLogger(__name__)
 
 _THRESHOLDS_PATH = Path(__file__).resolve().parents[3] / "validation" / "thresholds.yaml"
 _thresholds = yaml.safe_load(_THRESHOLDS_PATH.read_text())["phase4_analytics"]["alternatives"]
@@ -299,3 +302,22 @@ def weighed_alternatives(
                 flagged=flagged[offer.distributor_id],
             )
     return found
+
+
+def alternatives_or_none(
+    db: Session, tenant: Tenant, alerts: Sequence[PriceAlert], exclude_account_key: uuid.UUID
+) -> dict[uuid.UUID, list[Alternative]]:
+    """weighed_alternatives for a page or an email that is about something
+    else: Price alerts, Costs, the two emails. Where else a product costs
+    less is an addition to each, and a failure in it must not take the rest
+    down with it: it is logged, and they show what they would have without
+    it. On a savepoint, so the session is still usable after.
+
+    `alerts` need only an alert's id, product, distributor, current price
+    and last day (the emails pass snapshots, not rows)."""
+    try:
+        with db.begin_nested():
+            return weighed_alternatives(db, tenant, alerts, exclude_account_key)
+    except Exception:
+        logger.exception("couldn't work out where %s's flagged products cost less", tenant.id)
+        return {}

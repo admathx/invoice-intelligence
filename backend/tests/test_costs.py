@@ -122,6 +122,27 @@ def test_the_cheapest_price_found_elsewhere_is_a_scenario_of_its_own(db_session,
     assert (elsewhere.yearly_change, elsewhere.products) == (Decimal("-525.00"), 1)
 
 
+def test_the_savings_scenario_is_the_savings_page_as_it_is_today(db_session, canonical_sku, distributor, monkeypatch):
+    """It says "every target on Savings" and links there, so it is that
+    page's sheet: built as of today, not as of the last invoice."""
+    from app.analytics import costs as costs_module
+    from app.analytics.negotiation import NegotiationSheet
+
+    tenant = _make_tenant(db_session, _metro())
+    _a_quarter_at(db_session, tenant, canonical_sku, distributor)
+    asked = []
+
+    def sheet(db, tenant_id, as_of, basis):
+        asked.append(as_of)
+        return NegotiationSheet(lines=[], window_days=0, annualization_factor=Decimal(0), total_annualized_savings=Decimal("-0"))
+
+    monkeypatch.setattr(costs_module, "build_negotiation_sheet", sheet)
+
+    _costs(db_session, tenant)
+
+    assert asked == [TODAY]
+
+
 def test_what_the_total_leaves_out_is_said(db_session, canonical_sku, distributor):
     """Items not matched to a product have no price per unit to move. The
     total is of the rest, and says how much of the spending that is."""

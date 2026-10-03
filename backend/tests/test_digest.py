@@ -12,6 +12,7 @@ from sqlalchemy import delete, select, update
 
 from app import digest, mail
 from app import email_design as design
+from app.analytics import switching
 from app.auth import CSRF_HEADER, CSRF_HEADER_VALUE, SESSION_COOKIE, hash_password
 from app.config import settings
 from app.db import SessionLocal
@@ -191,7 +192,7 @@ def test_a_new_increase_says_where_it_costs_less_and_what_to_do(db, monkeypatch)
     monkeypatch.setattr(settings, "public_base_url", "https://app.example.com")
     tenant = _tenant(db)
     _alert(db, tenant, _sku(db), created_at=NOW - timedelta(days=2))
-    monkeypatch.setattr(digest, "weighed_alternatives", lambda db, tenant, alerts, key: {alerts[0].id: [_offer()]})
+    monkeypatch.setattr(switching, "weighed_alternatives", lambda db, tenant, alerts, key: {alerts[0].id: [_offer()]})
 
     week = _week(db, tenant)
 
@@ -206,7 +207,7 @@ def test_a_new_increase_says_where_it_costs_less_and_what_to_do(db, monkeypatch)
     # step to the page with the numbers for the rep.
     assert "<th" in html_body and "Cheaper at</th>" in html_body and "Next step</th>" in html_body
     assert ">US Foods</a>" in html_body and "href='https://www.usfoods.com'" in html_body
-    assert "$0.5361/lb," in html_body and "20% less" in html_body and "about $311" in html_body
+    assert "$0.5361/lb," in html_body and "20.0% less" in html_body and "about $311" in html_body
     assert f"href='{savings}'" in html_body and ">Stay with Sysco</a>" in html_body
 
 
@@ -214,7 +215,7 @@ def test_moving_a_product_links_to_where_it_would_move(db, monkeypatch):
     tenant = _tenant(db)
     _alert(db, tenant, _sku(db), created_at=NOW - timedelta(days=2))
     offer = _offer("move", "Move it to US Foods", annual_saving=None)
-    monkeypatch.setattr(digest, "weighed_alternatives", lambda db, tenant, alerts, key: {alerts[0].id: [offer]})
+    monkeypatch.setattr(switching, "weighed_alternatives", lambda db, tenant, alerts, key: {alerts[0].id: [offer]})
 
     there = _week(db, tenant).new_increases[0].elsewhere
 
@@ -228,7 +229,7 @@ def test_the_email_still_goes_when_the_alternatives_cant_be_worked_out(db, monke
     def broken(*_):
         raise RuntimeError("no")
 
-    monkeypatch.setattr(digest, "weighed_alternatives", broken)
+    monkeypatch.setattr(switching, "weighed_alternatives", broken)
 
     week = _week(db, tenant)
 

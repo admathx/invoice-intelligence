@@ -32,7 +32,7 @@ from app import email_design as design
 from app import mail
 from app.analytics.benchmark import account_key_for
 from app.analytics.negotiation import NegotiationBasis, build_negotiation_sheet
-from app.analytics.switching import usd, weighed_alternatives
+from app.analytics.switching import alternatives_or_none, usd
 from app.config import settings
 from app.db import bind_tenant
 from app.matching_queue import waiting_item_count
@@ -75,32 +75,24 @@ class PriceIncrease:
 
 def elsewhere_for(db: Session, tenant: Tenant, alerts: Sequence[PriceAlert]) -> dict[uuid.UUID, design.Elsewhere]:
     """The cheapest alternative of each alert, by alert id, as the emails
-    show it. Both emails use it (this one and app/alert_emails.py).
-
-    An email that goes out without this is still the email; one that
-    doesn't go out because this failed is not. So a failure here is logged
-    and leaves the increases as they were, on a savepoint so the session is
-    still usable."""
-    try:
-        with db.begin_nested():
-            found = weighed_alternatives(db, tenant, alerts, account_key_for(db, tenant.id))
-    except Exception:
-        logger.exception("couldn't work out where %s's increases cost less", tenant.id)
-        return {}
+    show it. Both emails use it (this one and app/alert_emails.py). An email
+    that goes out without it is still the email (alternatives_or_none)."""
     out = {}
-    for alert_id, offers in found.items():
+    for alert_id, offers in alternatives_or_none(db, tenant, alerts, account_key_for(db, tenant.id)).items():
         best = offers[0]
+        # Linked only if it's a secure address, as the dashboard links it.
+        website = best.website if (best.website or "").startswith("https://") else None
         # Asking the current distributor to match, or staying put, is done
         # with the numbers on Savings; moving is done at the other one's site.
         moving = best.advice is not None and best.advice.verdict == "move"
         out[alert_id] = design.Elsewhere(
             distributor=best.distributor_name,
-            website=best.website,
+            website=website,
             price=best.price,
             less=best.saving_pct,
             saves=f"about {usd(best.annual_saving)}" if best.annual_saving and best.annual_saving >= 1 else None,
             action=best.advice.action if best.advice else "See price alerts",
-            action_link=best.website if moving else design.dashboard_link("/negotiation", tenant.id),
+            action_link=website if moving else design.dashboard_link("/negotiation", tenant.id),
         )
     return out
 

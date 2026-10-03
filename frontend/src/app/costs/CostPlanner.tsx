@@ -7,6 +7,7 @@ import {
   byCategory,
   byDistributor,
   categoryLabel,
+  days,
   dollars,
   planned,
   recentAsSliders,
@@ -26,7 +27,7 @@ const VOLUME = { min: -30, max: 30, step: 1 };
 const TOP_PRODUCTS = 10;
 
 // What each ready-made scenario assumes, and where to act on it.
-const SCENARIOS: Record<ScenarioKey, { label: (days: number) => string; about: (n: number) => string; href?: string; link?: string }> = {
+const SCENARIOS: Record<ScenarioKey, { label: (window: number) => string; about: (n: number) => string; href?: string; link?: string }> = {
   increases_reversed: {
     label: () => "Your flagged prices go back to what they were",
     about: (n) => `${n} product${n === 1 ? "" : "s"} on Price alerts`,
@@ -46,7 +47,7 @@ const SCENARIOS: Record<ScenarioKey, { label: (days: number) => string; about: (
     link: "See savings",
   },
   rise_again: {
-    label: (days) => `Prices move again like the last ${days} days`,
+    label: (window) => `Prices move again like the last ${days(window)}`,
     about: (n) => `Each of ${n} product${n === 1 ? "" : "s"} repeats its own change`,
   },
 };
@@ -78,7 +79,7 @@ export default function CostPlanner({ costs }: { costs: Costs }) {
         <StatTile label="A year at today's prices" value={dollars(now)} tone="text-brand-700">
           What you buy now, at what it costs now
         </StatTile>
-        <StatTile label="Based on" value={`${costs.window_days} days`}>
+        <StatTile label="Based on" value={days(costs.window_days)}>
           of invoices, up to {costs.window_end}
         </StatTile>
         <StatTile label="Covers" value={costs.coverage === null ? "—" : percent(costs.coverage, { places: 0 })}>
@@ -126,7 +127,7 @@ export default function CostPlanner({ costs }: { costs: Costs }) {
               disabled={!ready}
               onClick={() => setPrices(recentAsSliders(categories, PRICE.min, PRICE.max))}
             >
-              Repeat the last {costs.window_days} days
+              Repeat the last {days(costs.window_days)}
             </button>
             <button type="button" className="btn-secondary btn-sm" disabled={!ready} onClick={() => setPrices(all(5))}>
               Everything up 5%
@@ -153,7 +154,7 @@ export default function CostPlanner({ costs }: { costs: Costs }) {
                 <tr className="border-b border-gray-200">
                   <th className={th}>Category</th>
                   <th className={`${th} ${wide} text-right`}>A year now</th>
-                  <th className={`${th} ${wide} text-right`}>Last {costs.window_days} days</th>
+                  <th className={`${th} ${wide} text-right`}>Last {days(costs.window_days)}</th>
                   <th className={th}>Price change</th>
                   <th className={`${th} ${wide} text-right`}>A year then</th>
                   <th className={`${th} text-right`}>Change</th>
